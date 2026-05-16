@@ -14,7 +14,19 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
   const session = createMemo(() => props.api.state.session.get(props.session_id))
-  const cost = createMemo(() => session()?.cost ?? 0)
+  const cost = createMemo(() => {
+    const rootID = session()?.id ?? props.session_id
+    let total = 0
+    let stack = [rootID]
+    while (stack.length > 0) {
+      const id = stack.pop()!
+      const s = props.api.state.session.get(id)
+      if (s != null) total += s.cost ?? 0
+      const children = props.api.state.session.all().filter((x) => x.parentID === id)
+      stack.push(...children.map((c) => c.id))
+    }
+    return total
+  })
 
   const state = createMemo(() => {
     const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
