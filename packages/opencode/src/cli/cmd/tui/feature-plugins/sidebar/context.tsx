@@ -15,7 +15,8 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
   const session = createMemo(() => props.api.state.session.get(props.session_id))
   const cost = createMemo(() => {
-    const rootID = session()?.id ?? props.session_id
+    const rootID = session()?.id
+    if (!rootID) return 0
     let total = 0
     let stack = [rootID]
     while (stack.length > 0) {
