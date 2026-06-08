@@ -1119,6 +1119,7 @@ export function Prompt(props: PromptProps) {
         })
       if (editorParts.length > 0) editor.markSelectionSent()
     }
+    sync.session.prune(sessionID)
     history.append({
       ...store.prompt,
       mode: currentMode,
