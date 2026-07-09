@@ -24,6 +24,7 @@ import { useSDK, getStreamBatchWindow } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
+import { useDirectory } from "../../context/directory"
 import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
@@ -106,6 +107,11 @@ const DRAFT_RETENTION_MIN_CHARS = 20
 function randomIndex(count: number) {
   if (count <= 0) return 0
   return Math.floor(Math.random() * count)
+}
+
+function truncateStart(input: string, max: number) {
+  if (input.length <= max) return input
+  return "…" + input.slice(-(max - 1))
 }
 
 function fadeColor(color: RGBA, alpha: number) {
@@ -287,6 +293,15 @@ export function Prompt(props: PromptProps) {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
       cost: cost > 0 ? money.format(cost) : undefined,
     }
+  })
+
+  const directory = useDirectory()
+  const sessionTitle = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID)?.title : undefined))
+  const directoryLabel = createMemo(() => {
+    const title = sessionTitle()
+    const dir = directory()
+    const combined = title ? `${title} · ${dir}` : dir
+    return truncateStart(combined, Math.max(18, dimensions().width - 24))
   })
 
   const [store, setStore] = createStore<{
@@ -1518,8 +1533,9 @@ export function Prompt(props: PromptProps) {
             }
           />
         </box>
-        <box width="100%" flexDirection="row" justifyContent="space-between">
-          <Switch>
+        <box width="100%" flexDirection="row" minWidth={0}>
+          <box flexGrow={1} flexShrink={0}>
+            <Switch>
             <Match when={status().type !== "idle"}>
               <box
                 flexDirection="row"
@@ -1659,10 +1675,13 @@ export function Prompt(props: PromptProps) {
                 </Show>
               )}
             </Match>
-          </Switch>
+            </Switch>
+          </box>
           <Show when={status().type !== "retry"}>
-            <box gap={2} flexDirection="row">
-              <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
+            <box width={2} flexShrink={0} />
+            <box gap={1} flexDirection="row" flexShrink={1} minWidth={0}>
+              <box flexDirection="row" gap={2} flexShrink={0}>
+                <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
@@ -1693,6 +1712,7 @@ export function Prompt(props: PromptProps) {
                   </text>
                 </Match>
               </Switch>
+              </box>
             </box>
           </Show>
         </box>
