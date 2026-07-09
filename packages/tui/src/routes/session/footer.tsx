@@ -19,6 +19,11 @@ export function Footer() {
   })
   const directory = useDirectory()
   const connected = useConnected()
+  const sessionTitle = createMemo(() => {
+    if (route.data.type !== "session") return
+    const session = sync.session.get(route.data.sessionID)
+    return session?.title
+  })
 
   const [store, setStore] = createStore({
     welcome: false,
@@ -51,7 +56,10 @@ export function Footer() {
 
   return (
     <box flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
-      <text fg={theme.textMuted}>{directory()}</text>
+      <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
+        <Show when={sessionTitle()}>{(t) => <span>{t()} · </span>}</Show>
+        {directory()}
+      </text>
       <box gap={2} flexDirection="row" flexShrink={0}>
         <Switch>
           <Match when={store.welcome}>
