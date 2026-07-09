@@ -1186,6 +1186,10 @@ export function options(input: {
     }
   }
 
+  if (input.providerOptions?.body?.chat_template_kwargs) {
+    result["chat_template_kwargs"] = input.providerOptions.body.chat_template_kwargs
+  }
+
   if (
     input.model.providerID === "baseten" ||
     (input.model.providerID === "opencode" && ["kimi-k2-thinking", "glm-4.6"].includes(input.model.api.id))
@@ -1405,6 +1409,11 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
   // "azure" first. Pass both so model options work on either code path.
   if (model.api.npm === "@ai-sdk/azure") {
     return { openai: normalized, azure: normalized }
+  }
+  if (model.api.npm === "@ai-sdk/openai-compatible" && normalized?.body && typeof normalized.body === "object") {
+    const { body, ...rest } = normalized
+    const { min_p, logit_bias, ...safeBody } = body
+    return { [key]: { ...rest, ...safeBody } }
   }
   return { [key]: normalized }
 }
