@@ -1670,7 +1670,10 @@ export function Prompt(props: PromptProps) {
               {props.hint ?? (
                 <Show when={props.sessionID}>
                   <box marginLeft={1}>
-                    <text fg={theme.textMuted}>{location()?.directory ?? paths.cwd}</text>
+                    <text fg={theme.textMuted}>
+                      {directory()}
+                      <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
+                    </text>
                   </box>
                 </Show>
               )}
