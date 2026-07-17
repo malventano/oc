@@ -57,8 +57,8 @@ export function Footer() {
   return (
     <box flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
       <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
-        <Show when={sessionTitle()}>{(t) => <span>{t()} · </span>}</Show>
         {directory()}
+        <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
       </text>
       <box gap={2} flexDirection="row" flexShrink={0}>
         <Switch>
