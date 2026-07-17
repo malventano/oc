@@ -1613,6 +1613,13 @@ export function Prompt(props: PromptProps) {
                     {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
                   </span>
                 </text>
+                <text fg={theme.textMuted}>·</text>
+                <box flexShrink={0} flexDirection="row" gap={1}>
+                  <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
+                    {directory()}
+                    <Show when={sessionTitle()}>{(t) => <span>· {t()}</span>}</Show>
+                  </text>
+                </box>
               </box>
             </Match>
             <Match when={workspace.notice()}>
@@ -1682,7 +1689,7 @@ export function Prompt(props: PromptProps) {
           <Show when={status().type !== "retry"}>
             <box width={2} flexShrink={0} />
             <box gap={1} flexDirection="row" flexShrink={1} minWidth={0}>
-              <box flexDirection="row" gap={2} flexShrink={0}>
+              <box flexDirection="row" gap={1} flexShrink={0}>
                 <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
@@ -1705,7 +1712,7 @@ export function Prompt(props: PromptProps) {
                     </Match>
                   </Switch>
                   <text fg={theme.text}>
-                    {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
+                    <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
                   </text>
                 </Match>
                 <Match when={store.mode === "shell"}>
