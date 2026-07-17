@@ -1618,7 +1618,7 @@ export function Prompt(props: PromptProps) {
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
                     {directory()}
-                    <Show when={sessionTitle()}>{(t) => <span>· {t()}</span>}</Show>
+                    <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
                   </text>
                 </box>
               </box>
