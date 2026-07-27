@@ -1,10 +1,12 @@
 import { createMemo, Match, onCleanup, onMount, Show, Switch } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useSync } from "../../context/sync"
-import { useDirectory } from "../../context/directory"
+import { useLocation } from "../../context/location"
+import { useTuiPaths } from "../../context/runtime"
 import { useConnected } from "../../component/use-connected"
 import { createStore } from "solid-js/store"
 import { useRoute } from "../../context/route"
+import { abbreviateHome } from "../../runtime"
 
 export function Footer() {
   const { theme } = useTheme()
@@ -17,7 +19,8 @@ export function Footer() {
     if (route.data.type !== "session") return []
     return sync.data.permission[route.data.sessionID] ?? []
   })
-  const directory = useDirectory()
+  const location = useLocation()
+  const paths = useTuiPaths()
   const connected = useConnected()
   const sessionTitle = createMemo(() => {
     if (route.data.type !== "session") return
@@ -57,7 +60,7 @@ export function Footer() {
   return (
     <box flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
       <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
-        {directory()}
+        {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
         <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
       </text>
       <box gap={2} flexDirection="row" flexShrink={0}>
