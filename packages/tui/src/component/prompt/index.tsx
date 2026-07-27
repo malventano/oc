@@ -18,13 +18,13 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { tint, useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
+import { abbreviateHome } from "../../runtime"
 import { useClipboard } from "../../context/clipboard"
 import { Spinner } from "../spinner"
 import { useSDK, getStreamBatchWindow } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
-import { useDirectory } from "../../context/directory"
 import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
@@ -107,11 +107,6 @@ const DRAFT_RETENTION_MIN_CHARS = 20
 function randomIndex(count: number) {
   if (count <= 0) return 0
   return Math.floor(Math.random() * count)
-}
-
-function truncateStart(input: string, max: number) {
-  if (input.length <= max) return input
-  return "…" + input.slice(-(max - 1))
 }
 
 function fadeColor(color: RGBA, alpha: number) {
@@ -295,14 +290,7 @@ export function Prompt(props: PromptProps) {
     }
   })
 
-  const directory = useDirectory()
   const sessionTitle = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID)?.title : undefined))
-  const directoryLabel = createMemo(() => {
-    const title = sessionTitle()
-    const dir = directory()
-    const combined = title ? `${title} · ${dir}` : dir
-    return truncateStart(combined, Math.max(18, dimensions().width - 24))
-  })
 
   const [store, setStore] = createStore<{
     prompt: PromptInfo
@@ -1617,7 +1605,7 @@ export function Prompt(props: PromptProps) {
                 <text fg={theme.textMuted}>·</text>
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
-                    {directory()}
+                    {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
                     <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
                   </text>
                 </box>
@@ -1678,7 +1666,7 @@ export function Prompt(props: PromptProps) {
                 <Show when={props.sessionID}>
                   <box marginLeft={1}>
                     <text fg={theme.textMuted}>
-                      {directory()}
+                      {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
                       <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
                     </text>
                   </box>
