@@ -145,6 +145,8 @@ type OpenAIChatToolCallDelta = Schema.Schema.Type<typeof OpenAIChatToolCallDelta
 const OpenAIChatDelta = Schema.Struct({
   content: optionalNull(Schema.String),
   reasoning_content: optionalNull(Schema.String),
+  reasoning: optionalNull(Schema.String),
+  thinking: optionalNull(Schema.String),
   tool_calls: optionalNull(Schema.Array(OpenAIChatToolCallDelta)),
 })
 
@@ -388,17 +390,26 @@ const mapFinishReason = (reason: string | null | undefined): FinishReason => {
 // a `reasoning_tokens` subset. We pass the inclusive totals through and
 // derive the non-cached breakdown so the `LLM.Usage` contract is
 // satisfied on both sides.
-const mapUsage = (usage: OpenAIChatEvent["usage"]): Usage | undefined => {
+const mapUsage = (
+  usage: OpenAIChatEvent["usage"],
+  reasoningTextLength?: number,
+): Usage | undefined => {
   if (!usage) return undefined
   const cached = usage.prompt_tokens_details?.cached_tokens
   const reasoning = usage.completion_tokens_details?.reasoning_tokens
   const nonCached = ProviderShared.subtractTokens(usage.prompt_tokens, cached)
+  const fallbackReasoning =
+    (reasoning === undefined || reasoning === 0) &&
+    reasoningTextLength != null &&
+    reasoningTextLength > 0
+      ? Math.ceil(reasoningTextLength / 4)
+      : undefined
   return new Usage({
     inputTokens: usage.prompt_tokens,
     outputTokens: usage.completion_tokens,
     nonCachedInputTokens: nonCached,
     cacheReadInputTokens: cached,
-    reasoningTokens: reasoning,
+    reasoningTokens: reasoning || fallbackReasoning,
     totalTokens: ProviderShared.totalTokens(usage.prompt_tokens, usage.completion_tokens, usage.total_tokens),
     providerMetadata: { openai: usage },
   })
@@ -407,17 +418,20 @@ const mapUsage = (usage: OpenAIChatEvent["usage"]): Usage | undefined => {
 const step = (state: ParserState, event: OpenAIChatEvent) =>
   Effect.gen(function* () {
     const events: LLMEvent[] = []
-    const usage = mapUsage(event.usage) ?? state.usage
     const choice = event.choices[0]
     const finishReason = choice?.finish_reason ? mapFinishReason(choice.finish_reason) : state.finishReason
     const delta = choice?.delta
+    const reasoningText = delta?.reasoning_content ?? delta?.reasoning ?? delta?.thinking
+    const accumulatedReasoningLength =
+      (state.lifecycle.reasoningTextLength ?? 0) + (reasoningText?.length ?? 0)
+    const usage = mapUsage(event.usage, accumulatedReasoningLength) ?? state.usage
     const toolDeltas = delta?.tool_calls ?? []
     let tools = state.tools
 
     let lifecycle = state.lifecycle
 
-    if (delta?.reasoning_content)
-      lifecycle = Lifecycle.reasoningDelta(lifecycle, events, "reasoning-0", delta.reasoning_content)
+    if (reasoningText)
+      lifecycle = Lifecycle.reasoningDelta(lifecycle, events, "reasoning-0", reasoningText)
 
     if (delta?.content) {
       lifecycle = Lifecycle.reasoningEnd(lifecycle, events, "reasoning-0")
