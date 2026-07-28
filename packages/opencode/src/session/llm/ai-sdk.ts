@@ -12,6 +12,7 @@ export function adapterState() {
     step: 0,
     text: 0,
     reasoning: 0,
+    reasoningTextLength: undefined as number | undefined,
     currentTextID: undefined as string | undefined,
     currentReasoningID: undefined as string | undefined,
     toolNames: {} as Record<string, string>,
@@ -42,7 +43,7 @@ function copilotTotalNanoAiu(value: unknown) {
   return total
 }
 
-function usage(value: unknown) {
+function usage(value: unknown, reasoningTextCharCount?: number) {
   if (!value || typeof value !== "object") return undefined
   const item = value as {
     inputTokens?: number
@@ -53,11 +54,23 @@ function usage(value: unknown) {
     inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number }
     outputTokenDetails?: { reasoningTokens?: number }
   }
+  const reasoningTokens = item.outputTokenDetails?.reasoningTokens ?? item.reasoningTokens
+  // Fallback: if provider reports reasoning_tokens as undefined OR 0 (glm45-family parsers
+  // omit or zero the completion_tokens_details.reasoning_tokens subset even when reasoning
+  // text IS produced), estimate from accumulated reasoning text character count.
+  // Note: AI SDK v2 normalizes absent reasoning_tokens to 0 (a number), so `??` alone
+  // never fires — use `||` so 0 also triggers the fallback.
+  const fallbackReasoningTokens =
+    (reasoningTokens === undefined || reasoningTokens === 0) &&
+    reasoningTextCharCount != null &&
+    reasoningTextCharCount > 0
+      ? Math.ceil(reasoningTextCharCount / 4)
+      : undefined
   const entries = Object.entries({
     inputTokens: item.inputTokens,
     outputTokens: item.outputTokens,
     totalTokens: item.totalTokens,
-    reasoningTokens: item.outputTokenDetails?.reasoningTokens ?? item.reasoningTokens,
+    reasoningTokens: reasoningTokens || fallbackReasoningTokens,
     cacheReadInputTokens: item.inputTokenDetails?.cacheReadTokens ?? item.cachedInputTokens,
     cacheWriteInputTokens: item.inputTokenDetails?.cacheWriteTokens,
   }).filter((entry) => entry[1] !== undefined)
@@ -101,11 +114,13 @@ export function toLLMEvents(
                 },
               }
         state.copilotTotalNanoAiu = undefined
+        const reasoningTokensForStep = usage(event.usage, state.reasoningTextLength)
+        state.reasoningTextLength = undefined
         return [
           LLMEvent.stepFinish({
             index: state.step++,
             reason: finishReason(event.finishReason),
-            usage: usage(event.usage),
+            usage: reasoningTokensForStep,
             providerMetadata: metadata,
           }),
         ]
@@ -116,7 +131,7 @@ export function toLLMEvents(
         const events = [
           LLMEvent.finish({
             reason: finishReason(event.finishReason),
-            usage: usage(event.totalUsage),
+            usage: usage(event.totalUsage, state.reasoningTextLength),
             providerMetadata: "providerMetadata" in event ? providerMetadata(event.providerMetadata) : undefined,
           }),
         ]
@@ -170,13 +185,16 @@ export function toLLMEvents(
       })
 
     case "reasoning-delta":
-      return Effect.succeed([
-        LLMEvent.reasoningDelta({
-          id: currentReasoningID(state, event.id),
-          text: event.text,
-          providerMetadata: providerMetadata(event.providerMetadata),
-        }),
-      ])
+      return Effect.sync(() => {
+        state.reasoningTextLength = (state.reasoningTextLength ?? 0) + event.text.length
+        return [
+          LLMEvent.reasoningDelta({
+            id: currentReasoningID(state, event.id),
+            text: event.text,
+            providerMetadata: providerMetadata(event.providerMetadata),
+          }),
+        ]
+      })
 
     case "reasoning-end":
       return Effect.sync(() => {
