@@ -4,6 +4,7 @@ export interface State {
   readonly stepStarted: boolean
   readonly text: ReadonlySet<string>
   readonly reasoning: ReadonlySet<string>
+  readonly reasoningTextLength?: number
 }
 
 export const initial = (): State => ({ stepStarted: false, text: new Set(), reasoning: new Set() })
@@ -45,7 +46,10 @@ export const reasoningDelta = (
 ): State => {
   const started = reasoningStart(state, events, id, providerMetadata)
   events.push(LLMEvent.reasoningDelta({ id, text }))
-  return started
+  return {
+    ...started,
+    reasoningTextLength: (started.reasoningTextLength ?? 0) + text.length,
+  }
 }
 
 export const reasoningEnd = (
