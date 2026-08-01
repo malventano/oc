@@ -364,10 +364,37 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             const a = agent.current()
             return a?.variant
           },
+          key() {
+            const m = currentModel()
+            if (!m) return undefined
+            return `${m.providerID}/${m.modelID}`
+          },
           selected() {
             const a = agent.current()
             if (!a) return undefined
-            return modelStore.variant[a.name]
+            const key = this.key()
+            if (key === undefined) return undefined
+            const stored = modelStore.variant[key]
+            if (stored !== undefined) return stored
+            // Legacy claim-on-use, newest generation first: composite
+            // (agent,model) keys from the agent-scoped retention era, then
+            // bare agent names from the per-agent-storage era. Attribute the
+            // override to the model currently in use; drop the legacy key
+            // once handled.
+            const m = currentModel()
+            const legacyKeys = m ? [`${a.name}/${m.providerID}/${m.modelID}`, a.name] : [a.name]
+            for (const legacyKey of legacyKeys) {
+              const legacy = modelStore.variant[legacyKey]
+              if (legacy === undefined) continue
+              setModelStore("variant", legacyKey, undefined)
+              const valid = legacy !== "default" && this.list().includes(legacy)
+              if (valid) {
+                setModelStore("variant", key, legacy)
+                save()
+                return legacy
+              }
+            }
+            return undefined
           },
           current() {
             const selected = this.selected()
@@ -386,9 +413,13 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return Object.keys(info.variants)
           },
           set(value: string | undefined) {
+            const key = this.key()
+            if (key === undefined) return
+            setModelStore("variant", key, value ?? "default")
             const a = agent.current()
-            if (!a) return
-            setModelStore("variant", a.name, value ?? "default")
+            const m = currentModel()
+            if (a && m) setModelStore("variant", `${a.name}/${m.providerID}/${m.modelID}`, undefined)
+            if (a) setModelStore("variant", a.name, undefined)
             save()
           },
           cycle() {
