@@ -1616,14 +1616,16 @@ const layer = Layer.effect(
               release_date: model.release_date ?? existingModel?.release_date ?? "",
               variants: {},
             }
+            const configVariants = model.variants ?? {}
             // Configured reasoning options replace the catalog variants; configured variants still apply on top.
-            const variants =
+            const bakedIn =
               model.reasoning_options !== undefined
                 ? (ProviderTransform.reasoningVariants(model, parsedModel) ?? ProviderTransform.variants(parsedModel))
                 : existingModel?.api.npm === parsedModel.api.npm
                   ? (existingModel.variants ?? ProviderTransform.variants(parsedModel))
                   : ProviderTransform.variants(parsedModel)
-            const merged = mergeDeep(variants, model.variants ?? {})
+            const merged =
+              Object.keys(configVariants).length > 0 ? configVariants : mergeDeep(bakedIn, configVariants)
             parsedModel.variants = mapValues(
               pickBy(merged, (v) => !v.disabled),
               (v) => omit(v, ["disabled"]),
