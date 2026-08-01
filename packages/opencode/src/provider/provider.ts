@@ -1561,11 +1561,13 @@ const layer = Layer.effect(
               release_date: model.release_date ?? existingModel?.release_date ?? "",
               variants: {},
             }
-            const variants =
+            const configVariants = model.variants ?? {}
+            const bakedIn =
               existingModel?.api.npm === parsedModel.api.npm
                 ? (existingModel.variants ?? ProviderTransform.variants(parsedModel))
                 : ProviderTransform.variants(parsedModel)
-            const merged = mergeDeep(variants, model.variants ?? {})
+            const merged =
+              Object.keys(configVariants).length > 0 ? configVariants : mergeDeep(bakedIn, configVariants)
             parsedModel.variants = mapValues(
               pickBy(merged, (v) => !v.disabled),
               (v) => omit(v, ["disabled"]),
