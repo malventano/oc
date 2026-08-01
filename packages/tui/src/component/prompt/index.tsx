@@ -319,15 +319,14 @@ export function Prompt(props: PromptProps) {
 
       syncedSessionID = sessionID
 
-      // Only set agent if it's a primary agent (not a subagent)
+      // Only set agent if it's a primary agent (not a subagent).
+      // Restore the plan/build agent from the session, but NOT its model or variant: the
+      // selected model should resolve to the agent's configured default (falling back to a
+      // manual in-run pick), not the model that happened to be saved in an old session.
       const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
       if (msg.agent && isPrimaryAgent) {
         // Keep command line --agent if specified.
         if (!args.agent) local.agent.set(msg.agent)
-        if (msg.model) {
-          local.model.set(msg.model)
-          local.model.variant.set(msg.model.variant)
-        }
       }
     }
   })
