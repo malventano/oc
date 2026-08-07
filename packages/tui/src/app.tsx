@@ -32,7 +32,7 @@ import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
-import { SDKProvider, useSDK } from "./context/sdk"
+import { SDKProvider, useSDK, setStreamBatchWindow, getStreamBatchWindow, getStreamLoadHintMs } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
@@ -193,7 +193,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           try: () =>
             createCliRenderer({
               externalOutputMode: "passthrough",
-              targetFps: 60,
+              targetFps: 240,
+              maxFps: 240,
               gatherStats: false,
               exitOnCtrlC: false,
               useKittyKeyboard: {},
@@ -211,6 +212,53 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             destroyRenderer(renderer)
           }),
       )
+      // Adaptive streaming batch window. The SDK flushes SSE deltas on a short window
+      // (default 4ms); when a render pass can't keep up with the flush cadence, the main
+      // thread blocks and the flush loop collapses into the render-freeze. Widen the
+      // flush window so each flush batches more tokens (fewer, larger renders) and the
+      // loop keeps flowing; narrow back toward baseline once render passes are cheap.
+      // Measured via the actual render-pass duration (frameCallback start, postProcess end).
+      let renderStartMs = 0
+      renderer.setFrameCallback(() => {
+        renderStartMs = performance.now()
+        return Promise.resolve()
+      })
+      {
+        // Window-relative thresholds: widen when a render pass can't keep up with the
+        // current flush cadence (renderMs > window), narrow back when a render is cheap
+        // relative to the window (renderMs < window/4). Lowering the baseline window
+        // (STREAM_BATCH_MIN_MS) makes us hit the widen condition sooner, so the adaptive
+        // ramp is visible during streaming even at small content sizes.
+        const WIDEN_STREAK = 3
+        const NARROW_STREAK = 25
+        let wideStreak = 0
+        let narrowStreak = 0
+        renderer.addPostProcessFn(() => {
+          const windowMs = getStreamBatchWindow()
+          // Reasoning highlight is worker-based (invisible to main-thread renderMs); fold
+          // the ReasoningPart's load hint in so streaming slows when the worker is under
+          // pressure, keeping normal highlighting (drawUnstyledText=false) in sync.
+          const renderMs = Math.max(performance.now() - renderStartMs, getStreamLoadHintMs())
+          if (renderMs > windowMs) {
+            wideStreak += 1
+            narrowStreak = 0
+            if (wideStreak >= WIDEN_STREAK) {
+              setStreamBatchWindow(windowMs * 2)
+              wideStreak = 0
+            }
+          } else if (renderMs < windowMs / 4) {
+            narrowStreak += 1
+            wideStreak = 0
+            if (narrowStreak >= NARROW_STREAK) {
+              setStreamBatchWindow(windowMs / 2)
+              narrowStreak = 0
+            }
+          } else {
+            wideStreak = 0
+            narrowStreak = 0
+          }
+        })
+      }
       win32DisableProcessedInput()
       const keymap = createDefaultOpenTuiKeymap(renderer)
       yield* Effect.acquireRelease(
