@@ -580,6 +580,7 @@ export function Session() {
           sessionID: route.sessionID,
           modelID: selectedModel.modelID,
           providerID: selectedModel.providerID,
+          variant: local.model.variant.current(),
         })
         dialog.clear()
       },
