@@ -400,6 +400,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             const selected = this.selected()
             const configured = this.configured()
             const variants = this.list()
+            if (selected === "default") return undefined
             if (selected && variants.includes(selected)) return selected
             if (configured && variants.includes(configured)) return configured
             return undefined
