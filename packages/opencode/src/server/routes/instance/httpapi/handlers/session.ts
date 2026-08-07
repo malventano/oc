@@ -285,6 +285,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         model: {
           providerID: ctx.payload.providerID,
           modelID: ctx.payload.modelID,
+          variant: ctx.payload.variant,
         },
         auto: ctx.payload.auto ?? false,
       })

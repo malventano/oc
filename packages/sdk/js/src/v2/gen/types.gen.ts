@@ -10124,6 +10124,7 @@ export type SessionSummarizeData = {
   body?: {
     providerID: string
     modelID: string
+    variant?: string
     auto?: boolean
   }
   path: {
