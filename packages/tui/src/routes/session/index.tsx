@@ -41,7 +41,7 @@ import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import { useSDK } from "../../context/sdk"
+import { useSDK, setStreamBatchWindow, STREAM_BATCH_MIN_MS, setStreamLoadHintMs, STREAM_BATCH_MAX_MS } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
@@ -1326,6 +1326,7 @@ export function Session() {
                       disabled={disabled()}
                       onSubmit={() => {
                         toBottom()
+                        setStreamBatchWindow(STREAM_BATCH_MIN_MS)
                       }}
                       sessionID={route.sessionID}
                       right={<pluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
@@ -1605,6 +1606,24 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
+
+  // Slow the SDK flush window as the streaming reasoning body grows, so the tree-sitter
+  // worker (which re-highlights the growing body on each delta) can keep up without the
+  // highlight lag/toggle. Hint folds into the adaptive controller as extra render load.
+  createEffect(
+    on(
+      () => (isDone() ? "" : content()),
+      (c) => {
+        if (!c) {
+          setStreamLoadHintMs(0)
+          return
+        }
+        const body = summary().body?.length ?? 0
+        setStreamLoadHintMs(body < 4096 ? 0 : Math.min(STREAM_BATCH_MAX_MS, body / 1024))
+      },
+    ),
+  )
+  onCleanup(() => setStreamLoadHintMs(0))
 
   const toggle = () => {
     if (!inMinimal()) return
