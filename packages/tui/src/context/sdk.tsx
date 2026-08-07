@@ -2,10 +2,39 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { createSimpleContext } from "./helper"
-import { batch, onCleanup, onMount } from "solid-js"
+import { batch, createSignal, onCleanup, onMount } from "solid-js"
 
 export type EventSource = {
   subscribe: (handler: (event: GlobalEvent) => void) => Promise<() => void>
+}
+
+// Adaptive streaming batch window. Baseline 4ms (faster update cadence; hit the widen
+// condition sooner on high-refresh displays); the renderer controller widens it
+// when frames start exceeding the frame budget (approaching render lag) and narrows
+// it back toward baseline once frames stay within budget. Batching more tokens per
+// flush reduces render frequency, trading update smoothness for a responsive loop.
+export const STREAM_BATCH_MIN_MS = 4
+export const STREAM_BATCH_MAX_MS = 256
+const [streamBatchWindow, setStreamBatchWindowRaw] = createSignal(STREAM_BATCH_MIN_MS)
+export function setStreamBatchWindow(ms: number) {
+  setStreamBatchWindowRaw(Math.max(STREAM_BATCH_MIN_MS, Math.min(STREAM_BATCH_MAX_MS, ms)))
+}
+export function getStreamBatchWindow() {
+  return streamBatchWindow()
+}
+
+// Reasoning highlight load hint (ms). Reasoning renders via <code> CodeRenderable +
+// tree-sitter on a worker thread; the worker re-highlights the growing body per delta,
+// so fast streaming can overwhelm it (visible lag / highlight toggle). The ReasoningPart
+// sets this proportional to body size while streaming; the adaptive controller folds it
+// into its widen decision (treats it like extra render load) so the SDK flush window
+// widens and streaming slows enough for the highlight worker to keep up.
+let streamLoadHintMs = 0
+export function setStreamLoadHintMs(ms: number) {
+  streamLoadHintMs = Math.max(0, Math.min(STREAM_BATCH_MAX_MS, ms))
+}
+export function getStreamLoadHintMs() {
+  return streamLoadHintMs
 }
 
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
@@ -70,10 +99,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       const elapsed = Date.now() - last
 
       if (timer) return
-      // If we just flushed recently (within 16ms), batch this with future events
-      // Otherwise, process immediately to avoid latency
-      if (elapsed < 16) {
-        timer = setTimeout(flush, 16)
+      // If we just flushed recently (within the batch window), batch this with
+      // future events. Otherwise, process immediately to avoid latency.
+      if (elapsed < streamBatchWindow()) {
+        timer = setTimeout(flush, streamBatchWindow())
         return
       }
       flush()

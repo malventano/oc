@@ -41,7 +41,7 @@ export function createFadeIn(show: Accessor<boolean>, enabled: Accessor<boolean>
         const progress = Math.min((performance.now() - start) / 160, 1)
         setAlpha(progress * progress * (3 - 2 * progress))
         if (progress >= 1) clearInterval(timer)
-      }, 16)
+      }, 4)
 
       onCleanup(() => clearInterval(timer))
     }),
