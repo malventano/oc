@@ -24,26 +24,33 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   if (!userMessage) return input.messages
 
   if (!flags.experimentalPlanMode) {
+    // Persist mode-reminder parts onto the user message so replay is byte-identical
+    // across turns (zero prefix-cache negation). Guard against re-adding a part that is
+    // already persisted from a prior turn. See docs/PROMPT_ASSEMBLY_PREFIX_CACHE.md.
+    const hasPart = (text: string) =>
+      userMessage.parts.some((p) => p.type === "text" && p.text === text)
+    const upsertPart = Effect.fnUntraced(function* (text: string) {
+      if (hasPart(text)) return
+      const part = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: userMessage.info.id,
+        sessionID: userMessage.info.sessionID,
+        type: "text",
+        text,
+        synthetic: true,
+      })
+      userMessage.parts.push(part)
+    })
     if (input.agent.name === "plan") {
-      userMessage.parts.push({
-        id: PartID.ascending(),
-        messageID: userMessage.info.id,
-        sessionID: userMessage.info.sessionID,
-        type: "text",
-        text: PROMPT_PLAN,
-        synthetic: true,
-      })
+      yield* upsertPart(PROMPT_PLAN)
     }
-    const wasPlan = input.messages.some((msg) => msg.info.role === "assistant" && msg.info.agent === "plan")
+    // Only fire the build-switch notice when the immediately-preceding assistant was
+    // produced in plan mode (n-1), not merely because any earlier turn (n-x) was plan.
+    // This stops the reminder from recurring on every build turn after a switch.
+    const lastAssistantMsg = input.messages.findLast((msg) => msg.info.role === "assistant")
+    const wasPlan = lastAssistantMsg?.info.agent === "plan"
     if (wasPlan && input.agent.name === "build") {
-      userMessage.parts.push({
-        id: PartID.ascending(),
-        messageID: userMessage.info.id,
-        sessionID: userMessage.info.sessionID,
-        type: "text",
-        text: BUILD_SWITCH,
-        synthetic: true,
-      })
+      yield* upsertPart(BUILD_SWITCH)
     }
     return input.messages
   }
