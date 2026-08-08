@@ -30,8 +30,11 @@ export const PRUNE_PROTECT = 40_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
+<<<<<<< HEAD
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 15_000
+=======
+>>>>>>> feat(compaction): remove 2K/8K clamp from tail-retention budget
 
 // Appended to the injected summary prompt of the "inject" compaction method.
 // The method runs the summary turn through the normal agent loop with the
@@ -125,10 +128,7 @@ function completedCompactions(messages: SessionV1.WithParts[]) {
 }
 
 function preserveRecentBudget(input: { cfg: ConfigV1.Info; model: Provider.Model }) {
-  return (
-    input.cfg.compaction?.preserve_recent_tokens ??
-    Math.min(MAX_PRESERVE_RECENT_TOKENS, Math.max(MIN_PRESERVE_RECENT_TOKENS, Math.floor(usable(input) * 0.25)))
-  )
+  return input.cfg.compaction?.preserve_recent_tokens ?? Math.floor(usable(input) * 0.25)
 }
 
 function turns(messages: SessionV1.WithParts[]) {
