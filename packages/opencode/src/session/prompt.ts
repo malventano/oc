@@ -1083,6 +1083,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let compactingPrompt: string | undefined
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1107,6 +1108,40 @@ const layer = Layer.effect(
             lastAssistantMsg?.parts.some(
               (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
             ) ?? false
+
+          // "Inject"-method compaction turns finalize off the compaction marker
+          // (the assistant's parent), NOT the newest user message: a user prompt
+          // that races in while the compaction turn is in flight must not leave
+          // the compaction unfinalized, nor leak compactingPrompt into the next
+          // turn (which would re-inject the summary prompt and produce a second
+          // compaction for the raced-in prompt).
+          const lastAssistantInfo = lastAssistantMsg?.info as SessionV1.Assistant | undefined
+          const compactionParent =
+            lastAssistant &&
+            lastAssistant.finish &&
+            !["tool-calls"].includes(lastAssistant.finish) &&
+            !hasToolCalls
+              ? msgs.find((m) => m.info.role === "user" && m.info.id === lastAssistant.parentID)
+              : undefined
+          const pendingCompaction =
+            !!compactionParent &&
+            !!lastAssistant &&
+            compactionParent.parts.some((p) => p.type === "compaction") &&
+            !!lastAssistantInfo &&
+            !lastAssistantInfo.summary &&
+            !lastAssistantInfo.error
+
+
+          if (pendingCompaction) {
+            yield* compaction.finalize({
+              sessionID,
+              parentID: compactionParent.info.id,
+              assistantID: lastAssistant.id,
+              messages: msgs,
+            })
+            compactingPrompt = undefined
+            continue
+          }
 
           if (
             lastAssistant?.finish &&
@@ -1147,18 +1182,27 @@ const layer = Layer.effect(
           }
 
           if (task?.type === "compaction") {
-            const result = yield* compaction.process({
-              messages: msgs,
-              parentID: lastUser.id,
-              sessionID,
-              auto: task.auto,
-              overflow: task.overflow,
-            })
-            if (result === "stop") break
-            continue
+            // Endpoint-overflow compactions keep the legacy method: there is no
+            // room for a full-chain turn, so the head must be trimmed to fit.
+            if (task.overflow) {
+              const result = yield* compaction.process({
+                messages: msgs,
+                parentID: lastUser.id,
+                sessionID,
+                auto: task.auto,
+                overflow: true,
+              })
+              if (result === "stop") break
+              continue
+            }
+            // "Inject" method: build the injected summary prompt and run the
+            // compaction as a normal turn (full chain, regular system/tools).
+            // Falls through to the turn machinery below.
+            compactingPrompt = yield* compaction.prompt({ sessionID, messages: msgs })
           }
 
           if (
+            !compactingPrompt &&
             lastFinished &&
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
@@ -1177,18 +1221,23 @@ const layer = Layer.effect(
           }
           const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
-          msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
-            Effect.provideService(RuntimeFlags.Service, flags),
-            Effect.provideService(FSUtil.Service, fsys),
-            Effect.provideService(Session.Service, sessions),
-          )
+          // Compaction turns skip mode reminders: the injected summary prompt is
+          // the turn's content, and plan/build reminders target the last user
+          // message (the compaction marker) which must stay clean.
+          if (!compactingPrompt) {
+            msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
+              Effect.provideService(RuntimeFlags.Service, flags),
+              Effect.provideService(FSUtil.Service, fsys),
+              Effect.provideService(Session.Service, sessions),
+            )
+          }
 
           const msg: SessionV1.Assistant = {
             id: MessageID.ascending(),
             parentID: lastUser.id,
             role: "assistant",
-            mode: agent.name,
-            agent: agent.name,
+            mode: compactingPrompt ? "compaction" : agent.name,
+            agent: compactingPrompt ? "compaction" : agent.name,
             variant: lastUser.model.variant,
             path: { cwd: ctx.directory, root: ctx.worktree },
             cost: 0,
@@ -1249,6 +1298,22 @@ const layer = Layer.effect(
               })
             }
 
+            // Compaction turns keep the real tool schemas (they are encoded into
+            // the system prompt, so removing them would break the prefix cache)
+            // but stub out execution so an attempted tool call is harmlessly
+            // denied and the model continues toward the summary.
+            if (compactingPrompt) {
+              for (const [name, t] of Object.entries(tools)) {
+                tools[name] = tool({
+                  description: t.description,
+                  inputSchema: t.inputSchema,
+                  execute: async () => ({
+                    output: "Tool calls are disabled during compaction. Output the summary directly.",
+                  }),
+                })
+              }
+            }
+
             if (step === 1)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
@@ -1261,6 +1326,16 @@ const layer = Layer.effect(
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
+            // "Inject"-method compaction: the last rendered user message (the
+            // compaction marker) is replaced in the request by the injected
+            // summary prompt, keeping the entire preceding chain byte-identical
+            // to the cached prefix.
+            if (compactingPrompt) {
+              const lastUserIdx = modelMsgs.findLastIndex((m) => m.role === "user")
+              if (lastUserIdx >= 0) {
+                modelMsgs[lastUserIdx] = { role: "user", content: [{ type: "text", text: compactingPrompt }] }
+              }
+            }
             const system = [
               ...env,
               ...instructions,
@@ -1278,7 +1353,7 @@ const layer = Layer.effect(
               system,
               messages: [
                 ...modelMsgs,
-                ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
+                ...(isLastStep && !compactingPrompt ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
               tools,
               model,
@@ -1316,15 +1391,44 @@ const layer = Layer.effect(
               }
             }
 
-            if (result === "stop") return "break" as const
+            if (result === "stop") {
+              // "Inject"-method compaction failed (e.g. provider error): fall
+              // back to the legacy method with the clean pre-compaction slate.
+              if (compactingPrompt && handle.message.error) {
+                yield* compaction.process({
+                  messages: msgs,
+                  parentID: lastUser.id,
+                  sessionID,
+                  auto: task?.type === "compaction" ? task.auto : true,
+                  overflow: false,
+                })
+                compactingPrompt = undefined
+                return "continue" as const
+              }
+              return "break" as const
+            }
             if (result === "compact") {
-              yield* compaction.create({
-                sessionID,
-                agent: lastUser.agent,
-                model: lastUser.model,
-                auto: true,
-                overflow: !handle.message.finish,
-              })
+              // "Inject"-method compaction overflowed the endpoint: fall back to
+              // the legacy method (trimmed head) as if starting compaction anew.
+              if (compactingPrompt) {
+                yield* compaction.process({
+                  messages: msgs,
+                  parentID: lastUser.id,
+                  sessionID,
+                  auto: task?.type === "compaction" ? task.auto : true,
+                  overflow: false,
+                })
+                compactingPrompt = undefined
+              } else {
+                yield* compaction.create({
+                  sessionID,
+                  agent: lastUser.agent,
+                  model: lastUser.model,
+                  auto: true,
+                  overflow: !handle.message.finish,
+                })
+              }
+              return "continue" as const
             }
             return "continue" as const
           }).pipe(
