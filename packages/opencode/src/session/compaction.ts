@@ -32,6 +32,17 @@ const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
+
+// Appended to the injected summary prompt of the "inject" compaction method.
+// The method runs the summary turn through the normal agent loop with the
+// session's real tool schemas (required for prefix-cache byte identity), so
+// these lines steer the model toward emitting the summary directly instead.
+const INJECT_NOTES = [
+  "Do not call any tools. Output only the summary.",
+  "Keep the summary under ~4000 tokens.",
+  "Use minimal reasoning; output the summary directly.",
+  "The most recent turns will be retained verbatim; do not summarize them.",
+].join("\n")
 type Turn = {
   start: number
   end: number
@@ -182,6 +193,13 @@ export interface Interface {
     model: { providerID: ProviderV2.ID; modelID: ModelV2.ID; variant?: string }
     auto: boolean
     overflow?: boolean
+  }) => Effect.Effect<void>
+  readonly prompt: (input: { sessionID: SessionID; messages: SessionV1.WithParts[] }) => Effect.Effect<string>
+  readonly finalize: (input: {
+    sessionID: SessionID
+    parentID: MessageID
+    assistantID: MessageID
+    messages: SessionV1.WithParts[]
   }) => Effect.Effect<void>
 }
 
@@ -549,6 +567,110 @@ const layer = Layer.effect(
       return result
     })
 
+    const prompt = Effect.fn("SessionCompaction.prompt")(function* (input: {
+      sessionID: SessionID
+      messages: SessionV1.WithParts[]
+    }) {
+      const prior = completedCompactions(input.messages)
+      const previousSummary = prior.at(-1)?.summary
+      const compacting = yield* plugin.trigger(
+        "experimental.session.compacting",
+        { sessionID: input.sessionID },
+        { context: [], prompt: undefined },
+      )
+      const base = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
+      return `${base}\n\n${INJECT_NOTES}`
+    })
+
+    // Marks a completed "inject"-method compaction: flags the final assistant
+    // as the summary, computes the retained tail, and queues the auto-continue.
+    const finalize = Effect.fn("SessionCompaction.finalize")(function* (input: {
+      sessionID: SessionID
+      parentID: MessageID
+      assistantID: MessageID
+      messages: SessionV1.WithParts[]
+    }) {
+      const parent = input.messages.find((m) => m.info.id === input.parentID)
+      const assistant = input.messages.find((m) => m.info.id === input.assistantID)
+      if (!parent || parent.info.role !== "user" || !assistant) return
+      const compactionPart = parent.parts.find(
+        (part): part is SessionV1.CompactionPart => part.type === "compaction",
+      )
+      if (!compactionPart) return
+
+      yield* session.updateMessage({
+        ...(assistant.info as SessionV1.Assistant),
+        summary: true,
+        agent: "compaction",
+        mode: "compaction",
+      })
+
+      const cfg = yield* config.get()
+      const model = yield* provider.getModel(parent.info.model.providerID, parent.info.model.modelID).pipe(Effect.orDie)
+      const history = input.messages.filter((m) => m.info.id < input.parentID)
+      const prior = completedCompactions(history)
+      const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
+      const selected = yield* select({
+        messages: history.filter((_, index) => !hidden.has(index)),
+        cfg,
+        model,
+      })
+      if (selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+        yield* session.updatePart({
+          ...compactionPart,
+          tail_start_id: selected.tail_start_id,
+        })
+      }
+
+      if (compactionPart.auto) {
+        const info = yield* provider.getProvider(parent.info.model.providerID)
+        if (
+          (yield* plugin.trigger(
+            "experimental.compaction.autocontinue",
+            {
+              sessionID: input.sessionID,
+              agent: parent.info.agent,
+              model,
+              provider: {
+                source: info.source,
+                info,
+                options: info.options,
+              },
+              message: parent.info,
+              overflow: false,
+            },
+            { enabled: true },
+          )).enabled
+        ) {
+          const continueMsg = yield* session.updateMessage({
+            id: MessageID.ascending(),
+            role: "user",
+            sessionID: input.sessionID,
+            time: { created: Date.now() },
+            agent: parent.info.agent,
+            model: parent.info.model,
+          })
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: continueMsg.id,
+            sessionID: input.sessionID,
+            type: "text",
+            // Internal marker for auto-compaction followups so provider plugins
+            // can distinguish them from manual post-compaction user prompts.
+            metadata: { compaction_continue: true },
+            synthetic: true,
+            text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+            time: {
+              start: Date.now(),
+              end: Date.now(),
+            },
+          })
+        }
+      }
+
+      yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
+    })
+
     const create = Effect.fn("SessionCompaction.create")(function* (input: {
       sessionID: SessionID
       agent: string
@@ -579,6 +701,8 @@ const layer = Layer.effect(
       prune,
       process: processCompaction,
       create,
+      prompt,
+      finalize,
     })
   }),
 )
