@@ -1,129 +1,82 @@
-<p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
-  </a>
-</p>
-<p align="center">The open source AI coding agent.</p>
-<p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
-</p>
+# oc: Custom Build of opencode
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
-</p>
+This repository is **oc**, a custom fork of [opencode](https://github.com/anomalyco/opencode) maintained for personal use. It tracks upstream opencode (currently based on the `v1.18.15` tag, 25 commits ahead) and is rebased onto new upstream releases as they land. There is no prebuilt binary and no published package: installing `opencode` from npm/bun gets the stock upstream build with none of these changes. The repo contains everything needed to build the patched version (full source + `bun.lock`; `dist/` and `node_modules/` are generated, not stored).
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+## Build
 
----
+Requires only `bun`:
 
-### Installation
+    git clone https://github.com/malventano/oc && cd oc
+    bun install
+    cd packages/opencode
+    OPENCODE_VERSION=1.18.14-oc bun run script/build.ts --single --skip-install --skip-embed-web-ui
+    cp dist/opencode-linux-x64/bin/oc /usr/local/bin/oc
 
-```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
+- `--skip-embed-web-ui` is required: v1.18.5+ app Rollup cannot resolve `@opencode-ai/client/promise` (upstream dep issue, not ours); plain `bun run build` fails on it.
+- Keep the `-oc` suffix in `OPENCODE_VERSION`: the autoupdate-disable patch (and `oc upgrade` message) key off it. Any `<tag>-oc` version works; `1.18.14-oc` matches this base.
+- `OPENCODE_VERSION` also pins the channel to `latest`, which keeps the session DB at the standard `~/.local/share/opencode/opencode.db` (shared with stock opencode). Building WITHOUT it puts the branch name in the channel and the DB becomes `opencode-<branch>.db` (e.g. `opencode-main.db`): a separate empty database, so no existing sessions appear and new ones land in the wrong file.
+- The built binary is `dist/opencode-linux-x64/bin/oc` (named `oc`, unlike upstream's `opencode`).
 
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
-```
+## What the custom patches fix / add
 
-> [!TIP]
-> Remove versions older than 0.1.x before installing.
+### Build & identity
+- Built artifact named `oc`; CLI rebranded (OC logo, `oc` command name, oc-specific tips)
+- **Auto-update disabled**: custom builds never query the upstream release channel (no npm/GitHub fetch at startup, no auto-replace of the binary); `oc upgrade` prints "custom build, update from its source repo" and exits
 
-### Desktop App (BETA)
+### Compaction & KV-cache efficiency
+- **Inject-method compaction**: the `/compact` summary turn runs as a normal turn with the summary prompt injected as the final user message, keeping the request chain byte-identical to the cached prefix; the summary turn hits ~98% of the KV prefix cache instead of a full miss
+- **Tail retention**: the last N full turns are kept verbatim post-compaction (`tail_turns`, default 2), with the retention budget no longer clamped (recent turns survive fully)
+- Reasoning part type preserved on model switch (keeps the prompt byte-identical → cache hit)
+- Mode reminders persisted; build-switch gated to the n-1 assistant turn (byte-identical prompts)
 
-OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
+### Variants & model control
+- Variant overrides retained per model, shared across agents/modes (set `max` in plan, it stays `max` after toggling to build); legacy agent-scoped keys migrated on use
+- Opening an old session no longer restores its stale model/variant; the model resolves to the agent config default
+- Variant cycle fixes: explicit-off treated as a real cycle position; current variant passed through manual `/compact`
+- vLLM thinking control via `chat_template_kwargs` + MTP-safe body flatten (excludes `min_p`/`logit_bias`, which speculative decoding rejects)
+- `reasoning_tokens` fallback for glm45-family parsers that omit `completion_tokens_details.reasoning_tokens`
+- `maxOutputTokens`: provider `limit.output` authoritative, hard 32K cap fallback removed
 
-| Platform              | Download                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
 
-```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
-```
+### TUI
+- Subagent costs aggregated into the sidebar spent total (with placeholder-session-ID guard)
+- Message pruning on prompt submit instead of during streaming (no viewport jumps while scrolled up)
+- Session directory filter: non-git sessions scoped by directory, not hierarchical path
+- Footbar: session-cwd directory label (home `~`-abbreviated), session title, cost DFS, path-first order
+- Adaptive refresh cadence + reduced render lag
+- Footbar spacing/order polish
 
-#### Installation Directory
+### Session directory scoping & DB path repair
 
-The install script respects the following priority order for the installation path:
+Sessions are scoped to the directory they were launched in: oc shows a session only when the current working directory matches its stored launch directory (git projects match hierarchically by path relative to the worktree; non-git sessions match by exact directory, the behavior of our session-directory-filter work, PR #31210 / patch 0004). Sessions launched in a different directory do not appear in the list.
 
-1. `$OPENCODE_INSTALL_DIR` - Custom installation directory
-2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
-3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
-4. `$HOME/.opencode/bin` - Default fallback
+The stored directory can also diverge from the original launch path: when a session's directory becomes part of a git repo (or a project is initialized there), the session row can be reassigned to that project, so it stops showing under the original context. If sessions are missing, restore the stored paths to the original launch directories.
 
-```bash
-# Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
-```
+The session database is SQLite at `~/.local/share/opencode/opencode.db`. Inspect:
 
-### Agents
+    sqlite3 ~/.local/share/opencode/opencode.db \
+      "SELECT id, title, directory, path, project_id FROM session ORDER BY time_updated DESC;"
 
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
+Restore a session to its original launch directory:
 
-- **build** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Asks permission before running bash commands
-  - Ideal for exploring unfamiliar codebases or planning changes
+    sqlite3 ~/.local/share/opencode/opencode.db \
+      "UPDATE session SET directory = '/original/launch/dir', path = substr('/original/launch/dir', 2), project_id = 'global' WHERE id = '<session-id>';"
 
-Also included is a **general** subagent for complex searches and multistep tasks.
-This is used internally and can be invoked using `@general` in messages.
+- `path` mirrors `directory`: for non-git sessions it is the launch directory relative to `/` with the leading slash stripped (e.g. `directory = /home/user/proj` → `path = home/user/proj`). This is the value the session filter matches against, so it must stay in sync with `directory`; do NOT set it to NULL (NULL-path sessions never match the TUI filter)
+- `project_id` is `'global'` for non-git directories. If a session was reassigned into a git project, restore it. Sessions genuinely launched inside a git repo keep their project-specific `project_id` and worktree-relative `path`; resetting those hides them from the repo's session list
+- If a whole tree moved (renamed parent), rewrite both columns in bulk:
 
-Learn more about [agents](https://opencode.ai/docs/agents).
+    sqlite3 ~/.local/share/opencode/opencode.db \
+      "UPDATE session SET directory = REPLACE(directory, '/old/parent', '/new/parent'), path = REPLACE(path, 'old/parent', 'new/parent') WHERE directory LIKE '/old/parent%';"
 
-### Documentation
+oc does not need to be stopped: you can direct oc to run these queries itself (the session database is live SQLite and the session list re-reads it). If a session is currently open in the TUI, reopen it to refresh its view.
 
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
+**Optional: redo every session in the DB** (regenerates the filter `path` from each session's stored `directory`, undoing any stale or munged path values):
 
-### Contributing
+    sqlite3 ~/.local/share/opencode/opencode.db \
+      "UPDATE session SET path = substr(directory, 2) WHERE project_id = 'global' AND directory != '/';"
 
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
+This applies to all non-git sessions (project `global`): their `path` is the launch directory relative to `/` (leading slash stripped, e.g. `directory = /home/user/proj` becomes `path = home/user/proj`), which is what the session filter matches against. Run it after correcting `directory` values. It is also the backfill for legacy rows: sessions created before opencode 2026-04-28 (migration `add_session_path` added the column without backfill) have `path = NULL` and never match the filter; this command fills them in. Idempotent: already-correct paths are rewritten to the same value. **Sessions started inside a git repo are intentionally NOT touched**: they carry a project-specific `project_id` and a worktree-relative `path`, and resetting either would hide them from the repo's session list. Verify with:
 
-### Building on OpenCode
-
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
-
----
-
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+    sqlite3 ~/.local/share/opencode/opencode.db \
+      "SELECT path, COUNT(*) FROM session WHERE project_id = 'global' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 10;"
