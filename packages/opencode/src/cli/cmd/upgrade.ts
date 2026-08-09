@@ -25,6 +25,11 @@ export const UpgradeCommand = {
     UI.println(UI.logo("  "))
     UI.empty()
     prompts.intro("Upgrade")
+    if (InstallationVersion.endsWith("-oc")) {
+      prompts.log.info("oc is a custom build; update it from its source repo (git pull/rebuild), not from the opencode release channel")
+      prompts.outro("Nothing to do")
+      return
+    }
     const detectedMethod = await Installation.method()
     const method = (args.method as Installation.Method) ?? detectedMethod
     if (method === "unknown") {
