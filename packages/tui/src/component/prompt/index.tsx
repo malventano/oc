@@ -263,7 +263,6 @@ export function Prompt(props: PromptProps) {
 
   const usage = createMemo(() => {
     if (!props.sessionID) return
-    const session = sync.session.get(props.sessionID)
     const msg = sync.data.message[props.sessionID] ?? []
     const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
     if (!last) return
@@ -274,7 +273,16 @@ export function Prompt(props: PromptProps) {
 
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
-    const cost = session?.cost ?? 0
+    let cost = 0
+    {
+      let stack = [props.sessionID]
+      while (stack.length > 0) {
+        const id = stack.pop()!
+        const s = sync.session.get(id)
+        if (s != null) cost += s.cost ?? 0
+        stack.push(...sync.data.session.filter((x) => x.parentID === id).map((c) => c.id))
+      }
+    }
     return {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
       cost: cost > 0 ? money.format(cost) : undefined,
