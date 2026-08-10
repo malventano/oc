@@ -80,3 +80,16 @@ This applies to all non-git sessions (project `global`): their `path` is the lau
 
     sqlite3 ~/.local/share/opencode/opencode.db \
       "SELECT path, COUNT(*) FROM session WHERE project_id = 'global' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 10;"
+
+## Plugins & tools
+
+This repo also ships the opencode plugins and plugin tools used by oc. Copy them into your opencode config directory and restart opencode to enable them:
+
+- [`plugins/`](plugins/): loop guard, time stamps, tool safety guardrails (see [`plugins/README.md`](plugins/README.md))
+- [`tools/`](tools/): file_edit, session DB tools, skill_metadata, tmux, void_output (see [`tools/README.md`](tools/README.md))
+
+Both folders are standalone: no build or config changes needed, just copy and restart opencode.
+
+## Repository layout
+
+This repo is a lean snapshot of the upstream opencode release (upstream-specific CI, dogfood config, community docs, and deploy tooling are stripped) plus the oc patch series. `lean-base.sh` regenerates the snapshot from a new upstream tag; `main` is a derived artifact and force-pushes are the normal update path.
