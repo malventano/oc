@@ -4,6 +4,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
+import { hashlineLine } from "./hashline"
+import { readForSnapshot, recordSnapshot } from "./hashline-store"
 import DESCRIPTION from "./grep.txt"
 import * as Tool from "./tool"
 
@@ -93,12 +95,23 @@ export const GrepTool = Tool.define(
               current = match.path
               output.push(`${match.path}:`)
             }
-            output.push(`  Line ${match.line}: ${match.text}`)
+            output.push(`  ${hashlineLine(match.line, match.text)}`)
           }
 
           if (truncated) {
             output.push("")
             output.push("(Results truncated. Consider using a more specific path or pattern.)")
+          }
+
+          const seenByPath = new Map<string, number[]>()
+          for (const match of final) {
+            const list = seenByPath.get(match.path)
+            if (list) list.push(match.line)
+            else seenByPath.set(match.path, [match.line])
+          }
+          for (const [p, lines] of seenByPath) {
+            const text = yield* readForSnapshot(fs, p)
+            if (text !== undefined) recordSnapshot(p, text, lines)
           }
 
           return {

@@ -166,7 +166,7 @@ describe("tool.grep", () => {
       )
       expect(result.metadata.matches).toBe(1)
       expect(result.output).toContain(file)
-      expect(result.output).toContain("Line 2: line2")
+      expect(result.output).toMatch(/2#[A-Z]{2}:line2/)
     }),
   )
 
