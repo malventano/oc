@@ -9,7 +9,7 @@ Custom opencode plugins used by the oc build. Copy the files into your opencode 
 | File | What it does |
 |------|--------------|
 | `loop-guard.ts` | Loop detection on both channels (thinking + output text). Detects generic repetition signatures and interrupts infinite thinking/text loops. Ported from omp / oh-my-pi `thinking-loop.ts` (MIT). |
-| `time-context.js` | Appends an ISO-8601 timestamp with local offset to tool outputs (`<system-reminder>` stamp), giving the model time awareness across tool calls. |
+| `time-context.js` | **REMOVED (patch 0027)** — behavior built into the oc binary: per-user-message local-ISO stamps + per-tool-output UTC stamps via `src/session/time-context.ts`; no plugin needed. |
 | `tool-refine.ts` | Safety guardrails on tool calls: blocks `pkill -f` and other patterns that kill the bash tool's own process, forces `backup: true` on file_edit write operations, and injects safe-alternative guidance for destructive commands. |
 
 Requires opencode v1.x. Type-only imports from `@opencode-ai/plugin`; no other dependencies.

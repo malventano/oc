@@ -15,6 +15,7 @@ import type { TaskPromptOps } from "@/tool/task"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
 import { Effect } from "effect"
 import { MessageV2 } from "./message-v2"
+import { TimeContext } from "./time-context"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
@@ -123,6 +124,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID, args },
               output,
             )
+TimeContext.stampToolOutput(output)
             if (options.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(options.toolCallId, output)
             }
@@ -210,6 +212,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: MCP_RESOURCE_TOOLS.list, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
               output,
             )
+TimeContext.stampToolOutput(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -293,6 +296,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: MCP_RESOURCE_TOOLS.listTemplates, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
               output,
             )
+TimeContext.stampToolOutput(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -375,6 +379,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: MCP_RESOURCE_TOOLS.read, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
               output,
             )
+TimeContext.stampToolOutput(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -422,6 +427,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
             result,
           )
+TimeContext.stampToolOutput(result)
 
           const textParts: string[] = []
           const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []

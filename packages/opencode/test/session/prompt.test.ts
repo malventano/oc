@@ -1492,7 +1492,11 @@ it.instance("prompt submitted during an active run is included in the next LLM i
     expect(inputs).toHaveLength(2)
     const messages = inputs.at(-1)?.messages
     if (!Array.isArray(messages)) throw new Error("expected LLM messages")
-    expect(messages.at(-1)).toEqual({ role: "user", content: "second" })
+    const lastMsg = messages.at(-1)
+    expect(lastMsg?.role).toBe("user")
+    expect(typeof lastMsg?.content).toBe("string")
+    expect(lastMsg?.content).toContain("second")
+    expect(lastMsg?.content).toMatch(/<system-reminder>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}<\/system-reminder>$/)
   }),
 )
 
