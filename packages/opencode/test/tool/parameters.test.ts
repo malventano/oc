@@ -120,20 +120,34 @@ describe("tool parameters", () => {
   })
 
   describe("edit", () => {
-    test("accepts all four fields", () => {
-      expect(parse(Edit, { filePath: "/a", oldString: "x", newString: "y", replaceAll: true })).toEqual({
+    test("accepts filePath with edits", () => {
+      expect(parse(Edit, { filePath: "/a", edits: [{ type: "append", text: "y" }] })).toEqual({
         filePath: "/a",
-        oldString: "x",
-        newString: "y",
-        replaceAll: true,
+        edits: [{ type: "append", text: "y" }],
       })
     })
-    test("replaceAll is optional", () => {
-      const parsed = parse(Edit, { filePath: "/a", oldString: "x", newString: "y" })
-      expect(parsed.replaceAll).toBeUndefined()
+    test("edits is optional", () => {
+      const parsed = parse(Edit, { filePath: "/a", delete: true })
+      expect(parsed.edits).toBeUndefined()
     })
-    test("rejects missing filePath", () => {
-      expect(accepts(Edit, { oldString: "x", newString: "y" })).toBe(false)
+    test("filePath is optional to allow files batch mode", () => {
+      const parsed = parse(Edit, { files: [{ filePath: "/a", edits: [{ type: "append", text: "x" }] }] })
+      expect(parsed.files?.[0].filePath).toBe("/a")
+    })
+    test("accepts cut/paste register ops", () => {
+      const parsed = parse(Edit, {
+        filePath: "/a",
+        edits: [
+          { type: "cut", start_line: "1#AB", end_line: "2#CD", register: "fn" },
+          { type: "paste", insert_after_line: "4#EF", register: "fn" },
+        ],
+      })
+      expect(parsed.edits).toHaveLength(2)
+    })
+    test("legacy payload keys are stripped by the schema", () => {
+      const parsed = parse(Edit, { filePath: "/a", oldString: "x", newString: "y" })
+      expect(parsed).toEqual({ filePath: "/a" })
+      expect(parsed.edits).toBeUndefined()
     })
   })
 

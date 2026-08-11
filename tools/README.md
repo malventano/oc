@@ -4,11 +4,10 @@ Custom opencode plugin tools used by the oc build. Copy the files into your open
 
     cp tools/*.js ~/.config/opencode/tools/
 
-(or `.opencode/tools/` for project scope). Tools in the config directory are auto-discovered, no config entry needed.
+(or `.opencode/tools/` for project scope). Tools in the config directory are auto-discovered, no config entry needed. `file_edit.js` was retired 2026-08-11: its capabilities (batch, cut/paste registers, boundary previews, summary mode) merged into the built-in hashline edit tool (patch 0026).
 
 | File | What it does |
 |------|--------------|
-| `file_edit.js` | Line-based file transforms: read, insert, append, delete, replace, move, extractToFile, multi-file batch. Anchor verification + boundary preview to catch line-number miscounting. Backs up files before writes. |
 | `sessions_query.js` | Raw SQLite access to the opencode session DB: query, list-tables, describe-table, execute, transaction, checkpoint, backup. |
 | `sessions_browse.js` | Read-only session DB browsing: recent sessions, session info, messages, tool calls, text search. |
 | `sessions_manage.js` | Session DB write ops: duplicate, split, fix-paths, unarchive, reassign-project (all require `confirm: "yes"`). |

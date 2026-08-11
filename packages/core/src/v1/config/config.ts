@@ -185,6 +185,14 @@ export const Info = Schema.Struct({
       policies: Schema.optional(Schema.mutable(Schema.Array(ConfigExperimental.Policy))).annotate({
         description: "Policy statements applied to supported resources, such as provider access",
       }),
+      hashline_autocorrect: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Clean up copied LINE#ID:/>>> prefixes in hashline edit payloads (default true; set false to disable)",
+      }),
+      hashline_seen_lines: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Reject hashline edits referencing lines never displayed by read/search (default true; set false to disable)",
+      }),
     }),
   ),
 }).annotate({ identifier: "Config" })
