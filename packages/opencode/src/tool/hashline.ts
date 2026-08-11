@@ -472,6 +472,7 @@ export function applyHashlineEdits(input: {
   const lines = [...input.lines]
   const originalLines = [...input.lines]
   let trailing = input.trailing
+  const notes: string[] = []
   const refs: Array<{ raw: string; line: number; id: string }> = []
   const replaceOps: Array<Extract<HashlineEdit, { type: "replace" }>> = []
   const ops: Splice[] = []
@@ -523,9 +524,23 @@ export function applyHashlineEdits(input: {
       refs.push(line)
       const text = parseText(edit.text)
       if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[line.line - 1])) {
-        throw new Error(
-          `set_line.text[0] duplicates the anchor line (line ${line.line}: ${lines[line.line - 1]}). set_line REPLACES the line — do not repeat its content; pass only the new content. To keep the line and insert new content after it, use insert_after.`,
-        )
+        if (text.length <= 1) {
+          throw new Error(
+            `set_line.text repeats the anchor line (line ${line.line}) with no new content — ambiguous (keep as-is vs delete). To keep the line and add content after it, use insert_after with the new content.`,
+          )
+        }
+        ops.push({
+          start: line.line,
+          del: 0,
+          text: text.slice(1),
+          order,
+          kind: "insert_after",
+          sortLine: line.line,
+          precedence: 1,
+          anchorLine: line.line,
+        })
+        notes.push(`stripped echoed first line (line ${line.line}): set_line treated as insert_after`)
+        return
       }
       ops.push({
         start: line.line - 1,
@@ -553,9 +568,38 @@ export function applyHashlineEdits(input: {
 
       const text = parseText(edit.text)
       if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[start.line - 1])) {
-        throw new Error(
-          `replace_lines.text[0] duplicates the range's first line (line ${start.line}: ${lines[start.line - 1]}). Do not repeat the replaced line's content; pass only the new content. To keep the range's first line and insert after it, use insert_after; to keep it as part of the replacement, start the range at the first differing line.`,
-        )
+        if (text.length <= 1) {
+          throw new Error(
+            `replace_lines.text repeats the range's first line (line ${start.line}) with no new content — ambiguous. To keep the range's first line, start the range at the first differing line; to keep the line and insert after it, use insert_after.`,
+          )
+        }
+        if (start.line === end.line) {
+          ops.push({
+            start: start.line,
+            del: 0,
+            text: text.slice(1),
+            order,
+            kind: "insert_after",
+            sortLine: start.line,
+            precedence: 1,
+            anchorLine: start.line,
+          })
+          notes.push(`stripped echoed first line (line ${start.line}): single-line replace_lines treated as insert_after`)
+        } else {
+          ops.push({
+            start: start.line,
+            del: end.line - start.line,
+            text: text.slice(1),
+            order,
+            kind: "replace_lines",
+            sortLine: end.line,
+            precedence: 0,
+            startLine: start.line + 1,
+            endLine: end.line,
+          })
+          notes.push(`stripped echoed first line (line ${start.line}): range now starts at line ${start.line + 1}`)
+        }
+        return
       }
       ops.push({
         start: start.line - 1,
@@ -682,6 +726,7 @@ export function applyHashlineEdits(input: {
   return {
     lines,
     trailing,
+    notes,
   }
 }
 
