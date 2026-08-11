@@ -324,23 +324,29 @@ export function Prompt(props: PromptProps) {
   createEffect(() => {
     const sessionID = props.sessionID
     const msg = lastUserMessage()
+    const agentList = local.agent.list()
 
     if (sessionID !== syncedSessionID) {
       if (!sessionID || !msg) return
 
+      // Latch only after a successful restore: the agent list may not be loaded
+      // yet when the messages arrive, and with an empty list isPrimaryAgent is
+      // false so the restore is skipped — the agent would stay at the config
+      // default (first agent, e.g. "plan") instead of the session's last agent.
+      // Tracking the list here re-runs this effect once the agents resolve.
+      const isPrimaryAgent = agentList.some((x) => x.name === msg.agent)
+      if (!msg.agent || !isPrimaryAgent) return
       syncedSessionID = sessionID
 
       // Only set agent if it's a primary agent (not a subagent).
       // Restore the plan/build agent from the session, but NOT its model or variant: the
       // selected model should resolve to the agent's configured default (falling back to a
       // manual in-run pick), not the model that happened to be saved in an old session.
-      const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
-      if (msg.agent && isPrimaryAgent) {
-        // Keep command line --agent if specified.
-        if (!args.agent) local.agent.set(msg.agent)
-      }
+      // Keep command line --agent if specified.
+      if (!args.agent) local.agent.set(msg.agent)
     }
   })
+
 
   const promptCommands = createMemo(() =>
     [
