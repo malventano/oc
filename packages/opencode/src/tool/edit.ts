@@ -234,18 +234,27 @@ export const EditTool = Tool.define(
         if (message.includes('at ["edits"]') && message.includes('got "')) {
           return "edits must be a JSON array of op objects — a quoted/escaped JSON string was passed; emit the array directly without stringifying (edits: [{ type: \"set_line\", line: ..., text: ... }, ...])."
         }
-        const hint = message.includes('"filePath"')
-          ? " a section-shaped object ({ filePath, edits }) is only valid as an element of the top-level files array — multi-file calls use files: [{ filePath, edits }, ...]; the single-file form takes only filePath/edits/delete/rename."
-          : message.includes('"start_line"')
-            ? " replace_lines/cut require BOTH start_line and end_line (LINE#ID refs) — use set_line for a single line."
-            : message.includes("insert_after_line") || message.includes("insert_before_line")
-              ? " insert_between uses insert_after_line and insert_before_line (LINE#ID refs); insert_after/insert_before use a single line field."
-              : message.includes("got null")
-                ? " anchor fields must be LINE#ID strings like 12#AB — null/omitted anchors are invalid; set_line/insert_after/insert_before require a line field; paste uses insert_after_line/insert_before_line."
-                : message.includes("type")
-                  ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
-                  : ""
-        return `Invalid parameters for tool 'edit': ${message}${hint}`
+        // Schema dumps echo the full payload; retries regenerate it broken. Keep the
+        // error small (see BUG_EDIT_ESCAPE_PAYLOAD.md).
+        const full = message
+        const truncated = full.length > 700 ? `${full.slice(0, 400)} ... [payload truncated] ... ${full.slice(-120)}` : full
+        const got = full.match(/got (\{[\s\S]*\})\s+at \[/)?.[1]
+        const opLevel = /at \["(?:edits|files)"\]\[\d/.test(full)
+        const missingType = opLevel && got !== undefined && !got.includes('"type"') && !got.includes('"filePath"')
+        const hint = missingType
+          ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
+          : message.includes('"filePath"')
+            ? " a section-shaped object ({ filePath, edits }) is only valid as an element of the top-level files array — multi-file calls use files: [{ filePath, edits }, ...]; the single-file form takes only filePath/edits/delete/rename."
+            : message.includes('"start_line"')
+              ? " replace_lines/cut require BOTH start_line and end_line (LINE#ID refs) — use set_line for a single line."
+              : message.includes("insert_after_line") || message.includes("insert_before_line")
+                ? " insert_between uses insert_after_line and insert_before_line (LINE#ID refs); insert_after/insert_before use a single line field."
+                : message.includes("got null")
+                  ? " anchor fields must be LINE#ID strings like 12#AB — null/omitted anchors are invalid; set_line/insert_after/insert_before require a line field; paste uses insert_after_line/insert_before_line."
+                  : message.includes("type")
+                    ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
+                    : ""
+        return `Invalid parameters for tool 'edit': ${truncated}${hint}`
       },
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
