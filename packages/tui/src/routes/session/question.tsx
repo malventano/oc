@@ -3,6 +3,7 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import { useRenderer } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
+import { useLocal } from "../../context/local"
 import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
@@ -17,6 +18,11 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
+  const local = useLocal()
+  const agentColor = createMemo(() => {
+    const agent = local.agent.current()
+    return agent ? local.agent.color(agent.name) : theme.accent
+  })
 
   const questions = createMemo(() => props.request.questions)
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
@@ -44,6 +50,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     if (!value) return false
     return store.answers[store.tab]?.includes(value) ?? false
   })
+  const allAnswered = createMemo(() => questions().every((_, i) => (store.answers[i]?.length ?? 0) > 0))
 
   function submit() {
     const answers = questions().map((_, i) => store.answers[i] ?? [])
@@ -100,6 +107,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   function selectTab(index: number) {
     setStore("tab", index)
     setStore("selected", 0)
+    setStore("editing", false)
   }
 
   function selectOption() {
@@ -213,7 +221,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
 
     return {
       mode: QUESTION_MODE,
-      enabled: !store.editing,
+      enabled: !store.editing || confirm(),
       commands: [
         {
           name: "app.exit",
@@ -239,14 +247,31 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         },
         { key: "right", desc: "Next question", group: "Question", cmd: () => selectTab((store.tab + 1) % tabs()) },
         { key: "l", desc: "Next question", group: "Question", cmd: () => selectTab((store.tab + 1) % tabs()) },
-        {
-          key: "tab",
-          desc: "Next question",
-          group: "Question",
-          cmd: ({ event }: { event: { shift: boolean } }) => {
-            selectTab((store.tab + (event.shift ? -1 : 1) + tabs()) % tabs())
-          },
-        },
+        ...(single() || (confirm() && allAnswered())
+          ? [
+              {
+                key: "tab",
+                desc: "Next agent",
+                group: "Question",
+                cmd: () => local.agent.move(1),
+              },
+              {
+                key: "shift+tab",
+                desc: "Previous agent",
+                group: "Question",
+                cmd: () => local.agent.move(-1),
+              },
+            ]
+          : [
+              {
+                key: "tab",
+                desc: "Next question",
+                group: "Question",
+                cmd: ({ event }: { event: { shift: boolean } }) => {
+                  selectTab((store.tab + (event.shift ? -1 : 1) + tabs()) % tabs())
+                },
+              },
+            ]),
         ...(confirm()
           ? [
               { key: "return", desc: "Submit answer", group: "Question", cmd: () => submit() },
@@ -289,7 +314,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     <box
       backgroundColor={theme.backgroundPanel}
       border={["left"]}
-      borderColor={theme.accent}
+      borderColor={agentColor()}
       customBorderChars={SplitBorder.customBorderChars}
     >
       <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
@@ -307,7 +332,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                     paddingRight={1}
                     backgroundColor={
                       isActive()
-                        ? theme.accent
+                        ? agentColor()
                         : tabHover() === index()
                           ? theme.backgroundElement
                           : theme.backgroundPanel
@@ -322,7 +347,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                     <text
                       fg={
                         isActive()
-                          ? selectedForeground(theme, theme.accent)
+                          ? selectedForeground(theme, agentColor())
                           : isAnswered()
                             ? theme.text
                             : theme.textMuted
@@ -338,7 +363,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
               paddingLeft={1}
               paddingRight={1}
               backgroundColor={
-                confirm() ? theme.accent : tabHover() === "confirm" ? theme.backgroundElement : theme.backgroundPanel
+                confirm() ? agentColor() : tabHover() === "confirm" ? theme.backgroundElement : theme.backgroundPanel
               }
               onMouseOver={() => setTabHover("confirm")}
               onMouseOut={() => setTabHover(null)}
@@ -347,7 +372,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 selectTab(questions().length)
               }}
             >
-              <text fg={confirm() ? selectedForeground(theme, theme.accent) : theme.textMuted}>Confirm</text>
+              <text fg={confirm() ? selectedForeground(theme, agentColor()) : theme.textMuted}>Confirm</text>
             </box>
           </box>
         </Show>
@@ -488,7 +513,12 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         justifyContent="space-between"
       >
         <box flexDirection="row" gap={2}>
-          <Show when={!single()}>
+          <Show when={single() || (confirm() && allAnswered())}>
+            <text fg={theme.text}>
+              {"⇆"} <span style={{ fg: theme.textMuted }}>tab agents</span>
+            </text>
+          </Show>
+          <Show when={!single() && !(confirm() && allAnswered())}>
             <text fg={theme.text}>
               {"⇆"} <span style={{ fg: theme.textMuted }}>tab</span>
             </text>
