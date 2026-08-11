@@ -5,6 +5,7 @@ import { Session } from "./session"
 import { SessionID, MessageID, PartID } from "./schema"
 import { Provider } from "@/provider/provider"
 import { MessageV2 } from "./message-v2"
+import { TimeContext } from "./time-context"
 import { Token } from "@/util/token"
 import { SessionProcessor } from "./processor"
 import { Agent } from "@/agent/agent"
@@ -397,6 +398,7 @@ const layer = Layer.effect(
       const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+TimeContext.stampUserMessages(msgs)
       const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
       const ctx = yield* InstanceState.context
       const msg: SessionV1.Assistant = {

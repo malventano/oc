@@ -8,6 +8,7 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
+import { TimeContext } from "@/session/time-context"
 
 export const CODE_MODE_TOOL = "execute"
 
@@ -182,6 +183,7 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
     { tool: input.entry.key, sessionID: input.ctx.sessionID, callID: input.callID, args: input.args },
     result,
   )
+TimeContext.stampToolOutput(result)
   return result
 })
 
