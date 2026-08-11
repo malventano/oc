@@ -108,7 +108,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
       // Compile the parser closure once per tool init; `decodeUnknownEffect`
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.
-      const decode = Schema.decodeUnknownEffect(toolInfo.parameters)
+      const decode = Schema.decodeUnknownEffect(toolInfo.parameters, { onExcessProperty: "error" })
       const execute = toolInfo.execute
       toolInfo.execute = (args, ctx) => {
         const attrs = {

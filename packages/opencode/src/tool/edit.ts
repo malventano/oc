@@ -227,15 +227,24 @@ export const EditTool = Tool.define(
         if (legacy.length > 0) {
           return "Legacy edit payload has been removed. Use hashline fields: { filePath, edits, delete?, rename? } or files: [...] for batch mode."
         }
+        const key = message.match(/\["([^"]+)"\]\s*$/m)?.[1]
+        if (message.includes("Unexpected key")) {
+          return `Invalid parameters for tool 'edit': ${message} — unknown key \"${key ?? "?"}\" on an edit op or payload; only the documented keys per op are allowed (type + the op's fields). If you meant a position anchor: insert_after/insert_before use a single line field; insert_between uses after_line + before_line; paste uses insert_after_line / insert_before_line`
+        }
+        if (message.includes('at ["edits"]') && message.includes('got "')) {
+          return "edits must be a JSON array of op objects — a quoted/escaped JSON string was passed; emit the array directly without stringifying (edits: [{ type: \"set_line\", line: ..., text: ... }, ...])."
+        }
         const hint = message.includes('"filePath"')
           ? " a section-shaped object ({ filePath, edits }) is only valid as an element of the top-level files array — multi-file calls use files: [{ filePath, edits }, ...]; the single-file form takes only filePath/edits/delete/rename."
           : message.includes('"start_line"')
             ? " replace_lines/cut require BOTH start_line and end_line (LINE#ID refs) — use set_line for a single line."
             : message.includes("insert_after_line") || message.includes("insert_before_line")
               ? " insert_between uses insert_after_line and insert_before_line (LINE#ID refs); insert_after/insert_before use a single line field."
-              : message.includes("type")
-                ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
-                : ""
+              : message.includes("got null")
+                ? " anchor fields must be LINE#ID strings like 12#AB — null/omitted anchors are invalid; set_line/insert_after/insert_before require a line field; paste uses insert_after_line/insert_before_line."
+                : message.includes("type")
+                  ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
+                  : ""
         return `Invalid parameters for tool 'edit': ${message}${hint}`
       },
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
@@ -423,7 +432,7 @@ export const EditTool = Tool.define(
                 ),
               )
               const freshTag = noop ? fileTag(after) : fileTag(after)
-              const annotations = boundaryAnnotations(appliedEdits, parsed.lines)
+              const annotations = [...boundaryAnnotations(appliedEdits, parsed.lines), ...next.notes]
 
               return yield* Effect.succeed({
                 section,
