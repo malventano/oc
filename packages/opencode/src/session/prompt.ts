@@ -6,6 +6,8 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { TimeContext } from "./time-context"
+
+import { LoopGuard } from "./loop-guard"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
 import { Agent } from "../agent/agent"
@@ -1085,6 +1087,10 @@ const layer = Layer.effect(
         let structured: unknown
         let step = 0
         let compactingPrompt: string | undefined
+        let steerPrompt: string | undefined
+
+        let steerBudget = 2
+        let loopGuardEnabled = true
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1265,6 +1271,8 @@ const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
+
+              loopGuardEnabled: !compactingPrompt && loopGuardEnabled,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1338,6 +1346,12 @@ TimeContext.stampUserMessages(msgs)
                 modelMsgs[lastUserIdx] = { role: "user", content: [{ type: "text", text: compactingPrompt }] }
               }
             }
+
+            if (steerPrompt) {
+              modelMsgs.push({ role: "user", content: [{ type: "text", text: steerPrompt }] })
+              steerPrompt = undefined
+            }
+
             const system = [
               ...env,
               ...instructions,
@@ -1361,6 +1375,29 @@ TimeContext.stampUserMessages(msgs)
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
+
+
+            if (handle.loopGuardFired) {
+              yield* Effect.logWarning("loop guard fired", { "session.id": sessionID, detail: handle.loopGuardHit })
+              // Abort-marking: a non-Abort error both renders an obvious
+              // banner in the TUI and drops the message from the model
+              // request (toModelMessage skips error-marked messages), so the
+              // looped garbage is never replayed; the TUI keeps the full text.
+              let note = `Loop guard interrupted the response: ${handle.loopGuardHit}`
+              if (steerBudget > 0) {
+                // The banner also shows the exact redirect the model receives
+                // (request-only synthetic trailing user message, never a
+                // visible user turn), so the TUI needs no separate prompt.
+                note += `\n\n${LoopGuard.THINKING_LOOP_REDIRECT}`
+                steerPrompt = LoopGuard.THINKING_LOOP_REDIRECT
+                steerBudget--
+              } else {
+                loopGuardEnabled = false
+              }
+              handle.message.error = new NamedError.Unknown({ message: note }).toObject()
+              yield* sessions.updateMessage(handle.message)
+              return "continue" as const
+            }
 
             if (structured !== undefined) {
               handle.message.structured = structured
