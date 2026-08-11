@@ -620,6 +620,17 @@ export const ShellTool = Tool.define(
                   "3. run \"pkill -f <pattern>\" — isolated in tmux pane"
                 )
               }
+              // kill -9 $$ / $PPID kills the shell tool's own process (or its parent). Anchored
+              // to command position so the pattern can't match quoted text or commit messages
+              // (the 0036 pkill foot-gun).
+              if (/(^|[\s;&|]+)kill\s+(-9|-KILL)\s+(\$\$|\$PPID)(\s|$)/.test(params.command)) {
+                throw new Error(
+                  "BLOCKED: kill -9 $$/$PPID kills the shell tool's own process and terminates the " +
+                  "command before it completes. Use one of these safe alternatives:\n" +
+                  "1. kill -9 <pid> — use PID from pgrep\n" +
+                  "2. run \"kill -9 $$\" — isolated in tmux pane"
+                )
+              }
               const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
