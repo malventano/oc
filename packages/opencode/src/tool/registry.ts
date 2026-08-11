@@ -58,6 +58,7 @@ import { SessionsBrowseTool } from "./sessions-browse"
 import { SessionsManageTool } from "./sessions-manage"
 import { SessionsQueryTool } from "./sessions-query"
 import { SquashOutputTool } from "./squash-output"
+import { SkillMetadataTool } from "./skill-metadata"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel
@@ -117,6 +118,7 @@ const layer = Layer.effect(
     const sessionsManageTool = yield* SessionsManageTool
     const sessionsQueryTool = yield* SessionsQueryTool
     const squashOutputTool = yield* SquashOutputTool
+    const skillMetadataTool = yield* SkillMetadataTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -230,6 +232,7 @@ const layer = Layer.effect(
           sessionsManage: Tool.init(sessionsManageTool),
           sessionsQuery: Tool.init(sessionsQueryTool),
           squashOutput: Tool.init(squashOutputTool),
+          skillMetadata: Tool.init(skillMetadataTool),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
         })
 
@@ -257,6 +260,7 @@ const layer = Layer.effect(
             tool.sessionsManage,
             tool.sessionsQuery,
             tool.squashOutput,
+            tool.skillMetadata,
           ],
           task: tool.task,
           read: tool.read,
