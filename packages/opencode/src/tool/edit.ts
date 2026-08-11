@@ -227,13 +227,15 @@ export const EditTool = Tool.define(
         if (legacy.length > 0) {
           return "Legacy edit payload has been removed. Use hashline fields: { filePath, edits, delete?, rename? } or files: [...] for batch mode."
         }
-        const hint = message.includes('"start_line"')
-          ? " replace_lines/cut require BOTH start_line and end_line (LINE#ID refs) — use set_line for a single line."
-          : message.includes("insert_after_line") || message.includes("insert_before_line")
-            ? " insert_between uses insert_after_line and insert_before_line (LINE#ID refs); insert_after/insert_before use a single line field."
-            : message.includes("type")
-              ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
-              : ""
+        const hint = message.includes('"filePath"')
+          ? " a section-shaped object ({ filePath, edits }) is only valid as an element of the top-level files array — multi-file calls use files: [{ filePath, edits }, ...]; the single-file form takes only filePath/edits/delete/rename."
+          : message.includes('"start_line"')
+            ? " replace_lines/cut require BOTH start_line and end_line (LINE#ID refs) — use set_line for a single line."
+            : message.includes("insert_after_line") || message.includes("insert_before_line")
+              ? " insert_between uses insert_after_line and insert_before_line (LINE#ID refs); insert_after/insert_before use a single line field."
+              : message.includes("type")
+                ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
+                : ""
         return `Invalid parameters for tool 'edit': ${message}${hint}`
       },
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
@@ -372,13 +374,37 @@ export const EditTool = Tool.define(
               }
 
               const before = parsed.text
-              const next = applyHashlineEdits({
-                lines: parsed.lines,
-                trailing: parsed.trailing,
-                edits: appliedEdits,
-                autocorrect,
-                aggressiveAutocorrect,
-              })
+              let next: ReturnType<typeof applyHashlineEdits>
+              try {
+                next = applyHashlineEdits({
+                  lines: parsed.lines,
+                  trailing: parsed.trailing,
+                  edits: appliedEdits,
+                  autocorrect,
+                  aggressiveAutocorrect,
+                })
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                if (message.includes("anchor mismatch")) {
+                  const hints: string[] = []
+                  for (const op of edits) {
+                    if (op.type !== "paste") continue
+                    const register = op.register ?? ""
+                    const cutInPayload = sections.some((s) =>
+                      s.edits.some((e) => e.type === "cut" && (e.register ?? "") === register),
+                    )
+                    if (!cutInPayload) continue
+                    const anchor = op.insert_after_line ?? op.insert_before_line ?? ""
+                    const position = op.insert_after_line ? "insert_after_line" : "insert_before_line"
+                    const registerPart = register === "" ? "" : `, register: "@${register}"`
+                    hints.push(
+                      `\npaste (${register === "" ? "anonymous" : `@${register}`}) targets ${section.filePath} but its anchor (${anchor}) does not exist there. A paste lands in the file its section names; when the register was cut in this payload, give the paste its own section: files: [{ filePath: <cut file>, edits: [...] }, { filePath: ${section.filePath}, edits: [{ type: "paste", ${position}: ${anchor}${registerPart} }] }].`,
+                    )
+                  }
+                  if (hints.length > 0) throw new Error(`${message}${hints.join("")}`)
+                }
+                throw error
+              }
               const output = serializeHashlineContent({
                 lines: next.lines,
                 trailing: next.trailing,
