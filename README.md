@@ -38,6 +38,9 @@ Requires only `bun`:
 - `maxOutputTokens`: provider `limit.output` authoritative, hard 32K cap fallback removed
 
 
+
+### Prompt & context
+- **Time awareness built in (patch 0027)**: every user message carries a byte-stable local-ISO `<system-reminder>` stamp and every tool output a UTC one, replacing the `time-context.js` plugin; the stale `Today's date` line is gone from the system prompt (both the env block and the SystemContext `core/date` feature)
 ### TUI
 - Subagent costs aggregated into the sidebar spent total (with placeholder-session-ID guard)
 - Message pruning on prompt submit instead of during streaming (no viewport jumps while scrolled up)
@@ -85,8 +88,8 @@ This applies to all non-git sessions (project `global`): their `path` is the lau
 
 This repo also ships the opencode plugins and plugin tools used by oc. Copy them into your opencode config directory and restart opencode to enable them:
 
-- [`plugins/`](plugins/): loop guard, time stamps, tool safety guardrails (see [`plugins/README.md`](plugins/README.md))
-- [`tools/`](tools/): file_edit, session DB tools, skill_metadata, tmux, void_output (see [`tools/README.md`](tools/README.md))
+- [`plugins/`](plugins/): loop guard, tool safety guardrails (see [`plugins/README.md`](plugins/README.md))
+- [`tools/`](tools/): session DB tools, skill_metadata, tmux, void_output (see [`tools/README.md`](tools/README.md))
 
 Both folders are standalone: no build or config changes needed, just copy and restart opencode.
 
