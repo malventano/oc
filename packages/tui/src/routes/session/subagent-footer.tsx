@@ -77,11 +77,11 @@ export function SubagentFooter() {
       >
         <box flexDirection="row" justifyContent="space-between" gap={1} minWidth={0} overflow="hidden">
           <box flexDirection="row" gap={1} flexGrow={1} minWidth={0}>
-            <text fg={theme.text}>
+            <text fg={theme.text} wrapMode="none">
               <b>{subagentInfo().label}</b>
             </text>
             <Show when={subagentInfo().total > 0}>
-              <text style={{ fg: theme.textMuted }}>
+              <text style={{ fg: theme.textMuted }} wrapMode="none">
                 ({subagentInfo().index} of {subagentInfo().total})
               </text>
             </Show>
