@@ -57,6 +57,7 @@ import { McpCatalog } from "@/mcp/catalog"
 import { SessionsBrowseTool } from "./sessions-browse"
 import { SessionsManageTool } from "./sessions-manage"
 import { SessionsQueryTool } from "./sessions-query"
+import { SquashOutputTool } from "./squash-output"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -120,6 +121,7 @@ const layer = Layer.effect(
     const sessionsBrowseTool = yield* SessionsBrowseTool
     const sessionsManageTool = yield* SessionsManageTool
     const sessionsQueryTool = yield* SessionsQueryTool
+    const squashOutputTool = yield* SquashOutputTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -232,6 +234,7 @@ const layer = Layer.effect(
           sessionsBrowse: Tool.init(sessionsBrowseTool),
           sessionsManage: Tool.init(sessionsManageTool),
           sessionsQuery: Tool.init(sessionsQueryTool),
+          squashOutput: Tool.init(squashOutputTool),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
         })
 
@@ -258,6 +261,7 @@ const layer = Layer.effect(
             tool.sessionsBrowse,
             tool.sessionsManage,
             tool.sessionsQuery,
+            tool.squashOutput,
           ],
           task: tool.task,
           read: tool.read,
