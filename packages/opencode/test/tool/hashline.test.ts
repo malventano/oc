@@ -46,11 +46,11 @@ describe("tool.hashline", () => {
           {
             type: "set_line",
             line: hashlineRef(1, "a"),
-            text: hashlineLine(1, "a"),
+            text: hashlineLine(1, "b"),
           },
         ],
       })
-      expect(result.lines).toEqual(["a"])
+      expect(result.lines).toEqual(["b"])
     } finally {
       if (old === undefined) delete Bun.env.OPENCODE_HL_AUTOCORRECT
       else Bun.env.OPENCODE_HL_AUTOCORRECT = old
@@ -208,5 +208,76 @@ describe("tool.hashline", () => {
         ],
       }),
     ).toThrow("append.text")
+  })
+
+  test("autocorrect strips a single copied ref-prefixed line without majority", () => {
+    const old = Bun.env.OPENCODE_HL_AUTOCORRECT
+    Bun.env.OPENCODE_HL_AUTOCORRECT = "1"
+    try {
+      const lines = ["a"]
+      const ref = hashlineRef(1, "a")
+      const result = applyHashlineEdits({
+        lines,
+        trailing: false,
+        edits: [{ type: "set_line", line: ref, text: [`${ref}:first`, "second"] }],
+      })
+      expect(result.lines).toEqual(["first", "second"])
+    } finally {
+      if (old === undefined) delete Bun.env.OPENCODE_HL_AUTOCORRECT
+      else Bun.env.OPENCODE_HL_AUTOCORRECT = old
+    }
+  })
+
+  test("autocorrect strips +N#ID: diff-copy prefixes", () => {
+    const old = Bun.env.OPENCODE_HL_AUTOCORRECT
+    Bun.env.OPENCODE_HL_AUTOCORRECT = "1"
+    try {
+      const lines = ["a"]
+      const ref = hashlineRef(1, "a")
+      const result = applyHashlineEdits({
+        lines,
+        trailing: false,
+        edits: [{ type: "set_line", line: ref, text: `+${ref}:copied` }],
+      })
+      expect(result.lines).toEqual(["copied"])
+    } finally {
+      if (old === undefined) delete Bun.env.OPENCODE_HL_AUTOCORRECT
+      else Bun.env.OPENCODE_HL_AUTOCORRECT = old
+    }
+  })
+
+  test("text arrays flatten embedded newlines and drop trailing empties", () => {
+    const lines = ["a"]
+    const ref = hashlineRef(1, "a")
+    const result = applyHashlineEdits({
+      lines,
+      trailing: false,
+      edits: [{ type: "insert_after", line: ref, text: ["b\nc", ""] }],
+    })
+    expect(result.lines).toEqual(["a", "b", "c"])
+    const result2 = applyHashlineEdits({
+      lines,
+      trailing: false,
+      edits: [{ type: "insert_after", line: ref, text: "b\n" }],
+    })
+    expect(result2.lines).toEqual(["a", "b"])
+  })
+
+  test("empty-string text deletes lines", () => {
+    const lines = ["a", "b", "c"]
+    const single = applyHashlineEdits({
+      lines,
+      trailing: false,
+      edits: [{ type: "set_line", line: hashlineRef(2, "b"), text: "" }],
+    })
+    expect(single.lines).toEqual(["a", "c"])
+    const range = applyHashlineEdits({
+      lines,
+      trailing: false,
+      edits: [
+        { type: "replace_lines", start_line: hashlineRef(2, "b"), end_line: hashlineRef(3, "c"), text: "" },
+      ],
+    })
+    expect(range.lines).toEqual(["a"])
   })
 })
