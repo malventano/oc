@@ -1800,6 +1800,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={display() === "skill"}>
           <Skill {...toolprops} />
         </Match>
+        <Match when={display() === "squash-output"}>
+          <SquashOutput {...toolprops} />
+        </Match>
         <Match when={true}>
           <GenericTool {...toolprops} />
         </Match>
@@ -2584,6 +2587,67 @@ function TodoWrite(props: ToolProps) {
   )
 }
 
+function SquashOutput(props: ToolProps) {
+  const { theme } = useTheme()
+  const results = createMemo(() =>
+    Array.isArray(props.metadata.results)
+      ? props.metadata.results.flatMap((item) => {
+          const r = recordValue(item)
+          if (!r) return []
+          const tool = stringValue(r.tool)
+          const originalLen = numberValue(r.originalLen)
+          if (!tool || originalLen === undefined) return []
+          return [{ tool, originalLen }]
+        })
+      : [],
+  )
+  const count = createMemo(() => numberValue(props.metadata.count) ?? 0)
+  const aggregateOriginal = createMemo(() => numberValue(props.metadata.aggregateOriginal))
+  const summaryLen = createMemo(() => numberValue(props.metadata.summaryLen) ?? 0)
+  const maxTurnsBack = createMemo(() => numberValue(props.metadata.maxTurnsBack))
+  const belowBoundary = props.metadata.belowBoundary === true
+
+  const title = createMemo(() => {
+    const parts = [`Squashed ${count()} output${count() !== 1 ? "s" : ""}`]
+    if (maxTurnsBack() !== undefined) parts.push(`${maxTurnsBack()} turn${maxTurnsBack() !== 1 ? "s" : ""} back`)
+    if (aggregateOriginal() !== undefined) {
+      const total = summaryLen() * count()
+      const sizes =
+        results().length > 1
+          ? `${results().map((r) => r.originalLen.toLocaleString()).join("+")}=${aggregateOriginal()!.toLocaleString()} → ${summaryLen().toLocaleString()}×${count()}=${total.toLocaleString()}`
+          : `${aggregateOriginal()!.toLocaleString()} → ${summaryLen().toLocaleString()}`
+      parts.push(`${sizes} chars`)
+    }
+    return `# ${parts.join(" · ")}`
+  })
+
+
+  return (
+    <Switch>
+      <Match when={count() > 0}>
+        <BlockTool title={title()} part={props.part}>
+          <box flexDirection="column" gap={1}>
+            <box flexDirection="row" gap={1}>
+              <text fg={theme.textMuted}>summary:</text>
+              <text fg={theme.text}>{stringValue(props.input.summary) ?? props.output ?? ""}</text>
+            </box>
+
+            <Show when={belowBoundary}>
+              <text fg={theme.warning}>below compaction boundary (applies if it re-enters the live chain)</text>
+            </Show>
+          </box>
+        </BlockTool>
+      </Match>
+      <Match when={true}>
+
+        <InlineTool icon="♻" pending="Squashing output..." failure="Squash failed" complete={false} part={props.part}>
+          Squashing output
+        </InlineTool>
+      </Match>
+    </Switch>
+  )
+}
+
 function Question(props: ToolProps) {
   const { theme } = useTheme()
   const questions = createMemo(() => parseQuestions(props.input.questions))
@@ -2686,6 +2750,8 @@ const toolDisplays = new Set([
   "question",
   "skill",
   "execute",
+
+  "squash-output",
 ])
 
 export function toolDisplay(tool: string) {
