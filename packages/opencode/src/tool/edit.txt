@@ -1,10 +1,32 @@
-Performs exact string replacements in files. 
+Performs file edits with hashline anchors.
 
 Usage:
-- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file. 
-- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + colon + space (e.g., `1: `). Everything after that space is the actual file content to match. Never include any part of the line number prefix in the oldString or newString.
+- Anchors are validated against the file's LIVE content on every edit: stale or fabricated hashes are rejected with retry-with anchors (including the target line's content). Reading first is recommended and is the only source of valid anchors — bash views (cat/sed) produce none, and editing blind means probing for anchors one line at a time.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `oldString` is not found in the file with an error "oldString not found in content".
-- The edit will FAIL if `oldString` is found multiple times in the file with an error "Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match." Either provide a larger string with more surrounding context to make it unique or use `replaceAll` to change every instance of `oldString`. 
-- Use `replaceAll` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
+- `{ filePath, edits?, delete?, rename? }` — one of edits/delete/rename is required
+- `edits` is required unless delete or rename is used (use `[]` for delete/rename-only). Deleting lines without moving: `replace_lines` with `text: []`.
+- Use strict anchor references from `Read` output: `LINE#ID`.
+- Autocorrect cleanup is on by default and can be turned off with `experimental.hashline_autocorrect: false`.
+- Default autocorrect only strips copied `LINE#ID:`/`>>>` prefixes; set `OPENCODE_HL_AUTOCORRECT=1` to opt into heavier cleanup heuristics.
+- When `Read` returns `LINE#ID:<content>`, prefer hashline operations.
+- Operations:
+  - `set_line { line, text }`
+  - `replace_lines { start_line, end_line, text }`
+  - `insert_after { line, text }`
+  - `insert_before { line, text }`
+  - `insert_between { after_line, before_line, text }`
+  - `append { text }`
+  - `prepend { text }`
+  - `replace { old_text, new_text, all? }` — matches RAW text literally (no escape unescaping; multi-line old_text needs real newlines); substring matches count, so a bare word can collide with longer lines — use all=true or include context
+  - `cut { start_line, end_line, register? }` — delete a range and capture it to a register (payload-scoped); start_line/end_line are LINE#ID anchors
+  - `paste { insert_after_line | insert_before_line, register? }` — insert a captured register's content at a position (no text); insert_after_line/insert_before_line are LINE#ID anchors
+- Multi-file: `files: [{ filePath, edits, delete?, rename? }, ...]` applies across files atomically (all validated before any write). `cut` registers captured in one section can be `paste`d in later sections. Use for refactors that touch several files at once.
+- Provide the exact `LINE#ID` anchors from the latest `Read` result. Mismatched anchors are rejected and should be retried with the returned `retry with` anchors.
+- Only lines displayed by a `Read`/`grep` are editable: hunks on never-displayed lines are REJECTED with the actual content so you can retry directly. Mismatch errors show the target line content so you can confirm the line number before retrying.
+- If the file changed between your read and this edit, anchors are remapped through unchanged lines automatically (with a warning) when unambiguous, and rejected otherwise — re-read for fresh anchors.
+- First-attempt rejections are usually avoidable: re-read the target region immediately before editing (anchors from older reads are stale after any intervening edit); replacement text must NOT reproduce the anchor line's own content (it gets duplicated); when a replacement line sits INSIDE a backtick template/description string, keep that string's closing backtick (+ comma if it was a property) on the line.
+- After every successful edit, the response starts with a fresh `[PATH#TAG]` header; added lines in the diff carry their new `LINE#ID` refs (`+3#AB:content`), and each `*** path (N → M lines) [#TAG]` header shows its file tag — chain the next edit from those, or use a fresh `Read`.
+- Success output includes boundary previews (`[op lines N-M]` first/last line content) and unified diffs so you can verify intent after every write.
+- Batch discipline: when a change touches multiple locations, read once, then issue all edits back-to-back in a single response (one output, no re-reads). Single-line `set_line` replacements never shift anchors — any order works. Inserts/deletes shift lines below them: order separate calls bottom-up, or prefer ONE call with multiple ops (atomic against a single snapshot — strictly safer than sequential calls). Split only when the payload would exceed your output budget; never batch dependent/exploratory edits (next edit decided by a prior diff → separate turns).
+- GPT-family models can use `apply_patch` as fallback when needed.
