@@ -1,6 +1,6 @@
 # oc: Custom Build of opencode
 
-This repository is **oc**, a custom fork of [opencode](https://github.com/anomalyco/opencode) maintained for personal use. It tracks upstream opencode (currently based on the `v1.18.16` tag, 44 commits ahead) and is rebased onto new upstream releases as they land. There is no prebuilt binary and no published package: installing `opencode` from npm/bun gets the stock upstream build with none of these changes. The repo contains everything needed to build the patched version (full source + `bun.lock`; `dist/` and `node_modules/` are generated, not stored).
+This repository is **oc**, a custom fork of [opencode](https://github.com/anomalyco/opencode) maintained for personal use. It tracks upstream opencode (currently based on the `v1.18.16` tag) and is rebased onto new upstream releases as they land. There is no prebuilt binary and no published package: installing `opencode` from npm/bun gets the stock upstream build with none of these changes. The repo contains everything needed to build the patched version (full source + `bun.lock`; `dist/` and `node_modules/` are generated, not stored).
 
 ## Build
 
