@@ -524,7 +524,7 @@ export function applyHashlineEdits(input: {
       const text = parseText(edit.text)
       if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[line.line - 1])) {
         throw new Error(
-          `set_line.text[0] duplicates the anchor line (line ${line.line}: ${lines[line.line - 1]}). set_line REPLACES the line — do not repeat its content; pass only the new content.`,
+          `set_line.text[0] duplicates the anchor line (line ${line.line}: ${lines[line.line - 1]}). set_line REPLACES the line — do not repeat its content; pass only the new content. To keep the line and insert new content after it, use insert_after.`,
         )
       }
       ops.push({
@@ -554,7 +554,7 @@ export function applyHashlineEdits(input: {
       const text = parseText(edit.text)
       if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[start.line - 1])) {
         throw new Error(
-          `replace_lines.text[0] duplicates the range's first line (line ${start.line}: ${lines[start.line - 1]}). Do not repeat the replaced line's content; pass only the new content.`,
+          `replace_lines.text[0] duplicates the range's first line (line ${start.line}: ${lines[start.line - 1]}). Do not repeat the replaced line's content; pass only the new content. To keep the range's first line and insert after it, use insert_after.`,
         )
       }
       ops.push({
@@ -642,6 +642,13 @@ export function applyHashlineEdits(input: {
     }
 
     let text = op.text
+    if (autocorrect && (op.kind === "insert_after" || op.kind === "insert_before") && op.anchorLine) {
+      text =
+        op.kind === "insert_after"
+          ? stripInsertAnchorEchoAfter(originalLines[op.anchorLine - 1], text)
+          : stripInsertAnchorEchoBefore(originalLines[op.anchorLine - 1], text)
+    }
+
     if (autocorrect && aggressiveAutocorrect) {
       if (op.kind === "set_line" || op.kind === "replace_lines") {
         const start = op.startLine ?? op.start + 1
@@ -650,14 +657,6 @@ export function applyHashlineEdits(input: {
         text = stripRangeBoundaryEcho(originalLines, start, end, text)
         text = restoreOldWrappedLines(old, text)
         text = restoreIndentForPairedReplacement(old, text)
-      }
-
-      if ((op.kind === "insert_after" || op.kind === "append") && op.anchorLine) {
-        text = stripInsertAnchorEchoAfter(originalLines[op.anchorLine - 1], text)
-      }
-
-      if ((op.kind === "insert_before" || op.kind === "prepend") && op.anchorLine) {
-        text = stripInsertAnchorEchoBefore(originalLines[op.anchorLine - 1], text)
       }
 
       if (op.kind === "insert_between" && op.afterLine && op.beforeLine) {
