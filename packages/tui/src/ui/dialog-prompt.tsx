@@ -5,6 +5,7 @@ import { Show, createEffect, createSignal, onMount, type JSX } from "solid-js"
 import { Spinner } from "../component/spinner"
 import { useTuiConfig } from "../config"
 import { useBindings, useCommandShortcut } from "../keymap"
+import { smartCursorBindings } from "../util/smart-cursor"
 
 export type DialogPromptProps = {
   title: string
@@ -43,7 +44,7 @@ export function DialogPrompt(props: DialogPromptProps) {
         run: confirm,
       },
     ],
-    bindings: tuiConfig.keybinds.gather("dialog.prompt", ["dialog.prompt.submit"]),
+    bindings: [...tuiConfig.keybinds.gather("dialog.prompt", ["dialog.prompt.submit"]), ...smartCursorBindings(() => textareaTarget())],
   }))
 
   onMount(() => {
