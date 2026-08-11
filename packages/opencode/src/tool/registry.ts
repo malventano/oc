@@ -54,6 +54,9 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
+import { SessionsBrowseTool } from "./sessions-browse"
+import { SessionsManageTool } from "./sessions-manage"
+import { SessionsQueryTool } from "./sessions-query"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -114,6 +117,9 @@ const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const sessionsBrowseTool = yield* SessionsBrowseTool
+    const sessionsManageTool = yield* SessionsManageTool
+    const sessionsQueryTool = yield* SessionsQueryTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -223,6 +229,9 @@ const layer = Layer.effect(
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          sessionsBrowse: Tool.init(sessionsBrowseTool),
+          sessionsManage: Tool.init(sessionsManageTool),
+          sessionsQuery: Tool.init(sessionsQueryTool),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
         })
 
@@ -246,6 +255,9 @@ const layer = Layer.effect(
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+            tool.sessionsBrowse,
+            tool.sessionsManage,
+            tool.sessionsQuery,
           ],
           task: tool.task,
           read: tool.read,
