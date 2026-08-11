@@ -12,7 +12,7 @@ Usage:
 - Autocorrect cleanup is on by default and can be turned off with `experimental.hashline_autocorrect: false`.
 - Default autocorrect only strips copied `LINE#ID:`/`>>>` prefixes; set `OPENCODE_HL_AUTOCORRECT=1` to opt into heavier cleanup heuristics.
 - When `Read` returns `LINE#ID:<content>`, prefer hashline operations.
-- Operations:
+- Operations: EVERY op object REQUIRES a `type` field as its first key: `set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste` — never omit it.
   - `set_line { line, text }`
   - `replace_lines { start_line, end_line, text }`
   - `insert_after { line, text }`
