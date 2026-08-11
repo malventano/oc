@@ -8,3 +8,16 @@ Usage notes:
 - When `custom` is enabled (default), a "Type your own answer" option is added automatically; don't include "Other" or catch-all options
 - Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
+
+CRITICAL: questions must be a native JSON array, never stringified. The arguments object must be valid JSON that can be parsed by JSON.parse(). Common failures: truncating mid-object, stringifying the array, or exceeding token limits in option text.
+
+EXACT STRUCTURE (copy this shape, fill in your values):
+{"questions":[{"question":"Short question?","header":"Label (30 chars max)","options":[{"label":"Yes","description":"Under 30 chars"},{"label":"No","description":"Under 30 chars"}],"multiple":false}]}
+
+RULES:
+- questions is an array literal [{...}], NEVER a quoted string "[{...}]"
+- label: 1-3 words max
+- description: under 30 characters
+- header: under 30 characters
+- Keep total payload small. If you have many options, ask multiple smaller questions instead.
+- DO NOT use this tool in build mode or as a subagent. Subagents have no user channel and will hang indefinitely.
