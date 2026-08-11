@@ -1521,8 +1521,8 @@ export function Prompt(props: PromptProps) {
             }
           />
         </box>
-        <box width="100%" flexDirection="row" minWidth={0}>
-          <box flexGrow={1} flexShrink={0}>
+        <box width="100%" flexDirection="row" minWidth={0} overflow="hidden">
+          <box flexGrow={1} minWidth={0} overflow="hidden">
             <Switch>
             <Match when={status().type !== "idle"}>
               <box
@@ -1596,15 +1596,15 @@ export function Prompt(props: PromptProps) {
                     })()}
                   </box>
                 </box>
-                <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
+                <text flexShrink={0} fg={store.interrupt > 0 ? theme.primary : theme.text} wrapMode="none" truncate>
                   esc{" "}
                   <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
                     {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
                   </span>
                 </text>
-                <text fg={theme.textMuted}>·</text>
-                <box flexShrink={0} flexDirection="row" gap={1}>
-                  <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
+                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
+                <box flexShrink={1} minWidth={0} flexDirection="row" gap={1}>
+                  <text fg={theme.textMuted} wrapMode="none" truncate>
                     {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
                     <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
                   </text>
@@ -1614,7 +1614,7 @@ export function Prompt(props: PromptProps) {
             <Match when={workspace.notice()}>
               {(notice) => (
                 <box paddingLeft={3}>
-                  <text fg={theme.accent}>{notice()}</text>
+                  <text fg={theme.accent} wrapMode="none">{notice()}</text>
                 </box>
               )}
             </Match>
@@ -1624,7 +1624,7 @@ export function Prompt(props: PromptProps) {
                   <Show when={workspace.creating()}>
                     <Spinner color={theme.accent} />
                   </Show>
-                  <text fg={workspace.creating() ? theme.accent : theme.text}>
+                  <text fg={workspace.creating() ? theme.accent : theme.text} wrapMode="none" truncate>
                     {(() => {
                       const item = label()
                       if (item.type === "new") {
@@ -1658,14 +1658,14 @@ export function Prompt(props: PromptProps) {
             </Match>
             <Match when={move.pendingNew()}>
               <box paddingLeft={3}>
-                <text fg={theme.accent}>(new working copy)</text>
+                <text fg={theme.accent} wrapMode="none">(new working copy)</text>
               </box>
             </Match>
             <Match when={true}>
               {props.hint ?? (
                 <Show when={props.sessionID} fallback={<text />}>
-                  <box marginLeft={1}>
-                    <text fg={theme.textMuted}>
+                  <box marginLeft={1} minWidth={0}>
+                    <text fg={theme.textMuted} wrapMode="none" truncate>
                       {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
                       <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
                     </text>
@@ -1677,7 +1677,7 @@ export function Prompt(props: PromptProps) {
           </box>
           <Show when={status().type !== "retry"}>
             <box width={2} flexShrink={0} />
-            <box gap={1} flexDirection="row" flexShrink={1} minWidth={0}>
+            <box gap={1} flexDirection="row" flexShrink={0}>
               <box flexDirection="row" gap={1} flexShrink={0}>
                 <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
@@ -1700,7 +1700,7 @@ export function Prompt(props: PromptProps) {
                       </text>
                     </Match>
                   </Switch>
-                  <text fg={theme.text}>
+                  <text fg={theme.text} wrapMode="none">
                     <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
                   </text>
                 </Match>
