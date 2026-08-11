@@ -12,6 +12,8 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
+
+import { LoopGuard } from "./loop-guard"
 import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
@@ -45,12 +47,17 @@ export interface Handle {
     },
   ) => Effect.Effect<void>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+
+  readonly loopGuardFired: boolean
+  readonly loopGuardHit: string | null
 }
 
 type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
+
+  loopGuardEnabled?: boolean
 }
 
 export interface Interface {
@@ -72,6 +79,11 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+
+  loopGuard: LoopGuard.LoopGuardState
+  loopGuardEnabled: boolean
+  loopGuardFired: boolean
+  loopGuardHit: string | null
 }
 
 type StreamEvent = LLMEvent
@@ -111,6 +123,11 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+
+        loopGuard: LoopGuard.make(),
+        loopGuardEnabled: input.loopGuardEnabled ?? true,
+        loopGuardFired: false,
+        loopGuardHit: null,
       }
       let aborted = false
 
@@ -303,7 +320,16 @@ const layer = Layer.effect(
               field: "text",
               delta: value.text,
             })
+
+            if (ctx.loopGuardEnabled) {
+              const hit = ctx.loopGuard.pushReasoning(value.text)
+              if (hit) {
+                ctx.loopGuardFired = true
+                ctx.loopGuardHit = hit
+              }
+            }
             return
+
 
           case "reasoning-end":
             if (value.providerMetadata && value.id in ctx.reasoningMap) {
@@ -317,7 +343,10 @@ const layer = Layer.effect(
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             yield* ensureToolCall(value)
+
+            ctx.loopGuard.reset()
             return
+
 
           case "tool-input-delta":
             yield* ensureToolCall(value)
@@ -333,6 +362,8 @@ const layer = Layer.effect(
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             yield* ensureToolCall(value)
+
+            ctx.loopGuard.reset()
             const input = isRecord(value.input) ? value.input : { value: value.input }
             yield* updateToolCall(value.id, (match) => ({
               ...match,
@@ -521,7 +552,16 @@ const layer = Layer.effect(
               field: "text",
               delta: value.text,
             })
+
+            if (ctx.loopGuardEnabled) {
+              const hit = ctx.loopGuard.pushText(value.text)
+              if (hit) {
+                ctx.loopGuardFired = true
+                ctx.loopGuardHit = hit
+              }
+            }
             return
+
 
           case "text-end":
             if (!ctx.currentText) return
@@ -644,6 +684,10 @@ const layer = Layer.effect(
           messageID: input.assistantMessage.id,
         })
         ctx.needsCompaction = false
+
+        ctx.loopGuard.reset()
+        ctx.loopGuardFired = false
+        ctx.loopGuardHit = null
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
@@ -655,7 +699,7 @@ const layer = Layer.effect(
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
-              Stream.takeUntil(() => ctx.needsCompaction),
+              Stream.takeUntil(() => ctx.needsCompaction || ctx.loopGuardFired),
               Stream.runDrain,
             )
           }).pipe(
@@ -703,6 +747,13 @@ const layer = Layer.effect(
         updateToolCall,
         completeToolCall,
         process,
+
+        get loopGuardFired() {
+          return ctx.loopGuardFired
+        },
+        get loopGuardHit() {
+          return ctx.loopGuardHit
+        },
       } satisfies Handle
     })
 
