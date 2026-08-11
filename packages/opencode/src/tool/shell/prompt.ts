@@ -104,6 +104,7 @@ Usage notes:
     - Edit files: Use Edit (NOT sed/awk)
     - Write files: Use Write (NOT echo >/cat <<EOF)
     - Communication: Output text directly (NOT echo/printf)
+  - NEVER run \`kill -9 $$\` or \`kill -9 $PPID\` — this kills the shell tool's own process ($$) or its parent ($PPID) and terminates the command mid-flight; the tool blocks it. Use \`kill -9 <pid>\` with a PID from \`pgrep\` instead.
   - When issuing multiple commands:
     - If the commands are independent and can run in parallel, make multiple bash tool calls in a single message. For example, if you need to run "git status" and "git diff", send a single message with two bash tool calls in parallel.
     - ${chain}

@@ -10,3 +10,4 @@ Usage:
 Output budget: Your total output per turn is limited (typically 12k-32k tokens). A write call containing a large file is part of that output budget. If the content exceeds the remaining token budget, the tool call JSON will be truncated mid-string and fail with a parse error ("Unterminated string"). To avoid this:
 - For files longer than ~400 lines, write the first section with this tool, then append subsequent sections with the edit tool, chunked to fit the budget.
 - Each chunk should be small enough to fit within your remaining output budget. If a write fails with a parse error, the content was too large; split and retry.
+- NEVER create or modify files via bash heredocs or echo/printf redirection: writes through bash bypass the Read-before-Write safety check and the same-turn read cache, so subsequent Read calls on those paths return stale or empty content. Use this tool or edit for all file writes.
