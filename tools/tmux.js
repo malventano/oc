@@ -276,7 +276,7 @@ Operations:
 Status codes (poll/run wait=true): complete, error, abnormal, stuck, input-needed, timeout, cancelled.
 Wait status codes: ready, stuck, input-needed, timeout, cancelled.
 
-Safety: Use this tool's run (bash -c wrapper isolates child processes). Never pipe pane commands through tail/head — lines parameter controls returned output.
+Safety: Use this tool's run (bash -c wrapper isolates child processes). NEVER pipe pane commands through tail/head — the pane is where output is meant to be seen (that's the point of running work in a pane); piping to tail hides it from the visible pane and buffers until close. The lines parameter only controls what the model receives, never the visible pane.
 
 DONE marker format: bash -c '<command>' ; echo "DONE_<suffix>=\$?"
 Subshell wrapper prevents destructive commands (exit, kill \$\$) from killing pane.
