@@ -145,3 +145,31 @@ test("dialog prompt submit can be rebound separately from input submit", async (
     await prompt.cleanup()
   }
 })
+
+test("smart up/down moves cursor to start/end in dialog prompt", async () => {
+  await using tmp = await tmpdir()
+  const prompt = await mountPrompt({
+    root: tmp.path,
+    keybinds: {
+      input_submit: "super+return",
+      input_newline: "return,shift+return,alt+return,ctrl+j",
+    },
+    onConfirm: () => {},
+  })
+
+  try {
+    await wait(() => prompt.app.renderer.currentFocusedEditor instanceof TextareaRenderable)
+    const textarea = prompt.app.renderer.currentFocusedEditor
+    if (!(textarea instanceof TextareaRenderable)) throw new Error("expected focused dialog textarea")
+    expect(textarea.plainText).toBe("draft")
+
+    prompt.app.mockInput.pressKey("END")
+    await wait(() => textarea.cursorOffset === 5)
+    prompt.app.mockInput.pressArrow("up")
+    await wait(() => textarea.cursorOffset === 0)
+    prompt.app.mockInput.pressArrow("down")
+    await wait(() => textarea.cursorOffset === 5)
+  } finally {
+    await prompt.cleanup()
+  }
+})
