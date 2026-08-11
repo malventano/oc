@@ -47,28 +47,669 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
-    "filePath": {
-      "description": "The absolute path to the file to modify",
-      "type": "string",
-    },
-    "newString": {
-      "description": "The text to replace it with (must be different from oldString)",
-      "type": "string",
-    },
-    "oldString": {
-      "description": "The text to replace",
-      "type": "string",
-    },
-    "replaceAll": {
-      "description": "Replace all occurrences of oldString (default false)",
+    "delete": {
+      "description": "Delete the file (cannot be combined with edits or rename)",
       "type": "boolean",
     },
+    "edits": {
+      "description": "Hashline edit operations. Use strict LINE#ID anchor references from Read output. Required per file (use [] when only delete or rename is intended).",
+      "items": {
+        "anyOf": [
+          {
+            "properties": {
+              "line": {
+                "type": "string",
+              },
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "type": {
+                "enum": [
+                  "set_line",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "line",
+              "text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "end_line": {
+                "type": "string",
+              },
+              "start_line": {
+                "type": "string",
+              },
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "type": {
+                "enum": [
+                  "replace_lines",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "start_line",
+              "end_line",
+              "text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "line": {
+                "type": "string",
+              },
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "type": {
+                "enum": [
+                  "insert_after",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "line",
+              "text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "line": {
+                "type": "string",
+              },
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "type": {
+                "enum": [
+                  "insert_before",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "line",
+              "text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "after_line": {
+                "type": "string",
+              },
+              "before_line": {
+                "type": "string",
+              },
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "type": {
+                "enum": [
+                  "insert_between",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "after_line",
+              "before_line",
+              "text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "type": {
+                "enum": [
+                  "append",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "type": {
+                "enum": [
+                  "prepend",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "all": {
+                "type": "boolean",
+              },
+              "new_text": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "items": {
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                ],
+              },
+              "old_text": {
+                "type": "string",
+              },
+              "type": {
+                "enum": [
+                  "replace",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "old_text",
+              "new_text",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "end_line": {
+                "type": "string",
+              },
+              "register": {
+                "type": "string",
+              },
+              "start_line": {
+                "type": "string",
+              },
+              "type": {
+                "enum": [
+                  "cut",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+              "start_line",
+              "end_line",
+            ],
+            "type": "object",
+          },
+          {
+            "properties": {
+              "insert_after_line": {
+                "type": "string",
+              },
+              "insert_before_line": {
+                "type": "string",
+              },
+              "register": {
+                "type": "string",
+              },
+              "type": {
+                "enum": [
+                  "paste",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "type",
+            ],
+            "type": "object",
+          },
+        ],
+      },
+      "type": "array",
+    },
+    "filePath": {
+      "description": "The absolute path to the file to modify (omit when using files: batch mode)",
+      "type": "string",
+    },
+    "files": {
+      "description": "Multi-file batch mode: apply edits across multiple files atomically (all validated before any write). Registers captured with cut in one section can be pasted in later sections. Mutually exclusive with filePath/edits.",
+      "items": {
+        "properties": {
+          "delete": {
+            "type": "boolean",
+          },
+          "edits": {
+            "items": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "line": {
+                      "type": "string",
+                    },
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "type": {
+                      "enum": [
+                        "set_line",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "line",
+                    "text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "end_line": {
+                      "type": "string",
+                    },
+                    "start_line": {
+                      "type": "string",
+                    },
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "type": {
+                      "enum": [
+                        "replace_lines",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "start_line",
+                    "end_line",
+                    "text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "line": {
+                      "type": "string",
+                    },
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "type": {
+                      "enum": [
+                        "insert_after",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "line",
+                    "text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "line": {
+                      "type": "string",
+                    },
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "type": {
+                      "enum": [
+                        "insert_before",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "line",
+                    "text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "after_line": {
+                      "type": "string",
+                    },
+                    "before_line": {
+                      "type": "string",
+                    },
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "type": {
+                      "enum": [
+                        "insert_between",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "after_line",
+                    "before_line",
+                    "text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "type": {
+                      "enum": [
+                        "append",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "type": {
+                      "enum": [
+                        "prepend",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "all": {
+                      "type": "boolean",
+                    },
+                    "new_text": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                        },
+                        {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                      ],
+                    },
+                    "old_text": {
+                      "type": "string",
+                    },
+                    "type": {
+                      "enum": [
+                        "replace",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "old_text",
+                    "new_text",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "end_line": {
+                      "type": "string",
+                    },
+                    "register": {
+                      "type": "string",
+                    },
+                    "start_line": {
+                      "type": "string",
+                    },
+                    "type": {
+                      "enum": [
+                        "cut",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                    "start_line",
+                    "end_line",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "properties": {
+                    "insert_after_line": {
+                      "type": "string",
+                    },
+                    "insert_before_line": {
+                      "type": "string",
+                    },
+                    "register": {
+                      "type": "string",
+                    },
+                    "type": {
+                      "enum": [
+                        "paste",
+                      ],
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "type",
+                  ],
+                  "type": "object",
+                },
+              ],
+            },
+            "type": "array",
+          },
+          "filePath": {
+            "type": "string",
+          },
+          "rename": {
+            "type": "string",
+          },
+        },
+        "required": [
+          "filePath",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+    "rename": {
+      "description": "Rename/move the file to this path (edits land on the source first)",
+      "type": "string",
+    },
   },
-  "required": [
-    "filePath",
-    "oldString",
-    "newString",
-  ],
   "type": "object",
 }
 `;

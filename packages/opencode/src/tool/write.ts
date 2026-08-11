@@ -14,6 +14,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
+import { readForSnapshot, recordSnapshot } from "./hashline-store"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -64,6 +65,11 @@ export const WriteTool = Tool.define(
           yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
           if (yield* format.file(filepath)) {
             yield* Bom.syncFile(fs, filepath, desiredBom)
+          }
+          const snapshotText = yield* readForSnapshot(fs, filepath)
+          if (snapshotText !== undefined) {
+            const count = snapshotText === "" ? 0 : snapshotText.endsWith("\n") ? snapshotText.split("\n").length - 1 : snapshotText.split("\n").length
+            recordSnapshot(filepath, snapshotText, Array.from({ length: count }, (_, i) => i + 1))
           }
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })
           yield* events.publish(Watcher.Event.Updated, {

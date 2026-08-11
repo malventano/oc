@@ -26,32 +26,13 @@ export default {
           )
         }
       }
-
-      // file_edit plugin tool safety enforcement (see BUG_FILE_EDIT_MANGLING.md)
-      if (input.tool === "file_edit" && output.args) {
-        const args = output.args as any
-        const ops = args.operations || []
-
-        // Force backup for any write operation (delete/replace/insert/move/moveToFile/extractToFile)
-        if (ops.length > 0 && args.backup !== true) {
-          args.backup = true
-        }
-      }
-
     },
     "tool.definition": async (input, output) => {
       if (input.toolID === "edit") {
-        output.description += `
-
-JSON editing: the edit tool tries 9 fallback replacers in order: Simple, LineTrimmed, BlockAnchor, WhitespaceNormalized, IndentationFlexible, EscapeNormalized, TrimmedBoundary, ContextAware, MultiOccurrence. Only oldString is normalized - newString is written literally. Provide 2-3 lines of context around oldString for uniqueness; bare key-value pairs match multiple times. Escape sequences like \\n, \\t, \\\\, \\" are unescaped in oldString by EscapeNormalizedReplacer - include them as they appear in Read output. After JSON edits, verify with python3 -c "import json; json.load(open('path'))". If edit fails repeatedly on escaping, use Python to rewrite.
-
-Output budget: newString is part of your output token budget. When using edit to append large content (oldString = last unique line, newString = oldString + new content), keep newString small enough to fit within your remaining output budget. If newString is too large, the tool call will truncate mid-JSON and fail with a parse error ("Unterminated string"). Split the addition into multiple smaller edit calls.`
-      }
-
-      if (input.toolID === "file_edit") {
-        output.description += `
-
-Backups: auto-created for all write operations (delete/replace/insert/move/moveToFile/extractToFile). Backup path reported in tool output on success: "Backup: /tmp/opencode/file-edit-backup/<timestamp>/". Kept for 1 hour (swept lazily on next invocation). To roll back a bad edit: cp /tmp/opencode/file-edit-backup/<timestamp>/<file> <original_path>. Verify line ranges with a read op before applying destructive edits.`
+      if (input.toolID === "edit") {
+        // Hashline/batch discipline lives in the oc build's edit.txt/read.txt
+        // (ships with patch 0026); no overlay needed here. This block is
+        // intentionally empty to keep the plugin build-agnostic.
       }
 
       if (input.toolID === "question") {
@@ -81,7 +62,7 @@ CRITICAL: filePath is always required. Even when continuing a prior read with of
         output.description += `
 
 Output budget: Your total output per turn is limited (typically 12k-32k tokens). A write call containing a large file is part of that output budget. If the content exceeds the remaining token budget, the tool call JSON will be truncated mid-string and fail with a parse error ("Unterminated string"). To avoid this:
-- For files longer than ~400 lines, write the first section with this tool, then append subsequent sections using the edit tool (match the last unique line of the file as oldString, replace with itself plus new content) or file_edit with {"type": "insert", "atLine": -1, "content": "..."}.
+- For files longer than ~400 lines, write the first section with this tool, then append subsequent sections with the edit tool, chunked to fit the budget.
 - Each chunk should be small enough to fit within your remaining output budget. If a write fails with a parse error, the content was too large; split and retry.`
       }
 
