@@ -1,6 +1,6 @@
 # oc: Custom Build of opencode
 
-This repository is **oc**, a custom fork of [opencode](https://github.com/anomalyco/opencode) maintained for personal use. It tracks upstream opencode (currently based on the `v1.18.15` tag, 25 commits ahead) and is rebased onto new upstream releases as they land. There is no prebuilt binary and no published package: installing `opencode` from npm/bun gets the stock upstream build with none of these changes. The repo contains everything needed to build the patched version (full source + `bun.lock`; `dist/` and `node_modules/` are generated, not stored).
+This repository is **oc**, a custom fork of [opencode](https://github.com/anomalyco/opencode) maintained for personal use. It tracks upstream opencode (currently based on the `v1.18.16` tag, 44 commits ahead) and is rebased onto new upstream releases as they land. There is no prebuilt binary and no published package: installing `opencode` from npm/bun gets the stock upstream build with none of these changes. The repo contains everything needed to build the patched version (full source + `bun.lock`; `dist/` and `node_modules/` are generated, not stored).
 
 ## Build
 
@@ -9,11 +9,11 @@ Requires only `bun`:
     git clone https://github.com/malventano/oc && cd oc
     bun install
     cd packages/opencode
-    OPENCODE_VERSION=1.18.14-oc bun run script/build.ts --single --skip-install --skip-embed-web-ui
+    OPENCODE_VERSION=1.18.16-oc bun run script/build.ts --single --skip-install --skip-embed-web-ui
     cp dist/opencode-linux-x64/bin/oc /usr/local/bin/oc
 
 - `--skip-embed-web-ui` is required: v1.18.5+ app Rollup cannot resolve `@opencode-ai/client/promise` (upstream dep issue, not ours); plain `bun run build` fails on it.
-- Keep the `-oc` suffix in `OPENCODE_VERSION`: the autoupdate-disable patch (and `oc upgrade` message) key off it. Any `<tag>-oc` version works; `1.18.14-oc` matches this base.
+- Keep the `-oc` suffix in `OPENCODE_VERSION`: the autoupdate-disable patch (and `oc upgrade` message) key off it. Any `<tag>-oc` version works; `1.18.16-oc` matches this base.
 - `OPENCODE_VERSION` also pins the channel to `latest`, which keeps the session DB at the standard `~/.local/share/opencode/opencode.db` (shared with stock opencode). Building WITHOUT it puts the branch name in the channel and the DB becomes `opencode-<branch>.db` (e.g. `opencode-main.db`): a separate empty database, so no existing sessions appear and new ones land in the wrong file.
 - The built binary is `dist/opencode-linux-x64/bin/oc` (named `oc`, unlike upstream's `opencode`).
 
@@ -39,8 +39,27 @@ Requires only `bun`:
 
 
 
-### Prompt & context
-- **Time awareness built in (patch 0027)**: every user message carries a byte-stable local-ISO `<system-reminder>` stamp and every tool output a UTC one, replacing the `time-context.js` plugin; the stale `Today's date` line is gone from the system prompt (both the env block and the SystemContext `core/date` feature)
+### Editing (hashline anchors)
+- **Content-anchored edits**: every op references lines by `LINE#ID` anchors validated against the file's live content; stale or fabricated anchors are rejected fail-closed with retry-with anchors, so edits are never applied blind
+- **Atomic batches**: multiple ops in one call apply against a single snapshot, so inserts/deletes never shift anchors mid-call; `cut`/`paste` registers move content across sections and files
+- **Autocorrect**: copied `N#ID:` / `+N#ID:` / `>>>` prefixes strip per line; `text: []` / `""` means deletion (no blank-line artifacts); trailing empty strings are dropped
+- **Echo-reject**: `set_line` / `replace_lines` refuse text that repeats the anchor line's own content (fail-closed with guidance); op-shape mistakes get corrective hints (every op requires its `type`)
+- Annotated diffs: applied lines carry their new refs (`+3#AB:content`) so the next edit can chain without a re-read
+
+### Built-in tooling (ships in the binary)
+- **Time context (0027)**: every user message carries a byte-stable local-ISO `<system-reminder>` stamp and every tool output a UTC one; the stale `Today's date` line is gone from the system prompt (both the env block and the SystemContext `core/date` feature)
+- **Loop guard (0028)**: dual-channel loop detection: repeated identical tool output or repeated user prompts abort with a diagnostic instead of looping
+- **Sessions DB tools (0030)**: read-only session browsing, SQLite queries, and confirm-gated write management against the session database
+- **Squash output (0031)**: replace a finished tool output with a short summary you write (depth-gated), keeping the context chain small
+- **Skill metadata (0034, 0038)**: frontmatter name/description, line/char counts, sibling inventory, mtime, and description byte count for one or all skills; reads raw SKILL.md frontmatter; built-in skills guarded
+- **tmux pane management**: run/poll/keys/capture/wait lifecycle ops for long-running jobs in visible panes
+- **Shell safety guards (0036, 0040, 0041)**: `pkill -f` and `kill -9` / `-KILL` on `$$` / `$PPID` are blocked in the bash tool (anchored to command position; covers semicolon-suffixed and sudo forms) because they hang the session
+
+### Prompt guidance (0029, 0039, 0044)
+- Tool prompts: question/read/write/webfetch ship refined guidance (exact JSON array shapes for the question tool, URL discipline for webfetch, output-budget chunking for write)
+- `default.txt` ships time-awareness and output-efficiency guidance; the shell prompt warns to never `kill -9 $$` / `$PPID`; `write.txt` documents that heredocs/redirections bypass Read-before-Write and the same-turn read cache
+- The edit description opens with a type-first requirement for every op
+
 ### TUI
 - Subagent costs aggregated into the sidebar spent total (with placeholder-session-ID guard)
 - Message pruning on prompt submit instead of during streaming (no viewport jumps while scrolled up)
@@ -48,6 +67,8 @@ Requires only `bun`:
 - Footbar: session-cwd directory label (home `~`-abbreviated), session title, cost DFS, path-first order
 - Adaptive refresh cadence + reduced render lag
 - Footbar spacing/order polish
+- Footbar overflow fixed on narrow terminals (0032)
+- Session resume: agent restore no longer races the agent-list load (0035)
 
 ### Session directory scoping & DB path repair
 
@@ -84,14 +105,9 @@ This applies to all non-git sessions (project `global`): their `path` is the lau
     sqlite3 ~/.local/share/opencode/opencode.db \
       "SELECT path, COUNT(*) FROM session WHERE project_id = 'global' GROUP BY path ORDER BY COUNT(*) DESC LIMIT 10;"
 
-## Plugins & tools
+## Everything is built in
 
-This repo also ships the opencode plugins and plugin tools used by oc. Copy them into your opencode config directory and restart opencode to enable them:
-
-- [`plugins/`](plugins/): loop guard, tool safety guardrails (see [`plugins/README.md`](plugins/README.md))
-- [`tools/`](tools/): session DB tools, skill_metadata, tmux, void_output (see [`tools/README.md`](tools/README.md))
-
-Both folders are standalone: no build or config changes needed, just copy and restart opencode.
+The oc binary ships the full tooling: hashline editing, sessions DB tools, time context, loop guard, squash output, skill metadata, tmux pane management, and shell safety guards are compiled in. Nothing needs to be copied, configured, or installed.
 
 ## Repository layout
 
