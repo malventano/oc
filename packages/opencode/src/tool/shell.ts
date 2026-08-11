@@ -608,6 +608,18 @@ export const ShellTool = Tool.define(
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
+              // pkill -f matches the bash -c wrapper's own command line and kills the
+              // tool's process, hanging the session. Ported from the tool-refine plugin
+              // (patch 0036); the plugin's vllm-start guard stays env-specific.
+              if (/pkill\s+.*-f/.test(params.command)) {
+                throw new Error(
+                  "BLOCKED: pkill -f kills the bash tool's own process and hangs the session. " +
+                  "Use one of these safe alternatives:\n" +
+                  "1. pkill -x <name> — exact process name match\n" +
+                  "2. kill -9 <pid> — use PID from pgrep\n" +
+                  "3. run \"pkill -f <pattern>\" — isolated in tmux pane"
+                )
+              }
               const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
