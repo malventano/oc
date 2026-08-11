@@ -1009,3 +1009,21 @@ describe("0053 exact keys + auto-strip", () => {
     }),
   )
 })
+
+describe("0055 escape-payload hardening", () => {
+  it.instance("missing-type on a big escape-heavy payload gets the type-first hint with a truncated dump", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      yield* putSnap(filepath, "one\ntwo\nthree\n")
+      const bigText = Array.from({ length: 40 }, (_, i) => `line ${i} with "quotes" and \`ticks\` and ${i}${i} and \${x} content`)
+      const err = yield* fail({
+        filePath: filepath,
+        edits: [{ start_line: hashlineRef(1, "one"), end_line: hashlineRef(3, "three"), text: bigText }] as never,
+      })
+      expect(err.message).toContain("every edit op requires a type field")
+      expect(err.message).toContain("[payload truncated]")
+      expect(err.message).not.toContain("replace_lines/cut require BOTH")
+      expect(err.message.length).toBeLessThan(1500)
+    }),
+  )
+})
