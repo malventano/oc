@@ -6,3 +6,7 @@ Usage:
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
+
+Output budget: Your total output per turn is limited (typically 12k-32k tokens). A write call containing a large file is part of that output budget. If the content exceeds the remaining token budget, the tool call JSON will be truncated mid-string and fail with a parse error ("Unterminated string"). To avoid this:
+- For files longer than ~400 lines, write the first section with this tool, then append subsequent sections with the edit tool, chunked to fit the budget.
+- Each chunk should be small enough to fit within your remaining output budget. If a write fails with a parse error, the content was too large; split and retry.
