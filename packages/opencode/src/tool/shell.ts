@@ -620,17 +620,19 @@ export const ShellTool = Tool.define(
                   "3. run \"pkill -f <pattern>\" — isolated in tmux pane"
                 )
               }
-              // kill -9 $$ / $PPID kills the shell tool's own process (or its parent). Anchored
-              // to command position so the pattern can't match quoted text or commit messages
-              // (the 0036 pkill foot-gun).
-              if (/(^|[\s;&|]+)kill\s+(-9|-KILL)\s+(\$\$|\$PPID)(\s|$)/.test(params.command)) {
+              // kill -9 $$ / $PPID kills the shell tool's own process (or its parent) and
+              // hangs the session (verified 2026-08-11). Anchored to command position, but the
+              // prefix/suffix classes include ; & | quotes and parens so `kill -9 $$; ...` and
+              // nested `sh -c 'kill -9 $$'` forms are caught (0040 missed the semicolon form).
+              if (/(^|[\s;&|('"]+)kill\s+(-9|-KILL)\s+(\$\$|\$PPID)(\s|[;&|'"()]|$)/.test(params.command)) {
                 throw new Error(
-                  "BLOCKED: kill -9 $$/$PPID kills the shell tool's own process and terminates the " +
-                  "command before it completes. Use one of these safe alternatives:\n" +
+                  "BLOCKED: kill -9 $$/$PPID kills the shell tool's own process and hangs the session. " +
+                  "Use one of these safe alternatives:\n" +
                   "1. kill -9 <pid> — use PID from pgrep\n" +
                   "2. run \"kill -9 $$\" — isolated in tmux pane"
                 )
               }
+
               const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
