@@ -67,6 +67,7 @@ describe("tool.write", () => {
         const result = yield* run({ filePath: filepath, content: "Hello, World!" })
 
         expect(result.output).toContain("Wrote file successfully")
+        expect(result.output).toMatch(/\+1#[A-Z]{2}:Hello, World!/)
         expect(result.metadata.exists).toBe(false)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
@@ -105,6 +106,7 @@ describe("tool.write", () => {
         const result = yield* run({ filePath: filepath, content: "new content" })
 
         expect(result.output).toContain("Wrote file successfully")
+        expect(result.output).toMatch(/\+1#[A-Z]{2}:new content/)
         expect(result.metadata.exists).toBe(true)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))

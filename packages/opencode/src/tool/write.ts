@@ -11,12 +11,13 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { Format } from "../format"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
-import { trimDiff } from "./edit"
+import { annotateDiff, trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { readForSnapshot, recordSnapshot } from "./hashline-store"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
+const MAX_WRITE_ANNOTATED_LINES = 500
 
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
@@ -71,13 +72,23 @@ export const WriteTool = Tool.define(
             const count = snapshotText === "" ? 0 : snapshotText.endsWith("\n") ? snapshotText.split("\n").length - 1 : snapshotText.split("\n").length
             recordSnapshot(filepath, snapshotText, Array.from({ length: count }, (_, i) => i + 1))
           }
+
+          let output = "Wrote file successfully."
+          const annotated = annotateDiff(diff)
+          if (annotated) {
+            const lines = annotated.split("\n")
+            const shown = lines.slice(0, MAX_WRITE_ANNOTATED_LINES)
+            output += `\n\n${shown.join("\n")}`
+            if (lines.length > MAX_WRITE_ANNOTATED_LINES) {
+              output += `\n\n(Anchored diff truncated at ${MAX_WRITE_ANNOTATED_LINES} lines; use Read with offset for further anchors.)`
+            }
+          }
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })
           yield* events.publish(Watcher.Event.Updated, {
             file: filepath,
             event: exists ? "change" : "add",
           })
 
-          let output = "Wrote file successfully."
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
