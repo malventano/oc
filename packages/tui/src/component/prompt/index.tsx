@@ -1521,8 +1521,8 @@ export function Prompt(props: PromptProps) {
             }
           />
         </box>
-        <box width="100%" flexDirection="row" minWidth={0}>
-          <box flexGrow={1} flexShrink={0}>
+        <box width="100%" flexDirection="row" minWidth={0} overflow="hidden">
+          <box flexGrow={1} minWidth={0}>
             <Switch>
             <Match when={status().type !== "idle"}>
               <box
@@ -1603,8 +1603,8 @@ export function Prompt(props: PromptProps) {
                   </span>
                 </text>
                 <text fg={theme.textMuted}>·</text>
-                <box flexShrink={0} flexDirection="row" gap={1}>
-                  <text fg={theme.textMuted} wrapMode="none" overflow="hidden">
+                <box flexShrink={1} minWidth={0} flexDirection="row" gap={1}>
+                  <text fg={theme.textMuted} wrapMode="none" truncate>
                     {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
                     <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
                   </text>
@@ -1664,8 +1664,8 @@ export function Prompt(props: PromptProps) {
             <Match when={true}>
               {props.hint ?? (
                 <Show when={props.sessionID}>
-                  <box marginLeft={1}>
-                    <text fg={theme.textMuted}>
+                  <box marginLeft={1} minWidth={0}>
+                    <text fg={theme.textMuted} wrapMode="none" truncate>
                       {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
                       <Show when={sessionTitle()}>{(t) => <span> · {t()}</span>}</Show>
                     </text>
@@ -1677,7 +1677,7 @@ export function Prompt(props: PromptProps) {
           </box>
           <Show when={status().type !== "retry"}>
             <box width={2} flexShrink={0} />
-            <box gap={1} flexDirection="row" flexShrink={1} minWidth={0}>
+            <box gap={1} flexDirection="row" flexShrink={0}>
               <box flexDirection="row" gap={1} flexShrink={0}>
                 <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
@@ -1700,7 +1700,7 @@ export function Prompt(props: PromptProps) {
                       </text>
                     </Match>
                   </Switch>
-                  <text fg={theme.text}>
+                  <text fg={theme.text} wrapMode="none">
                     <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
                   </text>
                 </Match>
