@@ -52,6 +52,10 @@ async function checkPaneIdle(paneId) {
     }
     if (!lastLine) return { idle: false, lastLine: "" }
 
+    // DD-WRT BusyBox ash fancy prompt: bare "└─" line, cursor right after it. Must be checked
+    // before hasDialogBox — "└" is in the dialog-box class and would classify the ash prompt as busy.
+    const isAshPrompt = /^\s*└─\s*$/.test(lastLine)
+    if (isAshPrompt) return { idle: true, lastLine, promptType: "shell" }
     const hasDialogBox = /[│┌┐└┘║═╗╝╚╔╣╠╦╬╧╩]/.test(lastLine)
     if (hasDialogBox) return { idle: false, lastLine }
 
@@ -214,7 +218,9 @@ async function pollForDone(paneId, suffix, timeoutSeconds, abort, lines = 50) {
         const t = linesArr[i].trimEnd()
         if (t) { lastNonEmpty = t; lastNonEmptyIdx = i; break }
       }
-      if (lastNonEmpty && /(^|[~\/\w:.-\]])[\$#]\s*$/.test(lastNonEmpty) && !/[│┌┐└└└┘═║╔╗╚╝═╣╟╦╬╳╩⎧]/.test(lastNonEmpty)) {
+      const isBareShellPrompt = /(^|[~\/\w:.-\]])[\$#]\s*$/.test(lastNonEmpty) || /^\s*└─\s*$/.test(lastNonEmpty)
+      const nonBoxLine = isBareShellPrompt ? lastNonEmpty.replace(/^\s*└─\s*$/, "") : lastNonEmpty
+      if (lastNonEmpty && isBareShellPrompt && !/[│┌┐└└└┘═║╔╗╚╝═╣╟╦╬╳╩⎧]/.test(nonBoxLine)) {
         const bottom10 = linesArr.slice(Math.max(0, lastNonEmptyIdx - 10), lastNonEmptyIdx + 1).join("\n")
         const hasRecentDone = /DONE_[a-z0-9]+=\d+/.test(bottom10)
         if (!hasRecentDone) {
