@@ -1596,13 +1596,13 @@ export function Prompt(props: PromptProps) {
                     })()}
                   </box>
                 </box>
-                <text fg={store.interrupt > 0 ? theme.primary : theme.text} wrapMode="none" truncate>
+                <text flexShrink={0} fg={store.interrupt > 0 ? theme.primary : theme.text} wrapMode="none" truncate>
                   esc{" "}
                   <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
                     {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
                   </span>
                 </text>
-                <text fg={theme.textMuted} wrapMode="none">·</text>
+                <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
                 <box flexShrink={1} minWidth={0} flexDirection="row" gap={1}>
                   <text fg={theme.textMuted} wrapMode="none" truncate>
                     {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
