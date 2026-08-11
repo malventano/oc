@@ -949,3 +949,63 @@ describe("tool.edit", () => {
     )
   })
 })
+describe("0053 exact keys + auto-strip", () => {
+  it.instance("rejects unknown keys on edit ops with a targeted hint", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      yield* putSnap(filepath, "one\ntwo\n")
+      const err = yield* fail({
+        filePath: filepath,
+        edits: [{ type: "set_line", line: hashlineRef(1, "one"), text: "x", insert_before_line: "9#ZZ" } as never],
+      })
+      expect(err.message).toContain("Unexpected key")
+      expect(err.message).toContain("insert_before_line")
+      expect(err.message).toContain("insert_before")
+    }),
+  )
+
+  it.instance("rejects stringified edits with a dedicated hint", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      yield* putSnap(filepath, "one\n")
+      const err = yield* fail({
+        filePath: filepath,
+        edits: '[{"type": "set_line", "line": "1#AB", "text": "x"}]',
+      } as never)
+      expect(err.message).toContain("edits must be a JSON array of op objects")
+    }),
+  )
+
+  it.instance("rejects null anchors with an anchor-required hint", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      yield* putSnap(filepath, "one\n")
+      const err = yield* fail({
+        filePath: filepath,
+        edits: [{ type: "set_line", line: null as never, text: "x" }],
+      })
+      expect(err.message).toContain("anchor fields must be LINE#ID strings")
+    }),
+  )
+
+  it.instance("auto-strips echoed first line end-to-end and notes it", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const lines = ["pairs = []", "for k in items:", "    use(k)"]
+      yield* putSnap(filepath, lines.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "replace_lines",
+            start_line: hashlineRef(1, lines[0]),
+            end_line: hashlineRef(3, lines[2]),
+            text: [lines[0], "for k in items:", "    use(k, 1)", "    log(k)"],
+          },
+        ],
+      })
+      expect(yield* load(filepath)).toBe("pairs = []\nfor k in items:\n    use(k, 1)\n    log(k)\n")
+      expect(result.output).toContain("stripped echoed first line")
+    }),
+  )
+})
