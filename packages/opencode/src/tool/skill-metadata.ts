@@ -46,17 +46,23 @@ export const SkillMetadataTool = Tool.define<typeof Parameters, Metadata, FSUtil
           const results = []
           for (const info of infos) {
             const entry = yield* (Effect.gen(function* () {
-              const { description, descriptionBytes } = parseFrontmatter(info.content)
               if (!info.location.startsWith("/")) {
-                return { name: info.name, description, lineCount: info.content.split("\n").length, charCount: info.content.length, descriptionBytes }
+                return {
+                  name: info.name,
+                  description: info.description ?? "",
+                  lineCount: info.content.split("\n").length,
+                  charCount: info.content.length,
+                }
               }
+              const content = yield* fs.readFileString(info.location)
+              const { description, descriptionBytes } = parseFrontmatter(content)
               const stat = yield* fs.stat(info.location)
-              const lines = info.content.split("\n")
+              const lines = content.split("\n")
               const result: any = {
                 name: info.name,
                 description,
                 lineCount: lines.length,
-                charCount: info.content.length,
+                charCount: content.length,
                 lastModified: Option.getOrUndefined(stat.mtime)?.toISOString() ?? "",
                 descriptionBytes,
               }
