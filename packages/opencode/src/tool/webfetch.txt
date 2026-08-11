@@ -11,3 +11,5 @@ Usage notes:
   - Format options: "markdown" (default), "text", or "html"
   - This tool is read-only and does not modify any files
   - Results may be summarized if the content is very large
+
+URL discipline: NEVER fabricate URLs. Only fetch from: (a) user-provided links, (b) search results via the websearch tool, or (c) relative links from pages you already read. Do not guess vendor product slugs. Kernel docs: use kernel.org/doc/html/latest/... not docs.kernel.org/. GitHub raw files need full commit SHAs - prefer github.com/.../blob/main/... which auto-resolves. API endpoints requiring auth (GitHub /search/code, Hugging Face spaces, GitLab search) will fail. Prefer using the websearch tool to find URLs before calling webfetch. If unsure, verify with curl -I first.
