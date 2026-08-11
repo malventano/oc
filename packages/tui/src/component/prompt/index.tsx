@@ -1466,36 +1466,37 @@ export function Prompt(props: PromptProps) {
               syntaxStyle={syntax()}
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
-              <box flexDirection="row" gap={1}>
+              <box flexDirection="row" gap={1} flexShrink={1} minWidth={0}>
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
                   {(agent) => (
                     <>
-                      <text fg={fadeColor(highlight(), agentMetaAlpha())}>
+                      <text flexShrink={0} wrapMode="none" fg={fadeColor(highlight(), agentMetaAlpha())}>
                         {store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}
                       </text>
                       <Show when={store.mode === "normal" && local.permission.mode === "auto"}>
-                        <text fg={fadeColor(theme.textMuted, agentMetaAlpha())}>auto</text>
+                        <text flexShrink={0} wrapMode="none" fg={fadeColor(theme.textMuted, agentMetaAlpha())}>auto</text>
                       </Show>
                       <Show when={store.mode === "normal"}>
-                        <box flexDirection="row" gap={1}>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
+                        <box flexDirection="row" gap={1} flexShrink={1} minWidth={0}>
+                          <text flexShrink={0} wrapMode="none" fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
                           <text
-                            flexShrink={0}
+                            wrapMode="none"
+                            truncate
                             fg={fadeColor(leader() ? theme.textMuted : theme.text, modelMetaAlpha())}
                           >
                             {local.model.parsed().model}
                           </text>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{currentProviderLabel()}</text>
+                          <text flexShrink={0} wrapMode="none" fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{currentProviderLabel()}</text>
                           <Show when={showVariant()}>
-                            <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
-                            <text>
+                            <text flexShrink={0} wrapMode="none" fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
+                            <text flexShrink={0} wrapMode="none">
                               <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
                                 {local.model.variant.current()}
                               </span>
                             </text>
                           </Show>
                           <Show when={status().type !== "idle" && store.prompt.input.trim() !== ""}>
-                            <text flexShrink={0} fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
+                            <text flexShrink={0} wrapMode="none" fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
                       | enter: queue · esc: interrupt+send
                             </text>
                           </Show>
