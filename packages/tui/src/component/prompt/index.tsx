@@ -421,6 +421,13 @@ export function Prompt(props: PromptProps) {
           }
           if (!props.sessionID) return
 
+        if (store.prompt.input.trim()) {
+          setStore("interrupt", 0)
+          void sdk.client.session.abort({ sessionID: props.sessionID }).finally(() => void submit())
+          dialog.clear()
+          return
+        }
+
           setStore("interrupt", store.interrupt + 1)
 
           setTimeout(() => {
@@ -1485,6 +1492,11 @@ export function Prompt(props: PromptProps) {
                               <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
                                 {local.model.variant.current()}
                               </span>
+                            </text>
+                          </Show>
+                          <Show when={status().type !== "idle" && store.prompt.input.trim() !== ""}>
+                            <text flexShrink={0} fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
+                      | enter: queue · esc: interrupt+send
                             </text>
                           </Show>
                         </box>
