@@ -227,7 +227,14 @@ export const EditTool = Tool.define(
         if (legacy.length > 0) {
           return "Legacy edit payload has been removed. Use hashline fields: { filePath, edits, delete?, rename? } or files: [...] for batch mode."
         }
-        return `Invalid parameters for tool 'edit': ${message}`
+        const hint = message.includes('"start_line"')
+          ? " replace_lines/cut require BOTH start_line and end_line (LINE#ID refs) — use set_line for a single line."
+          : message.includes("insert_after_line") || message.includes("insert_before_line")
+            ? " insert_between uses insert_after_line and insert_before_line (LINE#ID refs); insert_after/insert_before use a single line field."
+            : message.includes("type")
+              ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
+              : ""
+        return `Invalid parameters for tool 'edit': ${message}${hint}`
       },
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
