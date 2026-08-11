@@ -73,6 +73,56 @@ describe("tool.hashline", () => {
     })
     expect(result.lines).toEqual(["+a"])
   })
+test("default autocorrect strips echoed anchor line from insert_after text", () => {
+  const result = applyHashlineEdits({
+    lines: ["keep", "end"],
+    trailing: false,
+    edits: [
+      {
+        type: "insert_after",
+        line: hashlineRef(1, "keep"),
+        text: ["keep", "new"],
+      },
+    ],
+    autocorrect: true,
+    aggressiveAutocorrect: false,
+  })
+  expect(result.lines).toEqual(["keep", "new", "end"])
+})
+
+test("default autocorrect strips echoed anchor line from insert_before text", () => {
+  const result = applyHashlineEdits({
+    lines: ["start", "keep"],
+    trailing: false,
+    edits: [
+      {
+        type: "insert_before",
+        line: hashlineRef(2, "keep"),
+        text: ["new", "keep"],
+      },
+    ],
+    autocorrect: true,
+    aggressiveAutocorrect: false,
+  })
+  expect(result.lines).toEqual(["start", "new", "keep"])
+})
+
+test("insert_after echo strip keeps a non-echoing first line intact", () => {
+  const result = applyHashlineEdits({
+    lines: ["keep"],
+    trailing: false,
+    edits: [
+      {
+        type: "insert_after",
+        line: hashlineRef(1, "keep"),
+        text: ["new", "keep"],
+      },
+    ],
+    autocorrect: true,
+    aggressiveAutocorrect: false,
+  })
+  expect(result.lines).toEqual(["keep", "new", "keep"])
+})
 
   test("parses strict LINE#ID references with tolerant extraction", () => {
     const ref = parseHashlineRef(">>> 12#ZP:const value = 1", "line")
