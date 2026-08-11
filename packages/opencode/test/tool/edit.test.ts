@@ -805,6 +805,42 @@ describe("tool.edit", () => {
       }),
     )
 
+    it.instance("hints the files-form when a paste anchor is missing from its section's file", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const a = path.join(test.directory, "a.txt")
+        const b = path.join(test.directory, "b.txt")
+        yield* putSnap(a, "alpha")
+        yield* putSnap(b, "beta")
+        const message = (yield* fail({
+          files: [
+            {
+              filePath: a,
+              edits: [{ type: "cut", start_line: hashlineRef(1, "alpha"), end_line: hashlineRef(1, "alpha"), register: "x" }],
+            },
+            { filePath: b, edits: [{ type: "paste", insert_after_line: hashlineRef(1, "gamma"), register: "x" }] },
+          ],
+        })).message
+        expect(message).toContain("anchor mismatch")
+        expect(message).toContain("files:")
+        expect(message).toContain("@x")
+      }),
+    )
+
+    it.instance("hints the files-form when a section-shaped object lands in the edits position", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const a = path.join(test.directory, "a.txt")
+        yield* putSnap(a, "alpha")
+        const message = (yield* fail({
+          filePath: a,
+          edits: [{ filePath: path.join(test.directory, "b.txt"), edits: [] }] as never,
+        })).message
+        expect(message).toContain("files:")
+        expect(message).toContain("filePath")
+      }),
+    )
+
     it.instance("moves lines across files via batch cut/paste", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance

@@ -554,7 +554,7 @@ export function applyHashlineEdits(input: {
       const text = parseText(edit.text)
       if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[start.line - 1])) {
         throw new Error(
-          `replace_lines.text[0] duplicates the range's first line (line ${start.line}: ${lines[start.line - 1]}). Do not repeat the replaced line's content; pass only the new content. To keep the range's first line and insert after it, use insert_after.`,
+          `replace_lines.text[0] duplicates the range's first line (line ${start.line}: ${lines[start.line - 1]}). Do not repeat the replaced line's content; pass only the new content. To keep the range's first line and insert after it, use insert_after; to keep it as part of the replacement, start the range at the first differing line.`,
         )
       }
       ops.push({
