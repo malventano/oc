@@ -5,6 +5,7 @@ import { createStore } from "solid-js/store"
 import { onMount, Show } from "solid-js"
 import { useTuiConfig } from "../config"
 import { useBindings } from "../keymap"
+import { smartCursorBindings } from "../util/smart-cursor"
 
 export type DialogExportOptionsProps = {
   defaultFilename: string
@@ -72,6 +73,11 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
         },
       },
     ],
+  }))
+
+  useBindings(() => ({
+    enabled: store.active === "filename" && textarea !== undefined,
+    bindings: smartCursorBindings(() => textarea),
   }))
 
   onMount(() => {
