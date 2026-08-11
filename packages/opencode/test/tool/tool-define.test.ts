@@ -152,3 +152,28 @@ describe("Tool.define", () => {
     }),
   )
 })
+
+  it.effect("unknown keys are rejected (onExcessProperty error) at the decode boundary", () =>
+    Effect.gen(function* () {
+      const info = yield* Tool.define(
+        "exact-test",
+        Effect.succeed({
+          description: "test tool",
+          parameters: params,
+          execute() {
+            return Effect.succeed({ title: "ok", output: "ok", metadata: { truncated: false } })
+          },
+        }),
+      )
+      const tool = yield* info.init()
+      const execute = tool.execute as unknown as (args: unknown, ctx: Tool.Context) => ReturnType<typeof tool.execute>
+      const exit = yield* execute({ input: "x", bogus: 42 }, makeCtx()).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const die = exit.cause.reasons.find(Cause.isDieReason)
+      const error = die?.defect as Tool.InvalidArgumentsError
+      expect(error).toBeInstanceOf(Tool.InvalidArgumentsError)
+      expect(error.message).toContain("Unexpected key")
+      expect(error.message).toContain("bogus")
+    }),
+  )

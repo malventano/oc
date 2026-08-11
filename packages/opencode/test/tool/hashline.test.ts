@@ -107,6 +107,67 @@ test("default autocorrect strips echoed anchor line from insert_before text", ()
   expect(result.lines).toEqual(["start", "new", "keep"])
 })
 
+test("set_line echo auto-strips first line and converts to insert_after", () => {
+  const result = applyHashlineEdits({
+    lines: ["a", "b", "c"],
+    trailing: false,
+    edits: [{ type: "set_line", line: hashlineRef(2, "b"), text: ["b", "x", "y"] }],
+    autocorrect: true,
+    aggressiveAutocorrect: false,
+  })
+  expect(result.lines).toEqual(["a", "b", "x", "y", "c"])
+  expect(result.notes).toEqual(["stripped echoed first line (line 2): set_line treated as insert_after"])
+})
+
+test("replace_lines echo auto-strips first line and shifts range start", () => {
+  const result = applyHashlineEdits({
+    lines: ["pairs = []", "for k in items:", "    use(k)", "done"],
+    trailing: false,
+    edits: [
+      {
+        type: "replace_lines",
+        start_line: hashlineRef(1, "pairs = []"),
+        end_line: hashlineRef(3, "    use(k)"),
+        text: ["pairs = []", "for k in items:", "    use(k, 1)", "    log(k)"],
+      },
+    ],
+    autocorrect: true,
+    aggressiveAutocorrect: false,
+  })
+  expect(result.lines).toEqual(["pairs = []", "for k in items:", "    use(k, 1)", "    log(k)", "done"])
+  expect(result.notes).toEqual(["stripped echoed first line (line 1): range now starts at line 2"])
+})
+
+test("single-line replace_lines echo auto-strips and converts to insert_after", () => {
+  const result = applyHashlineEdits({
+    lines: ["a", "b"],
+    trailing: false,
+    edits: [
+      {
+        type: "replace_lines",
+        start_line: hashlineRef(1, "a"),
+        end_line: hashlineRef(1, "a"),
+        text: ["a", "keep-and-add"],
+      },
+    ],
+    autocorrect: true,
+    aggressiveAutocorrect: false,
+  })
+  expect(result.lines).toEqual(["a", "keep-and-add", "b"])
+})
+
+test("lone set_line echo (no new content) still fails closed as ambiguous", () => {
+  expect(() =>
+    applyHashlineEdits({
+      lines: ["a", "b"],
+      trailing: false,
+      edits: [{ type: "set_line", line: hashlineRef(2, "b"), text: ["b"] }],
+      autocorrect: true,
+      aggressiveAutocorrect: false,
+    }),
+  ).toThrow(/ambiguous/)
+})
+
 test("insert_after echo strip keeps a non-echoing first line intact", () => {
   const result = applyHashlineEdits({
     lines: ["keep"],
