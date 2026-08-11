@@ -428,7 +428,7 @@ describe("tool.edit", () => {
 
         const result = yield* run({
           filePath: filepath,
-          edits: [{ type: "set_line", line: hashlineRef(1, lines[0]), text: "alpha" }],
+          edits: [{ type: "replace", old_text: "alpha", new_text: "alpha" }],
         })
 
         expect(result.output).toContain("No changes applied")

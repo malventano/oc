@@ -153,11 +153,17 @@ export function parseHashlineRef(input: string, label: string) {
 }
 
 function toLines(text: TextValue) {
-  if (Array.isArray(text)) return text
-  return text.split(/\r?\n/)
+  if (Array.isArray(text)) {
+    const flat = text.flatMap((el) => el.split(/\r?\n/))
+    while (flat.length > 1 && flat[flat.length - 1] === "") flat.pop()
+    return flat
+  }
+  const split = text.split(/\r?\n/)
+  while (split.length > 1 && split[split.length - 1] === "") split.pop()
+  return split
 }
 
-const HASHLINE_PREFIX_RE = /^\s*(?:>>>|>>)?\s*\d+#[ZPMQVRWSNKTXJBYH]{2}:/
+const HASHLINE_PREFIX_RE = /^\s*(?:>>>|>>)?\s*[+-]?\s*\d+#[ZPMQVRWSNKTXJBYH]{2}:/
 const WRAPPER_PREFIX_RE = /^\s*(?:>>>|>>)\s?/
 
 function stripByMajority(lines: string[], test: (line: string) => boolean, rewrite: (line: string) => string) {
@@ -171,11 +177,7 @@ function stripByMajority(lines: string[], test: (line: string) => boolean, rewri
 }
 
 function stripNewLinePrefixes(lines: string[]) {
-  const stripped = stripByMajority(
-    lines,
-    (line) => HASHLINE_PREFIX_RE.test(line),
-    (line) => line.replace(HASHLINE_PREFIX_RE, ""),
-  )
+  const stripped = lines.map((line) => (HASHLINE_PREFIX_RE.test(line) ? line.replace(HASHLINE_PREFIX_RE, "") : line))
   return stripByMajority(
     stripped,
     (line) => WRAPPER_PREFIX_RE.test(line),
@@ -476,6 +478,7 @@ export function applyHashlineEdits(input: {
   const autocorrect = input.autocorrect ?? Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
   const aggressiveAutocorrect = input.aggressiveAutocorrect ?? Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
   const parseText = (text: TextValue) => {
+    if (text === "") return []
     const next = toLines(text)
     if (!autocorrect) return next
     return stripNewLinePrefixes(next)
@@ -518,10 +521,16 @@ export function applyHashlineEdits(input: {
     if (edit.type === "set_line") {
       const line = parseHashlineRef(edit.line, "set_line.line")
       refs.push(line)
+      const text = parseText(edit.text)
+      if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[line.line - 1])) {
+        throw new Error(
+          `set_line.text[0] duplicates the anchor line (line ${line.line}: ${lines[line.line - 1]}). set_line REPLACES the line — do not repeat its content; pass only the new content.`,
+        )
+      }
       ops.push({
         start: line.line - 1,
         del: 1,
-        text: parseText(edit.text),
+        text,
         order,
         kind: "set_line",
         sortLine: line.line,
@@ -542,10 +551,16 @@ export function applyHashlineEdits(input: {
         throw new Error("replace_lines.start_line must be less than or equal to replace_lines.end_line")
       }
 
+      const text = parseText(edit.text)
+      if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[start.line - 1])) {
+        throw new Error(
+          `replace_lines.text[0] duplicates the range's first line (line ${start.line}: ${lines[start.line - 1]}). Do not repeat the replaced line's content; pass only the new content.`,
+        )
+      }
       ops.push({
         start: start.line - 1,
         del: end.line - start.line + 1,
-        text: parseText(edit.text),
+        text,
         order,
         kind: "replace_lines",
         sortLine: end.line,
