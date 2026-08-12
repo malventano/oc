@@ -2513,11 +2513,12 @@ function Edit(props: ToolProps) {
  })
 
   const title = createMemo(() => {
-    const paths = editPaths()
-    if (paths.length === 0) return "Edit"
-    if (paths.length <= 3) return `Edit ${paths.map((p) => pathFormatter.format(p)).join(", ")}`
-    return `Edit ${paths.length} files`
-  })
+   const paths = editPaths()
+   if (paths.length === 0) return "Edit"
+   const formatted = paths.map((p) => pathFormatter.format(p))
+   if (formatted.length <= 6) return `Edit ${formatted.join(", ")}`
+   return `Edit ${formatted.slice(0, 6).join(", ")} +${formatted.length - 6} more`
+ })
 
   const view = createMemo(() => {
     const diffStyle = ctx.tui.diff_style
