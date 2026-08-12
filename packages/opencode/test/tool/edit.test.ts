@@ -539,8 +539,8 @@ describe("tool.edit", () => {
        expect(result.metadata.files).toBeDefined()
        const files = result.metadata.files as Array<Record<string, unknown>>
        expect(files.length).toBe(2)
-       expect(files[0]).toMatchObject({ type: "edit", filePath: first })
-       expect(files[1]).toMatchObject({ type: "edit", filePath: second })
+      expect(files[0]).toMatchObject({ type: "edit", filePath: first, changed: true })
+      expect(files[1]).toMatchObject({ type: "edit", filePath: second, changed: true })
       expect(files[0].patch).toContain("+BETA")
       expect(files[1].patch).toContain("+delta")
      }),
@@ -567,12 +567,13 @@ describe("tool.edit", () => {
 
        const files = result.metadata.files as Array<Record<string, unknown>>
        expect(files.length).toBe(2)
-       expect(files[0]).toMatchObject({ type: "delete", filePath: doomed })
+     expect(files[0]).toMatchObject({ type: "delete", filePath: doomed, changed: true })
        expect(files[1]).toMatchObject({
-         type: "move",
-         filePath: moved,
-         movePath: path.join(test.directory, "renamed.txt"),
-       })
+        type: "move",
+        filePath: moved,
+        changed: false,
+        movePath: path.join(test.directory, "renamed.txt"),
+      })
      }),
    )
   })
