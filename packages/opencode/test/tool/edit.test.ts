@@ -1,9 +1,9 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { EditTool } from "../../src/tool/edit"
+import { EditTool, findIndentWarnings } from "../../src/tool/edit"
 import { hashlineRef } from "../../src/tool/hashline"
 import { disposeAllInstances, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -1655,6 +1655,79 @@ describe("same-file multi-section patches", () => {
       })
       const finalTag = fileTag(yield* load(filepath))
       expect(result.output).toMatch(new RegExp(`\\[final-tag\\.txt#${finalTag}\\]`))
+    }),
+  )
+})
+
+describe("indentation validator (changed-lines map)", () => {
+  test("flags a uniform +1 block shift via the map when line counts differ", () => {
+    const before = "if (x) {\n  const a = 1\n  const b = 2\n}\n"
+    // The replacement landed one space over AND an insert changed the line
+    // count - the equal-count fallback goes blind, the map still fires.
+    const after = "if (x) {\n  const a = 1\n  // insert\n   const b = 2\n}\n"
+    const changed = new Map<number, string>([[3, "  const b = 2"]])
+    const warnings = findIndentWarnings(after, before, changed)
+    expect(warnings.some((w) => w.includes("one space OVER"))).toBe(true)
+  })
+
+  test("flags the one-short fold via the map", () => {
+    const before = "if (x) {\n  const a = 1\n  const b = 2\n}\n"
+    const after = "if (x) {\n  const a = 1\n  // insert\n  const b = 2\n}\n"
+    const changed = new Map<number, string>([[3, "   const b = 2"]])
+    const warnings = findIndentWarnings(after, before, changed)
+    expect(warnings.some((w) => w.includes("one space short"))).toBe(true)
+  })
+
+  test("no warnings for a correctly indented replacement plus an insert", () => {
+    const before = "if (x) {\n  const a = 1\n  const b = 2\n}\n"
+    const after = "if (x) {\n  const a = 1\n  // insert\n  const b = 3\n}\n"
+    const changed = new Map<number, string>([[3, "  const b = 2"]])
+    expect(findIndentWarnings(after, before, changed)).toEqual([])
+  })
+
+  it.instance("flags a uniformly shifted block end-to-end when the patch also inserts", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "nested.ts")
+      const content = "function f() {\n  if (x) {\n    const a = 1\n    const b = 2\n  }\n}\n"
+      yield* putSnap(filepath, content)
+      const lines = content.split("\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "replace_lines",
+            start_line: hashlineRef(3, lines[2]),
+            end_line: hashlineRef(4, lines[3]),
+            text: ["     const a = 1 // over", "     const b = 2"],
+          },
+          { type: "insert_after", line: hashlineRef(1, lines[0]), text: "  // insert" },
+        ],
+      })
+      expect(result.output).toContain("indentation validator flags")
+      // both replaced lines are caught via the changed-lines map (unequal
+      // line counts: the insert disables the equal-count fallback)
+      expect((result.output.match(/one space OVER/g) ?? []).length).toBe(2)
+      expect(yield* load(filepath)).toBe("function f() {\n  // insert\n  if (x) {\n     const a = 1 // over\n     const b = 2\n  }\n}\n")
+    }),
+  )
+
+  it.instance("no validator warning for correct deep inserts and sets", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "nested.ts")
+      const content = "function f() {\n  if (x) {\n    const a = 1\n  }\n}\n"
+      yield* putSnap(filepath, content)
+      const lines = content.split("\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          { type: "set_line", line: hashlineRef(3, lines[2]), text: "    const a = 2" },
+          { type: "insert_after", line: hashlineRef(3, lines[2]), text: "    const b = 3" },
+        ],
+      })
+      expect(result.output).not.toContain("indentation validator flags")
+      expect(yield* load(filepath)).toBe("function f() {\n  if (x) {\n    const a = 2\n    const b = 3\n  }\n}\n")
     }),
   )
 })
