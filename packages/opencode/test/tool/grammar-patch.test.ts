@@ -86,6 +86,16 @@ describe("grammar-patch parsePatch", () => {
     ])
   })
 
+ test("parses PASTE with optional trailing colon (matches other op headers)", () => {
+   const files = parseOk(
+     ["*** Begin Patch", "[a.txt#A1B2]", "PASTE @fn AFTER 5#JK:", "PASTE @fn BEFORE 6#LM:", "*** End Patch"].join("\n"),
+   )
+   expect(files[0].edits).toEqual([
+     { type: "paste", register: "@fn", insert_after_line: "5#JK" },
+     { type: "paste", register: "@fn", insert_before_line: "6#LM" },
+   ])
+ })
+
   test("parses DELETE and RENAME as file-level ops", () => {
     const files = parseOk(
       ["*** Begin Patch", "[a.txt#A1B2]", "RENAME b.txt", "[c.txt#C3D4]", "DELETE", "*** End Patch"].join("\n"),
