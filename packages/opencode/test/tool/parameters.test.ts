@@ -120,34 +120,16 @@ describe("tool parameters", () => {
   })
 
   describe("edit", () => {
-    test("accepts filePath with edits", () => {
-      expect(parse(Edit, { filePath: "/a", edits: [{ type: "append", text: "y" }] })).toEqual({
-        filePath: "/a",
-        edits: [{ type: "append", text: "y" }],
+    test("accepts input", () => {
+      expect(parse(Edit, { input: "*** Begin Patch\n*** End Patch" })).toEqual({
+        input: "*** Begin Patch\n*** End Patch",
       })
     })
-    test("edits is optional", () => {
-      const parsed = parse(Edit, { filePath: "/a", delete: true })
-      expect(parsed.edits).toBeUndefined()
+    test("rejects missing input", () => {
+      expect(accepts(Edit, {})).toBe(false)
     })
-    test("filePath is optional to allow files batch mode", () => {
-      const parsed = parse(Edit, { files: [{ filePath: "/a", edits: [{ type: "append", text: "x" }] }] })
-      expect(parsed.files?.[0].filePath).toBe("/a")
-    })
-    test("accepts cut/paste register ops", () => {
-      const parsed = parse(Edit, {
-        filePath: "/a",
-        edits: [
-          { type: "cut", start_line: "1#AB", end_line: "2#CD", register: "fn" },
-          { type: "paste", insert_after_line: "4#EF", register: "fn" },
-        ],
-      })
-      expect(parsed.edits).toHaveLength(2)
-    })
-    test("legacy payload keys are stripped by the schema", () => {
-      const parsed = parse(Edit, { filePath: "/a", oldString: "x", newString: "y" })
-      expect(parsed).toEqual({ filePath: "/a" })
-      expect(parsed.edits).toBeUndefined()
+    test("rejects legacy JSON payloads", () => {
+      expect(accepts(Edit, { filePath: "/a", edits: [{ type: "append", text: "y" }] })).toBe(false)
     })
   })
 
