@@ -8,7 +8,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
-import { SessionCompaction } from "../../src/session/compaction"
+import { SessionCompaction, hasNewerPrompt } from "../../src/session/compaction"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -2298,5 +2298,35 @@ describe("SessionNs.getUsage", () => {
     expect(result.tokens.input).toBe(500)
     expect(result.tokens.cache.read).toBe(200)
     expect(result.tokens.cache.write).toBe(300)
+  })
+})
+describe("hasNewerPrompt", () => {
+  const msg = (id: string, role: "user" | "assistant", parts: SessionV1.Part[] = []) =>
+    ({ info: { id, role }, parts }) as unknown as SessionV1.WithParts
+  const marker = (id: string) => msg(id, "user", [{ type: "compaction" } as SessionV1.Part])
+
+  test("false when only the marker itself is present", () => {
+    const messages = [marker("msg_2")]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(false)
+  })
+
+  test("true when a real prompt was queued after the marker", () => {
+    const messages = [marker("msg_2"), msg("msg_3", "user")]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(true)
+  })
+
+  test("false when newer messages are not real prompts", () => {
+    const messages = [marker("msg_2"), msg("msg_3", "assistant"), marker("msg_4")]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(false)
+  })
+
+  test("false when the prompt predates the marker", () => {
+    const messages = [msg("msg_1", "user"), marker("msg_2")]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(false)
+  })
+
+  test("true with mixed later messages including a real prompt", () => {
+    const messages = [marker("msg_2"), msg("msg_3", "assistant"), msg("msg_4", "user")]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(true)
   })
 })
