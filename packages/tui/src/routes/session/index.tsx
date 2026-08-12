@@ -2523,57 +2523,99 @@ function Edit(props: ToolProps) {
   const title = createMemo(() => {
    const paths = editPaths()
    if (paths.length === 0) return "Edit"
-   const formatted = paths.map((p) => pathFormatter.format(p))
-   if (formatted.length <= 6) return `Edit ${formatted.join(", ")}`
-   return `Edit ${formatted.slice(0, 6).join(", ")} +${formatted.length - 6} more`
+   if (paths.length === 1) return `Edit ${pathFormatter.format(paths[0])}`
+   return `Edit ${paths.length} files`
  })
 
-  const view = createMemo(() => {
-    const diffStyle = ctx.tui.diff_style
-    if (diffStyle === "stacked") return "unified"
-    // Default to "auto" behavior
-    return ctx.width > 120 ? "split" : "unified"
-  })
+ const view = createMemo(() => {
+   const diffStyle = ctx.tui.diff_style
+   if (diffStyle === "stacked") return "unified"
+   // Default to "auto" behavior
+   return ctx.width > 120 ? "split" : "unified"
+ })
 
-  const ft = createMemo(() => filetype(editPaths()[0] ?? ""))
+ const fileDiffs = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
-  const diffContent = createMemo(() => stringValue(props.metadata.diff) ?? "")
+ function fileTitle(file: { type: string; relativePath: string; filePath: string; movePath?: string }) {
+   if (file.type === "delete") return "# Deleted " + file.relativePath
+   if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " > " + file.relativePath
+   return "← Patched " + file.relativePath
+ }
 
-  return (
-    <Switch>
-      <Match when={stringValue(props.metadata.diff) !== undefined}>
-        <BlockTool title={"← " + title()} part={props.part}>
-          <box paddingLeft={1}>
-            <diff
-              diff={diffContent()}
-              view={view()}
-              filetype={ft()}
-              syntaxStyle={syntax()}
-              showLineNumbers={true}
-              width="100%"
-              wrapMode={ctx.diffWrapMode()}
-              fg={theme.text}
-              addedBg={theme.diffAddedBg}
-              removedBg={theme.diffRemovedBg}
-              contextBg={theme.diffContextBg}
-              addedSignColor={theme.diffHighlightAdded}
-              removedSignColor={theme.diffHighlightRemoved}
-              lineNumberFg={theme.diffLineNumber}
-              lineNumberBg={theme.diffContextBg}
-              addedLineNumberBg={theme.diffAddedLineNumberBg}
-              removedLineNumberBg={theme.diffRemovedLineNumberBg}
-            />
-          </box>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={editPaths()[0] ?? ""} />
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit..." complete={title()} part={props.part}>
+ return (
+   <Switch>
+     <Match when={fileDiffs().length > 0}>
+       <For each={fileDiffs()}>
+         {(file) => (
+           <BlockTool title={fileTitle(file)} part={props.part}>
+             <Show
+               when={file.type !== "delete"}
+               fallback={
+                 <text fg={theme.diffRemoved}>
+                   -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
+                 </text>
+               }
+             >
+               <box paddingLeft={1}>
+                 <diff
+                   diff={file.patch}
+                   view={view()}
+                   filetype={filetype(file.filePath)}
+                   syntaxStyle={syntax()}
+                   showLineNumbers={true}
+                   width="100%"
+                   wrapMode={ctx.diffWrapMode()}
+                   fg={theme.text}
+                   addedBg={theme.diffAddedBg}
+                   removedBg={theme.diffRemovedBg}
+                   contextBg={theme.diffContextBg}
+                   addedSignColor={theme.diffHighlightAdded}
+                   removedSignColor={theme.diffHighlightRemoved}
+                   lineNumberFg={theme.diffLineNumber}
+                   lineNumberBg={theme.diffContextBg}
+                   addedLineNumberBg={theme.diffAddedLineNumberBg}
+                   removedLineNumberBg={theme.diffRemovedLineNumberBg}
+                 />
+               </box>
+               <Diagnostics diagnostics={props.metadata.diagnostics} filePath={file.movePath ?? file.filePath} />
+             </Show>
+           </BlockTool>
+         )}
+       </For>
+     </Match>
+     <Match when={stringValue(props.metadata.diff) !== undefined}>
+       <BlockTool title={"← " + title()} part={props.part}>
+         <box paddingLeft={1}>
+           <diff
+             diff={stringValue(props.metadata.diff) ?? ""}
+             view={view()}
+             filetype={filetype(editPaths()[0] ?? "")}
+             syntaxStyle={syntax()}
+             showLineNumbers={true}
+             width="100%"
+             wrapMode={ctx.diffWrapMode()}
+             fg={theme.text}
+             addedBg={theme.diffAddedBg}
+             removedBg={theme.diffRemovedBg}
+             contextBg={theme.diffContextBg}
+             addedSignColor={theme.diffHighlightAdded}
+             removedSignColor={theme.diffHighlightRemoved}
+             lineNumberFg={theme.diffLineNumber}
+             lineNumberBg={theme.diffContextBg}
+             addedLineNumberBg={theme.diffAddedLineNumberBg}
+             removedLineNumberBg={theme.diffRemovedLineNumberBg}
+           />
+         </box>
+         <Diagnostics diagnostics={props.metadata.diagnostics} filePath={editPaths()[0] ?? ""} />
+       </BlockTool>
+     </Match>
+     <Match when={true}>
+       <InlineTool icon="←" pending="Preparing edit..." complete={title()} part={props.part}>
          {title()}
-        </InlineTool>
-      </Match>
-    </Switch>
-  )
+       </InlineTool>
+     </Match>
+   </Switch>
+ )
 }
 
 function ApplyPatch(props: ToolProps) {

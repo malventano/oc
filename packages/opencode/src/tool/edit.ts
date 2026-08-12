@@ -500,10 +500,22 @@ export const EditTool = Tool.define(
             deletions,
           }
 
-          const metadata = {
+         const fileDiffs = planned
+           .map((p) => ({
+             filePath: p.sourcePath,
+             relativePath: path.relative(instance.worktree, p.targetPath).replaceAll("\\", "/"),
+             type: p.deleted ? "delete" : p.section.rename ? "move" : "edit",
+             patch: p.diff,
+             additions: p.lineCounts.new - p.lineCounts.old,
+             deletions: p.lineCounts.old - p.lineCounts.new,
+             movePath: p.section.rename ? p.targetPath : undefined,
+           }))
+           .filter((f) => f.type === "delete" || f.patch.length > 0)
+         const metadata = {
            diagnostics,
            diff: diffs.join("\n"),
            filediff,
+           files: fileDiffs,
            edit_mode: HASHLINE_EDIT_MODE,
            noop: planned.every((p) => p.noop) ? 1 : 0,
            paths: planned.map((p) => p.targetPath),
