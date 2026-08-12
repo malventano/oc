@@ -4,17 +4,17 @@ import { unlink } from "node:fs/promises"
 import { Database } from "@opencode-ai/core/database/database"
 import * as Tool from "./tool"
 
-const DESCRIPTION = `Replace a past tool output in this session with a short summary you write, so future prompts see the small version instead of the full output. Use proactively: every turn re-reads every output in the chain, so long outputs you've finished with keep costing context. Squash soon after use — edits near the end of the chain preserve the prefix cache; edits deep in history invalidate everything after them.
+const DESCRIPTION = `Replace a past tool output in this session with a short summary you write, so future prompts see the small version instead of the full output. Use proactively: every turn re-reads every output in the chain, so long outputs you've finished with keep costing context. Squash soon after use - edits near the end of the chain preserve the prefix cache; edits deep in history invalidate everything after them.
 
 WHEN to squash: outputs > ~2K tokens you won't reference again (ls, grep, docker logs, git diff/status, build logs) once you've extracted what you need from them.
 
 DON'T squash: reference material you'll consult again (skills, docs, configs you're studying), file contents you're about to edit (need originals for diffs), anything you'd re-read where the source may change first.
 
-SUMMARY (required, non-empty): useless output → short phrase ("empty", "no matches", "0 errors"); useful output → include the findings, values, or lines you extracted. The summary is all you'll see going forward — if you'd need the full output again, don't squash. Must shrink the total: summary × parts must be smaller than the original (checked; single = summary < original).
+SUMMARY (required, non-empty): useless output → short phrase ("empty", "no matches", "0 errors"); useful output → include the findings, values, or lines you extracted. The summary is all you'll see going forward - if you'd need the full output again, don't squash. Must shrink the total: summary × parts must be smaller than the original (checked; single = summary < original).
 
 TARGET: omit for the most recent completed tool output; pass { part_id } for precision (ids appear in sessions-browse/search output); or { tool, input_contains } to match a tool by input substring (backslashes in the pattern are auto-doubled to match the JSON-escaped stored form). match: "all" applies the pattern to every match (aggregate length check).
 
-DEPTH (default 3): only outputs within the last 3 user turns. Deeper targets are refused — pass depth: -1 to reach any depth, including content below the compaction boundary (not in the current prompt; the change applies if that content re-enters the live chain; large prefix-cache invalidation).
+DEPTH (default 3): only outputs within the last 3 user turns. Deeper targets are refused - pass depth: -1 to reach any depth, including content below the compaction boundary (not in the current prompt; the change applies if that content re-enters the live chain; large prefix-cache invalidation).
 
 The TUI record stays; only future prompts see the summary. Multiple calls in one message are fine (each targets its own output). Cannot squash this tool's own output.`
 
@@ -81,7 +81,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           const hasPattern = Boolean(target.tool || target.input_contains)
 
           if (hasId && hasPattern) {
-            throw new Error("target: part_id cannot be combined with tool/input_contains — pick one.")
+            throw new Error("target: part_id cannot be combined with tool/input_contains - pick one.")
           }
           if (match === "all" && !hasPattern) {
             throw new Error("match: 'all' requires a pattern target (tool and/or input_contains).")

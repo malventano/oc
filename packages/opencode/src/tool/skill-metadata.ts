@@ -5,7 +5,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Skill } from "../skill"
 import * as Tool from "./tool"
 
-const DESCRIPTION = `Read-only skill metadata query. Returns frontmatter (name, description), line/char counts, sibling file inventory, last-modified mtime, and description byte count for one or all skills. Use for auditing skill state, verifying description changes, or inspecting sibling structure without loading full bodies. No DB access — pure filesystem read.`
+const DESCRIPTION = `Read-only skill metadata query. Returns frontmatter (name, description), line/char counts, sibling file inventory, last-modified mtime, and description byte count for one or all skills. Use for auditing skill state, verifying description changes, or inspecting sibling structure without loading full bodies. No DB access - pure filesystem read.`
 
 export const Parameters = Schema.Struct({
   skill: Schema.optional(Schema.String).annotate({

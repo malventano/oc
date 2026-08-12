@@ -11,8 +11,8 @@ REQUIRED vs OPTIONAL args differ per op:
 |----|----------|----------|
 | duplicate-session | sourceId, newDirectory, suffix, confirm | newTitle |
 | split-session | sourceId, cutoffMessageId, newDirectory, suffix, confirm | newTitle |
-| fix-paths | oldPath, newPath, confirm | — |
-| unarchive-session | sessionId, confirm | — |
+| fix-paths | oldPath, newPath, confirm | - |
+| unarchive-session | sessionId, confirm | - |
 | reassign-project | newProjectId, confirm | filterSessionId |
 
 Operations:
