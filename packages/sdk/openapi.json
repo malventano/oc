@@ -6688,6 +6688,15 @@
             },
             "required": false
           }
+          ,
+          {
+            "name": "resume",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false
+          }
         ],
         "responses": {
           "200": {

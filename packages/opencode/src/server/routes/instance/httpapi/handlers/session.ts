@@ -16,7 +16,7 @@ import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
-import { Cause, Effect, Option, Schema, Scope } from "effect"
+import { Cause, Effect, Exit, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -229,8 +229,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* fork({ params: ctx.params, payload })
     })
 
-    const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* promptSvc.cancel(ctx.params.sessionID)
+    const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: { resume?: boolean }
+    }) {
+      // resume=true is the TUI's Enter-flush: interrupt the current turn and
+      // process queued prompts. Plain aborts (double-ESC interrupt) stop the
+      // session flat - no queue drain past the cancel.
+      yield* promptSvc.cancel(ctx.params.sessionID, ctx.query.resume === true)
       return true
     })
 
@@ -381,14 +387,29 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
-    const deleteMessage = Effect.fn("SessionHttpApi.deleteMessage")(function* (ctx: {
-      params: { sessionID: SessionID; messageID: MessageID }
-    }) {
-      yield* requireSession(ctx.params.sessionID)
-      yield* SessionError.mapBusy(runState.assertNotBusy(ctx.params.sessionID))
-      yield* session.removeMessage(ctx.params)
-      return true
-    })
+     const deleteMessage = Effect.fn("SessionHttpApi.deleteMessage")(function* (ctx: {
+       params: { sessionID: SessionID; messageID: MessageID }
+     }) {
+       yield* requireSession(ctx.params.sessionID)
+       // Busy sessions reject message deletion (409) except for queued user
+       // messages: one with no assistant child has not been touched by the run
+       // loop yet, so it can be pulled back out of the queue mid-flight.
+       // Messages with an assistant child are in-flight or history and stay
+       // blocked until the session goes idle.
+       const busy = Exit.isFailure(yield* runState.assertNotBusy(ctx.params.sessionID).pipe(Effect.exit))
+       if (busy) {
+         const messages = yield* session
+           .messages({ sessionID: ctx.params.sessionID })
+           .pipe(Effect.catch(() => Effect.succeed([])))
+         const message = messages.find((m) => m.info.id === ctx.params.messageID)
+         const queued =
+           message?.info.role === "user" &&
+           !messages.some((m) => m.info.role === "assistant" && m.info.parentID === ctx.params.messageID)
+         if (!queued) yield* SessionError.mapBusy(runState.assertNotBusy(ctx.params.sessionID))
+       }
+       yield* session.removeMessage(ctx.params)
+       return true
+     })
 
     const deletePart = Effect.fn("SessionHttpApi.deletePart")(function* (ctx: {
       params: { sessionID: SessionID; messageID: MessageID; partID: PartID }

@@ -9978,6 +9978,7 @@ export type SessionAbortData = {
   query?: {
     directory?: string
     workspace?: string
+    resume?: boolean
   }
   url: "/session/{sessionID}/abort"
 }
