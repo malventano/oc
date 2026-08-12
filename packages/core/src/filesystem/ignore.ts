@@ -1,6 +1,6 @@
 import { Glob } from "../util/glob"
 
-const FOLDERS = new Set([
+export const FOLDERS = new Set([
   "node_modules",
   "bower_components",
   ".pnpm-store",
