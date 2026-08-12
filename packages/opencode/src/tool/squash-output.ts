@@ -16,7 +16,16 @@ TARGET: omit for the most recent completed tool output; pass { part_id } for pre
 
 DEPTH (default 3): only outputs within the last 3 user turns. Deeper targets are refused - pass depth: -1 to reach any depth, including content below the compaction boundary (not in the current prompt; the change applies if that content re-enters the live chain; large prefix-cache invalidation).
 
-The TUI record stays; only future prompts see the summary. Multiple calls in one message are fine (each targets its own output). Cannot squash this tool's own output.`
+The TUI record stays; only future prompts see the summary. Multiple calls in one message are fine (each targets its own output). Cannot squash this tool's own output.
+
+POST-SQUASH STATE (read before squashing): the summary you write REPLACES the
+original output - the old text is destroyed. The rewrite updates the session
+DB and unlinks the dump file (if any); the original cannot be recovered via
+session tools. Non-hint reminders (timestamp) survive. Squashing does NOT
+change what earlier prompts in this conversation already showed you; it only
+changes what FUTURE prompts reconstruct. So any fact you might need later
+must be IN the summary - the summary is the only permanent record; anything
+left out of it is gone.`
 
 const SELF_ID = "squash-output"
 const SELF_LEGACY = "squash_output"
