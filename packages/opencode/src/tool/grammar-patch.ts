@@ -53,7 +53,7 @@ const OPS: Array<{ re: RegExp; build: (m: RegExpExecArray) => GrammarOp | "fileL
     },
   },
   {
-    re: new RegExp(`^PASTE (${REG}) (AFTER|BEFORE) (${ANCHOR})$`),
+   re: new RegExp(`^PASTE (${REG}) (AFTER|BEFORE) (${ANCHOR}):?$`),
     build: (m) =>
       m[2] === "AFTER"
         ? { type: "paste", register: m[1], insert_after_line: m[3] }
