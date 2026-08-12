@@ -749,22 +749,37 @@ export function findIndentWarnings(after: string, before?: string): string[] {
   const lines = after.split("\n")
   // When the pre-edit content is available, only consider lines the edit
   // actually ADDED or CHANGED - never nudge about pre-existing lines the
-  // patch did not touch.
+  // patch did not touch. The filter is position-aware: a line counts as
+  // pre-existing only when it sits at the SAME index in the pre-edit
+  // content. The former string-Set membership misclassified changed lines
+  // whose new text byte-matches a line elsewhere in the file (0089
+  // Set-collision: the fixed comment lines byte-matched the identical
+  // loop-guard block and were wrongly skipped). Index equality is exact
+  // for equal line counts (REPLACE/SET) and covers the common
+  // insert-below/above cases; a preserved line shifted by an insert is
+  // conservatively treated as edited - a warning on a shifted
+  // pre-existing fold is harmless.
   const beforeLinesArr = before ? before.split("\n") : undefined
-  const beforeLines = beforeLinesArr ? new Set(beforeLinesArr) : undefined
+  const beforeLen = beforeLinesArr?.length ?? 0
   const warnings: string[] = []
   const isCommentOrInterior = (l: string) => /^\s*(\/\/|\/\*|\*)/.test(l)
+  // Block-comment interior/close lines (`*` continuation, `*/`) are
+  // decorative: they sit at opener-indent + 1 BY DESIGN, so the fold
+  // checks must never see them (a `*` at 3 next to code at 2 is the
+  // correct style, not an over-fold). Openers (`/*`) stay checked.
+  const isInterior = (l: string) => /^\s*\*/.test(l)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
     if (line.trim() === "") continue
-    if (beforeLines?.has(line)) continue // pre-existing line, not ours
+    if (isInterior(line)) continue
+    if (beforeLinesArr && i < beforeLen && beforeLinesArr[i] === line) continue // pre-existing line, not ours
     const lineIndent = line.match(/^\s*/)![0].length
     const kind = /^\s*(\/\/|\/\*)/.test(line) ? "comment" : "code line"
     // Original-line check: with equal line counts the position maps 1:1, so
-    // a REPLACE landing one space short of the line it replaced is caught
-    // even when neither neighbor sits at the expected indent (the neighbors
-    // straddle it). The replaced line's own indent is the strongest
-    // reference; skip the adjacent scan when it fires.
+    // a REPLACE landing one space short (or over) of the line it replaced
+    // is caught even when neither neighbor sits at the expected indent (the
+    // neighbors straddle it). The replaced line's own indent is the
+    // strongest reference; skip the adjacent scan when it fires.
     if (beforeLinesArr && beforeLinesArr.length === lines.length) {
       const orig = beforeLinesArr[i]!
       if (orig.trim() !== "") {
@@ -772,6 +787,12 @@ export function findIndentWarnings(after: string, before?: string): string[] {
         if (origIndent === lineIndent + 1 && origIndent > 0) {
           warnings.push(
             `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, original line at ${origIndent} - likely one space short (the content row needs one MORE space after the '+' separator).`,
+          )
+          continue
+        }
+        if (origIndent === lineIndent - 1) {
+          warnings.push(
+            `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, original line at ${origIndent} - likely one space OVER (the previous fix added one space too many).`,
           )
           continue
         }
@@ -791,6 +812,16 @@ export function findIndentWarnings(after: string, before?: string): string[] {
     if (hit !== undefined) {
       warnings.push(
         `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${hit} - likely one space short (the content row needs one MORE space after the '+' separator).`,
+      )
+      continue
+    }
+    // Symmetric one-OVER check (0090 class: the fix loop overcorrected the
+    // -1 fold to +1). Fires on the boundary lines of a uniformly
+    // over-indented block (interior lines have no non-uniform neighbor).
+    const over = adjacentIndents.find((ind) => ind === lineIndent - 1)
+    if (over !== undefined) {
+      warnings.push(
+        `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${over} - likely one space OVER (the previous fix added one space too many; content should align at ${over}).`,
       )
     }
   }
