@@ -497,12 +497,13 @@ export const EditTool = Tool.define(
           }
 
           const metadata = {
-            diagnostics,
-            diff: diffs.join("\n"),
-            filediff,
-            edit_mode: HASHLINE_EDIT_MODE,
-            noop: planned.every((p) => p.noop) ? 1 : 0,
-          }
+           diagnostics,
+           diff: diffs.join("\n"),
+           filediff,
+           edit_mode: HASHLINE_EDIT_MODE,
+           noop: planned.every((p) => p.noop) ? 1 : 0,
+           paths: planned.map((p) => p.targetPath),
+         }
           yield* ctx.metadata({ metadata })
 
           const anyDeleted = planned.some((p) => p.deleted)

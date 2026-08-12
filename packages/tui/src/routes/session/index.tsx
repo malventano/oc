@@ -2421,14 +2421,27 @@ function Edit(props: ToolProps) {
   const pathFormatter = usePathFormatter()
 
   const editPaths = createMemo(() => {
-    const single = stringValue(props.input.filePath)
-    if (single) return [single]
-    const files = props.input.files
-    if (Array.isArray(files)) {
-      return files.map((f) => stringValue(f?.filePath)).filter((p): p is string => p !== undefined && p.length > 0)
-    }
-    return []
-  })
+   const fromMetadata = props.metadata.paths
+   if (Array.isArray(fromMetadata)) {
+     return fromMetadata.filter((p): p is string => typeof p === "string" && p.length > 0)
+   }
+   const single = stringValue(props.input.filePath)
+   if (single) return [single]
+   const files = props.input.files
+   if (Array.isArray(files)) {
+     return files.map((f) => stringValue(f?.filePath)).filter((p): p is string => p !== undefined && p.length > 0)
+   }
+   const patch = stringValue(props.input.input)
+   if (patch) {
+     const paths: string[] = []
+     for (const line of patch.split("\n")) {
+       const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]$/.exec(line)
+       if (match) paths.push(match[1])
+     }
+     return paths
+   }
+   return []
+ })
 
   const title = createMemo(() => {
     const paths = editPaths()
@@ -2478,7 +2491,7 @@ function Edit(props: ToolProps) {
       </Match>
       <Match when={true}>
         <InlineTool icon="←" pending="Preparing edit..." complete={title()} part={props.part}>
-          {title()} {input({ replaceAll: props.input.replaceAll })}
+         {title()}
         </InlineTool>
       </Match>
     </Switch>
