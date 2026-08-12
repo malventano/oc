@@ -20,6 +20,7 @@ import type * as Tool from "@/tool/tool"
 import type { ApplyPatchTool } from "@/tool/apply_patch"
 import type { ShellTool as BashTool } from "@/tool/shell"
 import type { EditTool } from "@/tool/edit"
+import { patchSectionPath } from "@/tool/grammar-patch"
 import type { GlobTool } from "@/tool/glob"
 import type { GrepTool } from "@/tool/grep"
 import type { InvalidTool } from "@/tool/invalid"
@@ -349,7 +350,7 @@ function runWebfetch(p: ToolProps<typeof WebFetchTool>): ToolInline {
 function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
   return {
     icon: "←",
-    title: `Edit ${toolPath(p.input.filePath)}`,
+    title: `Edit ${toolPath(patchSectionPath(p.input.input ?? "") ?? "")}`,
     mode: "block",
     body: p.metadata.diff,
   }
@@ -513,7 +514,7 @@ function snapWrite(p: ToolProps<typeof WriteTool>): ToolSnapshot | undefined {
 }
 
 function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
-  const file = p.input.filePath || ""
+  const file = patchSectionPath(p.input.input ?? "") || ""
   const diff = p.metadata.diff || ""
   if (!file || !diff.trim()) {
     return undefined
