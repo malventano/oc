@@ -2529,9 +2529,10 @@ function Edit(props: ToolProps) {
  const fileDiffs = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
  function fileTitle(file: { type: string; relativePath: string; filePath: string; movePath?: string }) {
-   if (file.type === "delete") return "# Deleted " + file.relativePath
-   if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " > " + file.relativePath
-   return "← Patched " + file.relativePath
+   const to = pathFormatter.format(file.relativePath)
+   if (file.type === "delete") return "# Deleted " + to
+   if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " > " + to
+   return "← Patched " + to
  }
 
  return (
@@ -2540,14 +2541,7 @@ function Edit(props: ToolProps) {
        <For each={fileDiffs()}>
          {(file) => (
            <BlockTool title={fileTitle(file)} part={props.part}>
-             <Show
-               when={file.type !== "delete"}
-               fallback={
-                 <text fg={theme.diffRemoved}>
-                   -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
-                 </text>
-               }
-             >
+           <Show when={file.patch.length > 0} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
                <box paddingLeft={1}>
                  <diff
                    diff={file.patch}
