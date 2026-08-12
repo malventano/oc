@@ -53,6 +53,7 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { TuiEvent } from "@/server/tui-event"
 import { Database } from "@opencode-ai/core/database/database"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -1442,6 +1443,14 @@ TimeContext.stampUserMessages(msgs)
                 // 3rd fire: banner complete, now auto-compact. The compaction
                 // task is picked up on the next loop iteration; the counter
                 // reset gives the post-compaction continuation a fresh budget.
+                // Surface the auto-compaction as a red TUI toast (upper right),
+                // mirroring the overflow-compaction toast.
+                yield* events.publish(TuiEvent.ToastShow, {
+                  title: "Auto-compacting",
+                  message: "Loop guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                  variant: "error",
+                  duration: 8000,
+                }).pipe(Effect.ignore)
                 note += `\n\nLoop guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
                 loopFires = 0
                 stallFires = 0
@@ -1480,6 +1489,14 @@ TimeContext.stampUserMessages(msgs)
                 steerPrompt = redirect!.redirect
               } else {
                 note += `\n\nStall guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                // Surface the auto-compaction as a red TUI toast (upper right),
+                // mirroring the overflow-compaction toast.
+                yield* events.publish(TuiEvent.ToastShow, {
+                 title: "Auto-compacting",
+                 message: "Stall guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                 variant: "error",
+                 duration: 8000,
+                }).pipe(Effect.ignore)
                 loopFires = 0
                 stallFires = 0
                 yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
