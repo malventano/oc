@@ -121,12 +121,24 @@ export function parsePatch(input: string | null | undefined): ParseResult {
         fail(i, line, "body row outside of an op that takes rows")
         return { ok: false, errors }
       }
-      // `+` prefix: strip ONE optional separator space so the model's natural
-      // diff-style `+ ` writing matches content byte-exactly (`+  x` -> " x").
-      let content = line.slice(1)
-      if (content.startsWith(" ")) content = content.slice(1)
-      body.push(content)
-      continue
+     // STRICT separator: `+` alone is a blank line; otherwise the single
+     // space after `+` is a REQUIRED separator, stripped (the model's
+     // natural diff-style `+ ` writing matches content byte-exactly:
+     // `+ x` -> "x", `+  x` -> " x"). Text immediately after `+` without
+     // the separator space is a parse error - there is no optional-space
+     // ambiguity. Eval-verified (textgrammar-eval): separator 86% OK vs
+     // verbatim 35% OK on the same scenarios.
+     const rest = line.slice(1)
+     if (rest === "") {
+       body.push("")
+       continue
+     }
+     if (!rest.startsWith(" ")) {
+       fail(i, line, "content row must be `+` then a space then content (`+x` without the separator space is invalid; `+  x` means content ` x`)")
+       return { ok: false, errors }
+     }
+     body.push(rest.slice(1))
+     continue
     }
     if (line.startsWith(" ")) {
       fail(i, line, "content row must start with `+` (found leading whitespace)")
