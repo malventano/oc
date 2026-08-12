@@ -9,6 +9,7 @@
 
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Effect } from "effect"
+import * as path from "path"
 
 const MAX_SNAPSHOT_BYTES = 4 * 1024 * 1024
 const MAX_PATHS = 30
@@ -72,6 +73,18 @@ export function fileTag(text: string): string {
   const normalized = text.replace(/[ \t\r]+(?=\n|$)/g, "")
   const hash = Bun.hash.xxHash32(normalized, 0) & 0xffff
   return hash.toString(16).padStart(4, "0").toUpperCase()
+}
+
+/**
+* Path rendered in `[PATH#TAG]` section headers (read output and edit success).
+* Files inside the project resolve from the instance directory so the header
+* round-trips through the edit tool's path resolution; files outside it use
+* their absolute path, since a bare basename would resolve to a different
+* file of the same name in the project root.
+*/
+export function hashlineHeaderPath(instanceDirectory: string, filepath: string): string {
+ const rel = path.relative(instanceDirectory, filepath)
+ return rel === "" || rel.startsWith("..") ? filepath : rel
 }
 
 export function snapshotBytesLimit() {
