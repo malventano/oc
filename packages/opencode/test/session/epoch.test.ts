@@ -231,42 +231,42 @@ describe("Epoch.apply", () => {
   )
 
   it.live(
-   "delta: second change on a later user prompt carries only the NEW content, not the first delta",
-   provideTmpdirInstance(() =>
-     Effect.gen(function* () {
-       const ssn = yield* SessionNs.Service
-       const info = yield* ssn.create({})
-       const user1 = yield* createUserMessage(info.id, "hello")
-       const msgs = yield* loadMsgs(info.id)
-       yield* Epoch.apply(epochInput(user1, msgs))
+    "delta: second change on a later user prompt carries only the NEW content, not the first delta",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const info = yield* ssn.create({})
+        const user1 = yield* createUserMessage(info.id, "hello")
+        const msgs = yield* loadMsgs(info.id)
+        yield* Epoch.apply(epochInput(user1, msgs))
 
-       const msgs2 = yield* loadMsgs(info.id)
-       yield* Epoch.apply(epochInput(user1, msgs2, { instructions: ["instructions: AGENTS.md v2"] }))
+        const msgs2 = yield* loadMsgs(info.id)
+        yield* Epoch.apply(epochInput(user1, msgs2, { instructions: ["instructions: AGENTS.md v2"] }))
 
-       // second mod lands on the NEXT user prompt
-       const user2 = yield* createUserMessage(info.id, "second prompt")
-       const msgs3 = yield* loadMsgs(info.id)
-       const result = yield* Epoch.apply(
-         epochInput(user2, msgs3, { instructions: ["instructions: AGENTS.md v3"] }),
-       )
-       const parts2 = (yield* loadMsgs(info.id)).find((m) => m.info.id === user2.id)!.parts
-       const deltas2 = parts2.filter((p) => p.type === "text" && p.metadata?.epochDelta)
-       expect(deltas2).toHaveLength(1)
-       // second delta: only v2 -> v3
-       expect(deltas2[0].text).toContain("- instructions: AGENTS.md v2")
-       expect(deltas2[0].text).toContain("+ instructions: AGENTS.md v3")
-       expect(deltas2[0].text).not.toContain("v1")
-       expect(result.frozen).toContain("v1")
+        // second mod lands on the NEXT user prompt
+        const user2 = yield* createUserMessage(info.id, "second prompt")
+        const msgs3 = yield* loadMsgs(info.id)
+        const result = yield* Epoch.apply(
+          epochInput(user2, msgs3, { instructions: ["instructions: AGENTS.md v3"] }),
+        )
+        const parts2 = (yield* loadMsgs(info.id)).find((m) => m.info.id === user2.id)!.parts
+        const deltas2 = parts2.filter((p) => p.type === "text" && p.metadata?.epochDelta)
+        expect(deltas2).toHaveLength(1)
+        // second delta: only v2 -> v3
+        expect(deltas2[0].text).toContain("- instructions: AGENTS.md v2")
+        expect(deltas2[0].text).toContain("+ instructions: AGENTS.md v3")
+        expect(deltas2[0].text).not.toContain("v1")
+        expect(result.frozen).toContain("v1")
 
-       // the first user message keeps only the first delta
-       const parts1 = (yield* loadMsgs(info.id)).find((m) => m.info.id === user1.id)!.parts
-       const deltas1 = parts1.filter((p) => p.type === "text" && p.metadata?.epochDelta)
-       expect(deltas1).toHaveLength(1)
-       expect(deltas1[0].text).toContain("- instructions: AGENTS.md v1")
-       expect(deltas1[0].text).toContain("+ instructions: AGENTS.md v2")
-     }),
-   ),
- )
+        // the first user message keeps only the first delta
+        const parts1 = (yield* loadMsgs(info.id)).find((m) => m.info.id === user1.id)!.parts
+        const deltas1 = parts1.filter((p) => p.type === "text" && p.metadata?.epochDelta)
+        expect(deltas1).toHaveLength(1)
+        expect(deltas1[0].text).toContain("- instructions: AGENTS.md v1")
+        expect(deltas1[0].text).toContain("+ instructions: AGENTS.md v2")
+      }),
+    ),
+  )
 
   it.live(
     "step > 1: no injection, no applied update, frozen still served",
@@ -316,44 +316,44 @@ describe("Epoch.apply", () => {
     ),
   )
 
- it.instance(
-   "post-compaction: old record is dormant (boundary mismatch), new snapshot on next user message",
-   () =>
-     Effect.gen(function* () {
-       const test = yield* TestInstance
-       const ssn = yield* SessionNs.Service
-       const info = yield* ssn.create({})
-       const user1 = yield* createUserMessage(info.id, "first prompt")
-       const msgs = yield* loadMsgs(info.id)
-       yield* Epoch.apply(epochInput(user1, msgs))
+  it.instance(
+    "post-compaction: old record is dormant (boundary mismatch), new snapshot on next user message",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const ssn = yield* SessionNs.Service
+        const info = yield* ssn.create({})
+        const user1 = yield* createUserMessage(info.id, "first prompt")
+        const msgs = yield* loadMsgs(info.id)
+        yield* Epoch.apply(epochInput(user1, msgs))
 
-       // compaction: summary assistant finalizes
-       yield* createSummaryAssistant(info.id, user1.id, test.directory)
+        // compaction: summary assistant finalizes
+        yield* createSummaryAssistant(info.id, user1.id, test.directory)
 
-       // post-compaction chain retains the first prompt in the tail (both
-       // records present); boundary = summary id, old record is dormant
-       const msgsPost = yield* loadMsgs(info.id)
-       const summaryId = msgsPost.find((m) => m.info.role === "assistant" && m.info.summary === true)!.info.id
+        // post-compaction chain retains the first prompt in the tail (both
+        // records present); boundary = summary id, old record is dormant
+        const msgsPost = yield* loadMsgs(info.id)
+        const summaryId = msgsPost.find((m) => m.info.role === "assistant" && m.info.summary === true)!.info.id
 
-       // next user message re-snapshots with the new boundary
-       const user2 = yield* createUserMessage(info.id, "second prompt")
-       const msgs2 = yield* loadMsgs(info.id)
-       const result = yield* Epoch.apply(epochInput(user2, msgs2))
-       expect(result.frozen).toBeUndefined()
+        // next user message re-snapshots with the new boundary
+        const user2 = yield* createUserMessage(info.id, "second prompt")
+        const msgs2 = yield* loadMsgs(info.id)
+        const result = yield* Epoch.apply(epochInput(user2, msgs2))
+        expect(result.frozen).toBeUndefined()
 
-       const records = (yield* loadMsgs(info.id))
-         .flatMap((m) => m.parts)
-         .filter((p): p is SessionV1.TextPart => p.type === "text" && !!p.metadata?.epoch)
-       expect(records).toHaveLength(2)
-       expect((records[0].metadata!.epoch as Epoch.EpochRecord).boundary).toBeNull()
-       expect((records[1].metadata!.epoch as Epoch.EpochRecord).boundary).toBe(summaryId)
+        const records = (yield* loadMsgs(info.id))
+          .flatMap((m) => m.parts)
+          .filter((p): p is SessionV1.TextPart => p.type === "text" && !!p.metadata?.epoch)
+        expect(records).toHaveLength(2)
+        expect((records[0].metadata!.epoch as Epoch.EpochRecord).boundary).toBeNull()
+        expect((records[1].metadata!.epoch as Epoch.EpochRecord).boundary).toBe(summaryId)
 
-       // frozen now comes from the new epoch
-       const msgs3 = yield* loadMsgs(info.id)
-       const result2 = yield* Epoch.apply(epochInput(user2, msgs3))
-       expect(result2.frozen).toContain("agent prompt")
-     }),
- )
+        // frozen now comes from the new epoch
+        const msgs3 = yield* loadMsgs(info.id)
+        const result2 = yield* Epoch.apply(epochInput(user2, msgs3))
+        expect(result2.frozen).toContain("agent prompt")
+      }),
+  )
 
   it.live(
     "userSystem override bypasses the epoch entirely",
