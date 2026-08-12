@@ -1088,7 +1088,20 @@ const layer = Layer.effect(
       }
 
       if (input.noReply === true) return message
-      return yield* loop({ sessionID: input.sessionID })
+      const result = yield* loop({ sessionID: input.sessionID })
+      // Exit-window orphan: a prompt admitted while the run is past its final
+      // message read joins the dying run via Runner.ensureRunning and gets no
+      // loop of its own - the message is stored and rendered but never
+      // processed. Detect via the loop's own exit invariant (newest finished
+      // assistant parented to the newest user message) and start a fresh loop.
+      const last = yield* lastAssistant(input.sessionID)
+      if (last.info.role === "assistant" && last.info.parentID !== message.info.id) {
+        yield* Effect.logInfo("post-join re-loop, prompt was orphaned", {
+          "session.id": input.sessionID,
+        })
+        return yield* loop({ sessionID: input.sessionID })
+      }
+      return result
     })
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
