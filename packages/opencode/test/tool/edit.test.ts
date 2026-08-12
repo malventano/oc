@@ -1277,6 +1277,52 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
+  it.instance("warns when a replacement lands one space short of the line it replaced", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      // Neighbors straddle the expected indent (8 above, 12 below, line at
+      // 10) - the adjacent-scan alone cannot catch the fold (9 is one MORE
+      // than 8 and 3 LESS than 12). The original-line check must fire.
+      const body = ["function outer() {", "        const alpha = 1", "          const beta = 2", "            const gamma = 3", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "replace_lines",
+            start_line: hashlineRef(3, body[2]),
+            end_line: hashlineRef(3, body[2]),
+            text: ["         const beta = 22"],
+          },
+        ],
+      })
+      expect(yield* load(filepath)).toContain("         const beta = 22")
+      expect(result.output).toContain("indentation validator")
+      expect(result.output).toContain("original line at 10")
+    }),
+  )
+
+  it.instance("does not warn when a replacement keeps the replaced line's indent", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "        const alpha = 1", "          const beta = 2", "            const gamma = 3", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "replace_lines",
+            start_line: hashlineRef(3, body[2]),
+            end_line: hashlineRef(3, body[2]),
+            text: ["          const beta = 22"],
+          },
+        ],
+      })
+      expect(yield* load(filepath)).toContain("          const beta = 22")
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+
   it.instance("skips a blank line when finding the adjacent code (LF-only neighbor)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
