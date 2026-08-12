@@ -305,10 +305,10 @@ export const SessionApi = HttpApi.make("session")
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
           payload: SummarizePayload,
-         success: described(
+          success: described(
           Schema.Literals(["compacted", "virtual_reduced", "virtual_empty", "in_progress"]),
           "Compaction outcome: compacted (summary generated), virtual_reduced (oldest retained pre-compaction turn dropped), virtual_empty (no retained turns to drop), or in_progress (a compaction is already running)",
-         ),
+          ),
           error: [HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({

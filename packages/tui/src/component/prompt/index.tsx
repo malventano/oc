@@ -274,6 +274,9 @@ export function Prompt(props: PromptProps) {
 
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
+    // Subagent turns bill to their own session rows (children via
+    // parentID), so the parent session's `cost` alone undercounts the
+    // spent total - walk the parentID tree and sum every descendant.
     let cost = 0
     {
       let stack = [props.sessionID]
@@ -422,6 +425,10 @@ export function Prompt(props: PromptProps) {
           if (!props.sessionID) return
 
         if (store.prompt.input.trim()) {
+          // ESC with a draft = interrupt-and-send in one press. Reset the
+          // escalation counter first so a pending "esc again" state can't also
+          // fire, and send only after abort settles (else the run races the
+          // abort).
           setStore("interrupt", 0)
           void sdk.client.session.abort({ sessionID: props.sessionID }).finally(() => void submit())
           dialog.clear()
@@ -950,18 +957,18 @@ export function Prompt(props: PromptProps) {
     }
   })
 
- // Mirrors the session.interrupt guard: ESC only interrupts and sends the
- // draft when all of these hold, so the hint must not show otherwise.
- function escInterruptsAndSends() {
-   return (
-     status().type !== "idle" &&
-     store.prompt.input.trim() !== "" &&
-     !auto()?.visible &&
-     input.focused &&
-     props.sessionID &&
-     store.mode === "normal"
-   )
- }
+  // Mirrors the session.interrupt guard: ESC only interrupts and sends the
+  // draft when all of these hold, so the hint must not show otherwise.
+  function escInterruptsAndSends() {
+    return (
+      status().type !== "idle" &&
+      store.prompt.input.trim() !== "" &&
+      !auto()?.visible &&
+      input.focused &&
+      props.sessionID &&
+      store.mode === "normal"
+    )
+  }
   let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
@@ -1623,21 +1630,21 @@ export function Prompt(props: PromptProps) {
                   </box>
                 </box>
                 <text flexShrink={0} fg={store.interrupt > 0 ? theme.primary : theme.text} wrapMode="none" truncate>
-                 <Show
+                  <Show
                   when={escInterruptsAndSends()}
-                   fallback={
-                     <>
-                       esc{" "}
-                       <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                         {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                       </span>
-                     </>
-                   }
-                 >
-                   esc <span style={{ fg: theme.textMuted }}>interrupt+send</span>{" "}·{" "}enter{" "}
-                   <span style={{ fg: theme.textMuted }}>queue</span>
-                 </Show>
-               </text>
+                    fallback={
+                      <>
+                        esc{" "}
+                        <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
+                          {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                        </span>
+                      </>
+                    }
+                  >
+                    esc <span style={{ fg: theme.textMuted }}>interrupt+send</span>{" "}·{" "}enter{" "}
+                    <span style={{ fg: theme.textMuted }}>queue</span>
+                  </Show>
+                </text>
                 <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
                 <box flexShrink={1} minWidth={0} flexDirection="row" gap={1}>
                   <text fg={theme.textMuted} wrapMode="none" truncate>

@@ -583,10 +583,10 @@ export type TuiPluginApi = {
   app: TuiApp
   attention: TuiAttention
   /**
-   * Legacy `api.command` API kept so v1 plugins can initialize. Remove in v2.
-   *
-   * @deprecated Use `api.keymap.registerLayer`, `api.keymap.dispatchCommand`, and
-   * `api.keymap.dispatchCommand("command.palette.show")` instead.
+    * Legacy `api.command` API kept so v1 plugins can initialize. Remove in v2.
+    *
+    * @deprecated Use `api.keymap.registerLayer`, `api.keymap.dispatchCommand`, and
+    * `api.keymap.dispatchCommand("command.palette.show")` instead.
    */
   command?: TuiCommandApi
   keys: TuiKeys

@@ -646,6 +646,9 @@ export const {
           syncingSessions.set(sessionID, task)
           return task
         },
+        // Cap TUI-rendered messages at 100; pruning runs on submit (not
+        // mid-stream) because splicing the live chain during renders churns
+        // the message/part stores.
         prune(sessionID: string) {
           const messages = store.message[sessionID]
           if (!messages || messages.length <= 100) return

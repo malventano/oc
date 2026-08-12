@@ -1419,6 +1419,8 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
     return { openai: normalized, azure: normalized }
   }
   if (model.api.npm === "@ai-sdk/openai-compatible" && normalized?.body && typeof normalized.body === "object") {
+    // vLLM rejects min_p and logit_bias in the flattened openai-compatible
+    // body; strip them so openai-compatible requests to vLLM succeed.
     const { body, ...rest } = normalized
     const { min_p, logit_bias, ...safeBody } = body
     return { [key]: { ...rest, ...safeBody } }

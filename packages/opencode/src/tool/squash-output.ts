@@ -27,6 +27,8 @@ changes what FUTURE prompts reconstruct. So any fact you might need later
 must be IN the summary - the summary is the only permanent record; anything
 left out of it is gone.`
 
+// SELF_LEGACY: plugin-era tool id ("squash_output"). Old sessions' parts
+// carry it, so both names must be excluded from squashing.
 const SELF_ID = "squash-output"
 const SELF_LEGACY = "squash_output"
 
@@ -58,18 +60,18 @@ export const Parameters = Schema.Struct({
 type Metadata = { [key: string]: any }
 
 export function extractOutput(data: any) {
- const rawOutput = data.state?.output ?? ""
- const stampRun = rawOutput.match(/\n\n<system-reminder>[\s\S]*?<\/system-reminder>\s*$/)
- let stamp = ""
- if (stampRun) {
-   // Preserve every trailing reminder except squash hints: the hint must
-   // die with the squash, the timestamp (and any other reminder) stays.
-   const tags: string[] = stampRun[0].match(/<system-reminder>[\s\S]*?<\/system-reminder>/g) ?? []
-   const kept = tags.filter((t) => !t.includes("squash-output"))
-   stamp = kept.length > 0 ? `\n\n${kept.join("\n\n")}` : ""
- }
- const stripped = stampRun ? rawOutput.slice(0, stampRun.index) : rawOutput
- return { stripped, stamp, originalLen: stripped.length }
+  const rawOutput = data.state?.output ?? ""
+  const stampRun = rawOutput.match(/\n\n<system-reminder>[\s\S]*?<\/system-reminder>\s*$/)
+  let stamp = ""
+  if (stampRun) {
+    // Preserve every trailing reminder except squash hints: the hint must
+    // die with the squash, the timestamp (and any other reminder) stays.
+    const tags: string[] = stampRun[0].match(/<system-reminder>[\s\S]*?<\/system-reminder>/g) ?? []
+    const kept = tags.filter((t) => !t.includes("squash-output"))
+    stamp = kept.length > 0 ? `\n\n${kept.join("\n\n")}` : ""
+  }
+  const stripped = stampRun ? rawOutput.slice(0, stampRun.index) : rawOutput
+  return { stripped, stamp, originalLen: stripped.length }
 }
 
 export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Database.Service>(
@@ -96,6 +98,8 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
             throw new Error("match: 'all' requires a pattern target (tool and/or input_contains).")
           }
 
+          // Newest compaction message's timestamp is the boundary; parts at
+          // or before it are below the compaction (see the `<=` below).
           const cutoffRow = yield* db
             .get(sql`SELECT MAX(m.time_created) AS cutoff FROM message m WHERE m.session_id = ${sessionID} AND json_extract(m.data, '$.mode') = 'compaction'`)
             .pipe(Effect.orDie)

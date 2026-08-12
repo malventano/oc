@@ -79,18 +79,18 @@ function bashCommandSection(chain: string, limits: Limits, defaultTimeoutMs: num
   return `Before executing the command, please follow these steps:
 
 1. Directory Verification:
-   - If the command will create new directories or files, first use \`ls\` to verify the parent directory exists and is the correct location
-   - For example, before running "mkdir foo/bar", first use \`ls foo\` to check that "foo" exists and is the intended parent directory
+    - If the command will create new directories or files, first use \`ls\` to verify the parent directory exists and is the correct location
+    - For example, before running "mkdir foo/bar", first use \`ls foo\` to check that "foo" exists and is the intended parent directory
 
 2. Command Execution:
-   - Always quote file paths that contain spaces with double quotes (e.g., rm "path with spaces/file.txt")
-   - Examples of proper quoting:
-     - mkdir "/Users/name/My Documents" (correct)
-     - mkdir /Users/name/My Documents (incorrect - will fail)
-     - python "/path/with spaces/script.py" (correct)
-     - python /path/with spaces/script.py (incorrect - will fail)
-   - After ensuring proper quoting, execute the command.
-   - Capture the output of the command.
+    - Always quote file paths that contain spaces with double quotes (e.g., rm "path with spaces/file.txt")
+    - Examples of proper quoting:
+      - mkdir "/Users/name/My Documents" (correct)
+      - mkdir /Users/name/My Documents (incorrect - will fail)
+      - python "/path/with spaces/script.py" (correct)
+      - python /path/with spaces/script.py (incorrect - will fail)
+    - After ensuring proper quoting, execute the command.
+    - Capture the output of the command.
 
 Usage notes:
   - The command argument is required.
@@ -131,18 +131,18 @@ function powershellCommandSection(
 Before executing the command, please follow these steps:
 
 1. Directory Verification:
-   - If the command will create new directories or files, first use \`Test-Path -LiteralPath <parent>\` to verify the parent directory exists and is the correct location
-   - For example, before creating \`foo${pathSep}bar\`, first use \`Test-Path -LiteralPath "foo"\` to check that \`foo\` exists and is the intended parent directory
+    - If the command will create new directories or files, first use \`Test-Path -LiteralPath <parent>\` to verify the parent directory exists and is the correct location
+    - For example, before creating \`foo${pathSep}bar\`, first use \`Test-Path -LiteralPath "foo"\` to check that \`foo\` exists and is the intended parent directory
 
 2. Command Execution:
-   - Always quote file paths that contain spaces with double quotes (e.g., Remove-Item -LiteralPath "path with spaces${pathSep}file.txt")
-   - Examples of proper quoting:
-     - New-Item -ItemType Directory -Path "My Documents" (correct)
-     - New-Item -ItemType Directory -Path My Documents (incorrect - path is split)
-     - & "path with spaces${pathSep}script.ps1" (correct)
-     - path with spaces${pathSep}script.ps1 (incorrect - path is split and not invoked)
-   - After ensuring proper quoting, execute the command.
-   - Capture the output of the command.
+    - Always quote file paths that contain spaces with double quotes (e.g., Remove-Item -LiteralPath "path with spaces${pathSep}file.txt")
+    - Examples of proper quoting:
+      - New-Item -ItemType Directory -Path "My Documents" (correct)
+      - New-Item -ItemType Directory -Path My Documents (incorrect - path is split)
+      - & "path with spaces${pathSep}script.ps1" (correct)
+      - path with spaces${pathSep}script.ps1 (incorrect - path is split and not invoked)
+    - After ensuring proper quoting, execute the command.
+    - Capture the output of the command.
 
 Usage notes:
   - The command argument is required.
@@ -180,18 +180,18 @@ function cmdCommandSection(chain: string, limits: Limits, defaultTimeoutMs: numb
 Before executing the command, please follow these steps:
 
 1. Directory Verification:
-   - If the command will create new directories or files, first use \`if exist\` to verify the parent directory exists and is the correct location
-   - For example, before creating \`foo\\bar\`, first use \`if exist "foo\\" dir "foo"\` to check that \`foo\` exists and is the intended parent directory
+    - If the command will create new directories or files, first use \`if exist\` to verify the parent directory exists and is the correct location
+    - For example, before creating \`foo\\bar\`, first use \`if exist "foo\\" dir "foo"\` to check that \`foo\` exists and is the intended parent directory
 
 2. Command Execution:
-   - Always quote file paths that contain spaces with double quotes (e.g., del "path with spaces\\file.txt")
-   - Examples of proper quoting:
-     - mkdir "My Documents" (correct)
-     - mkdir My Documents (incorrect - path is split)
-     - call "path with spaces\\script.bat" (correct)
-     - path with spaces\\script.bat (incorrect - path is split and not invoked correctly)
-   - After ensuring proper quoting, execute the command.
-   - Capture the output of the command.
+    - Always quote file paths that contain spaces with double quotes (e.g., del "path with spaces\\file.txt")
+    - Examples of proper quoting:
+      - mkdir "My Documents" (correct)
+      - mkdir My Documents (incorrect - path is split)
+      - call "path with spaces\\script.bat" (correct)
+      - path with spaces\\script.bat (incorrect - path is split and not invoked correctly)
+    - After ensuring proper quoting, execute the command.
+    - Capture the output of the command.
 
 Usage notes:
   - The command argument is required.
