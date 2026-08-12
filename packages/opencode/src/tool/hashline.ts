@@ -526,7 +526,7 @@ export function applyHashlineEdits(input: {
       if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[line.line - 1])) {
         if (text.length <= 1) {
           throw new Error(
-            `set_line.text repeats the anchor line (line ${line.line}) with no new content — ambiguous (keep as-is vs delete). To keep the line and add content after it, use insert_after with the new content.`,
+            `set_line.text repeats the anchor line (line ${line.line}) with no new content - ambiguous (keep as-is vs delete). To keep the line and add content after it, use insert_after with the new content.`,
           )
         }
         ops.push({
@@ -570,7 +570,7 @@ export function applyHashlineEdits(input: {
       if (text.length > 0 && equalsIgnoringWhitespace(text[0], lines[start.line - 1])) {
         if (text.length <= 1) {
           throw new Error(
-            `replace_lines.text repeats the range's first line (line ${start.line}) with no new content — ambiguous. To keep the range's first line, start the range at the first differing line; to keep the line and insert after it, use insert_after.`,
+            `replace_lines.text repeats the range's first line (line ${start.line}) with no new content - ambiguous. To keep the range's first line, start the range at the first differing line; to keep the line and insert after it, use insert_after.`,
           )
         }
         if (start.line === end.line) {

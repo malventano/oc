@@ -157,7 +157,7 @@ export const EditTool = Tool.define(
           return "Legacy JSON edit payload has been removed. The edit tool now takes ONE argument: { input } containing a patch (`*** Begin Patch` ... `*** End Patch`). See the tool description for the grammar."
         }
         if (message.includes("Unexpected key")) {
-          return `Invalid parameters for tool 'edit': only { input } is accepted — the patch grammar is passed as the input string.`
+          return `Invalid parameters for tool 'edit': only { input } is accepted - the patch grammar is passed as the input string.`
         }
         const truncated = message.length > 700 ? `${message.slice(0, 400)} ... [payload truncated] ... ${message.slice(-120)}` : message
         return `Invalid parameters for tool 'edit': ${truncated}`
@@ -332,7 +332,7 @@ export const EditTool = Tool.define(
                   }
                 }
                 // No snapshot (e.g. after a restart): validate anchors against
-                // live content on the fly — a matching hash is direct proof the
+                // live content on the fly - a matching hash is direct proof the
                 // file is unchanged since the agent's read.
               }
 
@@ -409,7 +409,7 @@ export const EditTool = Tool.define(
             planned.push(plan)
           }
 
-          // All sections preflighted successfully (atomic) — commit phase.
+          // All sections preflighted successfully (atomic) - commit phase.
           for (const plan of planned) {
             yield* withPermitsAll([plan.sourcePath, plan.targetPath], () =>
               Effect.gen(function* () {

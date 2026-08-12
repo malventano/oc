@@ -9,7 +9,7 @@ Usage:
 - If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.
 - Contents are returned with a line prefix.
 - Default format: `LINE#ID:<content>` (example: `1#AB:foo`). Use these anchors for hashline edits.
-- Anchors stay valid for same-turn edits: unchanged lines keep their `LINE#ID` regardless of edits elsewhere in the file — one read can serve multiple back-to-back edits.
+- Anchors stay valid for same-turn edits: unchanged lines keep their `LINE#ID` regardless of edits elsewhere in the file - one read can serve multiple back-to-back edits.
 - For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories.
 - Any line longer than 2000 characters is truncated.
 - Call this tool in parallel when you know there are multiple files you want to read.

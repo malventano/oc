@@ -11,12 +11,12 @@ REQUIRED vs OPTIONAL args differ per op:
 | op | required | optional |
 |----|----------|----------|
 | query | sql | format |
-| list-tables | — | format |
-| describe-table | tableName | — |
-| execute | sql, confirm | — |
-| transaction | statements, confirm | — |
-| checkpoint | — | mode |
-| backup | outputPath | — |
+| list-tables | - | format |
+| describe-table | tableName | - |
+| execute | sql, confirm | - |
+| transaction | statements, confirm | - |
+| checkpoint | - | mode |
+| backup | outputPath | - |
 
 Operations:
 - query: Run SELECT sql (read-only; only SELECT/WITH/EXPLAIN/PRAGMA allowed). Returns json/csv/table (default json).
