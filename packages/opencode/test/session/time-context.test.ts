@@ -96,9 +96,18 @@ describe("TimeContext.stampSquashHint", () => {
    expect(output.output).toBe("small")
  })
 
- test("skips outputs that already contain a reminder", () => {
+ test("appends hint after a timestamp reminder (stampToolOutput runs first)", () => {
    const output = {
      output: `${"x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS)}\n\n<system-reminder>2026-01-01T00:00:00.000Z</system-reminder>`,
+   }
+   TimeContext.stampSquashHint(output)
+   expect(output.output).toContain("Very large tool output")
+   expect(output.output.match(/<system-reminder>/g)).toHaveLength(2)
+ })
+
+ test("skips outputs that already contain a squash hint", () => {
+   const output = {
+     output: `${"x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS)}\n\n<system-reminder>Very large tool output (10000 chars, ~2500 tokens). If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>`,
    }
    TimeContext.stampSquashHint(output)
    expect(output.output.match(/<system-reminder>/g)).toHaveLength(1)
