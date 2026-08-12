@@ -27,10 +27,10 @@ Operations (colon headers take `+` body rows, the final content):
 - `RENAME NEWPATH` - rename/move the file (file-level); a relative NEWPATH resolves against the source file's own directory, not the project root
 
 Content rows:
-- Every body row is `+TEXT`; `+` alone is a blank line.
-- A single space after `+` is a SEPARATOR, not content: the parser strips exactly one space if present. `+ x` = content `x`, `+  x` = content ` x`, `+   x` = content `  x`. Write content's leading spaces AFTER the separator (or just after `+` if none).
+- Every body row is `+ ` (plus sign followed by ONE space, then the content); `+` alone is a blank line.
+- The single space after `+` is a REQUIRED separator, stripped: `+ x` = content `x`, `+  x` = content ` x`, `+   x` = content `  x`. COUNT the spaces: content with N leading spaces is `+` + separator + N content spaces (N+1 total after `+`); when copying an indented line, write the separator space then every content space verbatim - do not fold the first content space into the separator. A row with text directly after `+` (`+x`) is a parse error - always put the space there.
 - Content is RAW: backticks, `${...}`, double quotes, `\` sequences, and all punctuation after the separator are literal content. NEVER escape, backslash, or wrap them. Text-based search/replace is not available - anchors only.
-- A literal leading `-` or `+` in the content keeps its prefix: Markdown bullet `- item` becomes `+ - item` (or `+- item`); a literal `+ item` becomes `+ + item` (or `++ item`).
+- A literal leading `-` or `+` in the content keeps its prefix: Markdown bullet `- item` becomes `+ - item`; a literal `+ item` becomes `+ + item`.
 - The range deletes; the body is ONLY the final content. Body length is irrelevant to the range.
 - To delete lines, use `CUT`. Empty `SET`/`REPLACE` bodies are invalid.
 
