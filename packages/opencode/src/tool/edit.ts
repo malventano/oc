@@ -29,6 +29,7 @@ import {
   parseHashlineContent,
   serializeHashlineContent,
 } from "./hashline"
+import { type GrammarOp as GrammarOpT, parsePatch } from "./grammar-patch"
 import { remapEditsToCurrent } from "./hashline-recovery"
 import { fileTag, invalidateSnapshot, mergeSeenLines, recordSnapshot, relocateSnapshot, snapshotOf } from "./hashline-store"
 import { hashlineRef, parseHashlineRef } from "./hashline"
@@ -39,90 +40,14 @@ const LEGACY_KEYS = ["oldString", "newString", "replaceAll"] as const
 const UNSEEN_REVEAL_CAP = 20
 const SUMMARY_DIFF_BYTES = 25 * 1024
 
-const HashlineText = Schema.Union([Schema.String, Schema.Array(Schema.String)])
-
-const HashlineEditSchema = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("set_line"),
-    line: Schema.String,
-    text: HashlineText,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("replace_lines"),
-    start_line: Schema.String,
-    end_line: Schema.String,
-    text: HashlineText,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("insert_after"),
-    line: Schema.String,
-    text: HashlineText,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("insert_before"),
-    line: Schema.String,
-    text: HashlineText,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("insert_between"),
-    after_line: Schema.String,
-    before_line: Schema.String,
-    text: HashlineText,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("append"),
-    text: HashlineText,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("prepend"),
-    text: HashlineText,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("replace"),
-    old_text: Schema.String,
-    new_text: HashlineText,
-    all: Schema.optional(Schema.Boolean),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("cut"),
-    start_line: Schema.String,
-    end_line: Schema.String,
-    register: Schema.optional(Schema.String),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("paste"),
-    insert_after_line: Schema.optional(Schema.String),
-    insert_before_line: Schema.optional(Schema.String),
-    register: Schema.optional(Schema.String),
-  }),
-])
-
-const SectionSchema = Schema.Struct({
-  filePath: Schema.String,
-  edits: Schema.optional(Schema.Array(HashlineEditSchema)),
-  delete: Schema.optional(Schema.Boolean),
-  rename: Schema.optional(Schema.String),
-})
-
 export const Parameters = Schema.Struct({
-  filePath: Schema.optional(Schema.String).annotate({
-    description: "The absolute path to the file to modify (omit when using files: batch mode)",
-  }),
-  edits: Schema.optional(Schema.Array(HashlineEditSchema)).annotate({
+  input: Schema.String.annotate({
     description:
-      "Hashline edit operations. Use strict LINE#ID anchor references from Read output. Required per file (use [] when only delete or rename is intended).",
-  }),
-  delete: Schema.optional(Schema.Boolean).annotate({ description: "Delete the file (cannot be combined with edits or rename)" }),
-  rename: Schema.optional(Schema.String).annotate({ description: "Rename/move the file to this path (edits land on the source first)" }),
-  files: Schema.optional(Schema.Array(SectionSchema)).annotate({
-    description:
-      "Multi-file batch mode: apply edits across multiple files atomically (all validated before any write). Registers captured with cut in one section can be pasted in later sections. Mutually exclusive with filePath/edits.",
+      "The patch text: `*** Begin Patch` ... `*** End Patch` (see the tool description for the grammar).",
   }),
 })
 
-type EditOp = Schema.Schema.Type<typeof HashlineEditSchema>
-type CutOp = Extract<EditOp, { type: "cut" }>
-type PasteOp = Extract<EditOp, { type: "paste" }>
+type EditOp = GrammarOpT
 
 const locks = new Map<string, Semaphore.Semaphore>()
 
@@ -225,36 +150,16 @@ export const EditTool = Tool.define(
         const message = String(error)
         const legacy = LEGACY_KEYS.filter((key) => message.includes(key))
         if (legacy.length > 0) {
-          return "Legacy edit payload has been removed. Use hashline fields: { filePath, edits, delete?, rename? } or files: [...] for batch mode."
+          return "Legacy edit payload has been removed. The edit tool now takes ONE argument: { input } containing a patch (`*** Begin Patch` ... `*** End Patch`). See the tool description for the grammar."
         }
-        const key = message.match(/\["([^"]+)"\]\s*$/m)?.[1]
+        if (message.includes('"filePath"') || message.includes('"edits"') || message.includes('"files"')) {
+          return "Legacy JSON edit payload has been removed. The edit tool now takes ONE argument: { input } containing a patch (`*** Begin Patch` ... `*** End Patch`). See the tool description for the grammar."
+        }
         if (message.includes("Unexpected key")) {
-          return `Invalid parameters for tool 'edit': ${message} — unknown key \"${key ?? "?"}\" on an edit op or payload; only the documented keys per op are allowed (type + the op's fields). If you meant a position anchor: insert_after/insert_before use a single line field; insert_between uses after_line + before_line; paste uses insert_after_line / insert_before_line`
+          return `Invalid parameters for tool 'edit': only { input } is accepted — the patch grammar is passed as the input string.`
         }
-        if (message.includes('at ["edits"]') && message.includes('got "')) {
-          return "edits must be a JSON array of op objects — a quoted/escaped JSON string was passed; emit the array directly without stringifying (edits: [{ type: \"set_line\", line: ..., text: ... }, ...])."
-        }
-        // Schema dumps echo the full payload; retries regenerate it broken. Keep the
-        // error small (see BUG_EDIT_ESCAPE_PAYLOAD.md).
-        const full = message
-        const truncated = full.length > 700 ? `${full.slice(0, 400)} ... [payload truncated] ... ${full.slice(-120)}` : full
-        const got = full.match(/got (\{[\s\S]*\})\s+at \[/)?.[1]
-        const opLevel = /at \["(?:edits|files)"\]\[\d/.test(full)
-        const missingType = opLevel && got !== undefined && !got.includes('"type"') && !got.includes('"filePath"')
-        const hint = missingType
-          ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
-          : message.includes('"filePath"')
-            ? " a section-shaped object ({ filePath, edits }) is only valid as an element of the top-level files array — multi-file calls use files: [{ filePath, edits }, ...]; the single-file form takes only filePath/edits/delete/rename."
-            : message.includes('"start_line"')
-              ? " replace_lines/cut require BOTH start_line and end_line (LINE#ID refs) — use set_line for a single line."
-              : message.includes("insert_after_line") || message.includes("insert_before_line")
-                ? " insert_between uses insert_after_line and insert_before_line (LINE#ID refs); insert_after/insert_before use a single line field."
-                : message.includes("got null")
-                  ? " anchor fields must be LINE#ID strings like 12#AB — null/omitted anchors are invalid; set_line/insert_after/insert_before require a line field; paste uses insert_after_line/insert_before_line."
-                  : message.includes("type")
-                    ? " every edit op requires a type field: set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste."
-                    : ""
-        return `Invalid parameters for tool 'edit': ${truncated}${hint}`
+        const truncated = message.length > 700 ? `${message.slice(0, 400)} ... [payload truncated] ... ${message.slice(-120)}` : message
+        return `Invalid parameters for tool 'edit': ${truncated}`
       },
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
@@ -414,9 +319,8 @@ export const EditTool = Tool.define(
                     if (!cutInPayload) continue
                     const anchor = op.insert_after_line ?? op.insert_before_line ?? ""
                     const position = op.insert_after_line ? "insert_after_line" : "insert_before_line"
-                    const registerPart = register === "" ? "" : `, register: "@${register}"`
                     hints.push(
-                      `\npaste (${register === "" ? "anonymous" : `@${register}`}) targets ${section.filePath} but its anchor (${anchor}) does not exist there. A paste lands in the file its section names; when the register was cut in this payload, give the paste its own section: files: [{ filePath: <cut file>, edits: [...] }, { filePath: ${section.filePath}, edits: [{ type: "paste", ${position}: ${anchor}${registerPart} }] }].`,
+                      `\npaste (${register === "" ? "anonymous" : `@${register}`}) targets ${section.filePath} but its anchor (${anchor}) does not exist there. A paste lands in the file its section names; when the register was cut in this patch, give the paste its own [PATH] section targeting the destination file.`
                     )
                   }
                   if (hints.length > 0) throw new Error(`${message}${hints.join("")}`)
@@ -590,28 +494,11 @@ export const EditTool = Tool.define(
 )
 
 function parseSections(params: Schema.Schema.Type<typeof Parameters>) {
-  const batch = params.files
-  const single = params.filePath !== undefined || params.edits !== undefined || params.delete !== undefined || params.rename !== undefined
-  if (batch && single) {
-    throw new Error("Cannot mix filePath/edits with files: batch mode. Use either single-file or files: [...].")
+  const parsed = parsePatch(params.input)
+  if (!parsed.ok) {
+    throw new Error(`Patch grammar error:\n- ${parsed.errors.join("\n- ")}\nFix the offending line and resend the FULL patch.`)
   }
-  if (batch) {
-    return batch.map((b) => {
-      if (b.edits === undefined && !b.delete && !b.rename) {
-        throw new Error(
-          `Hashline payload requires at least one of edits/delete/rename per files section (missing for ${b.filePath}). Use edits: [] for delete/rename-only.`,
-        )
-      }
-      return { ...b, edits: b.edits ?? [] }
-    })
-  }
-  if (!params.filePath) throw new Error("filePath is required")
-  if (params.edits === undefined && !params.delete && !params.rename) {
-    throw new Error(
-      "Hashline payload requires edits (use [] when only delete or rename is intended). Legacy oldString/newString payloads are no longer supported; use hashline edit ops with LINE#ID anchors from Read output.",
-    )
-  }
-  return [{ filePath: params.filePath, edits: params.edits ?? [], delete: params.delete, rename: params.rename }]
+  return parsed.files
 }
 
 function noopPlan(sourcePath: string, targetPath: string) {

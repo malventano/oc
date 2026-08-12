@@ -185,9 +185,9 @@ function stripNewLinePrefixes(lines: string[]) {
   )
 }
 
-function equalsIgnoringWhitespace(a: string, b: string) {
+function equalsIgnoringWhitespace(a: string | undefined, b: string | undefined) {
   if (a === b) return true
-  return a.replace(/\s+/g, "") === b.replace(/\s+/g, "")
+  return (a ?? "").replace(/\s+/g, "") === (b ?? "").replace(/\s+/g, "")
 }
 
 function leadingWhitespace(line: string) {
