@@ -14,6 +14,7 @@ import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 
 import { LoopGuard } from "./loop-guard"
+import { StallGuard } from "./stall-guard"
 import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
@@ -50,6 +51,10 @@ export interface Handle {
 
   readonly loopGuardFired: boolean
   readonly loopGuardHit: string | null
+  readonly stallText: string
+  readonly stallHadToolCall: boolean
+  readonly stallFired: boolean
+  readonly stallHit: string | null
 }
 
 type Input = {
@@ -58,6 +63,7 @@ type Input = {
   model: Provider.Model
 
   loopGuardEnabled?: boolean
+  stallGuardEnabled?: boolean
 }
 
 export interface Interface {
@@ -84,6 +90,11 @@ interface ProcessorContext extends Input {
   loopGuardEnabled: boolean
   loopGuardFired: boolean
   loopGuardHit: string | null
+  stallText: string
+  stallHadToolCall: boolean
+  stallFired: boolean
+  stallHit: string | null
+  stallGuardEnabled: boolean
 }
 
 type StreamEvent = LLMEvent
@@ -128,6 +139,11 @@ const layer = Layer.effect(
         loopGuardEnabled: input.loopGuardEnabled ?? true,
         loopGuardFired: false,
         loopGuardHit: null,
+        stallText: "",
+        stallHadToolCall: false,
+        stallFired: false,
+        stallHit: null,
+        stallGuardEnabled: input.stallGuardEnabled ?? true,
       }
       let aborted = false
 
@@ -344,6 +360,10 @@ const layer = Layer.effect(
             }
             yield* ensureToolCall(value)
 
+            // A real tool call in this step: excludes the "silent" stall
+            // signature (a turn that ends on a tool call is a normal
+            // tool-call turn, not a stall).
+            ctx.stallHadToolCall = true
             ctx.loopGuard.reset()
             return
 
@@ -546,6 +566,9 @@ const layer = Layer.effect(
                 ctx.loopGuardHit = hit
               }
             }
+            // Accumulate the step's full text for the stall guard: the last
+            // text-delta tail is what a mid-sentence stop would cut off.
+            ctx.stallText += value.text
             return
 
 
@@ -674,6 +697,10 @@ const layer = Layer.effect(
         ctx.loopGuard.reset()
         ctx.loopGuardFired = false
         ctx.loopGuardHit = null
+        ctx.stallText = ""
+        ctx.stallHadToolCall = false
+        ctx.stallFired = false
+        ctx.stallHit = null
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
@@ -720,6 +747,16 @@ const layer = Layer.effect(
             Effect.ensuring(cleanup()),
           )
 
+          // Stall detection runs AFTER the stream completes (unlike the loop
+          // guard, which fires mid-stream): classify the step's finish reason
+          // + accumulated text into the three stall signatures.
+          if (ctx.stallGuardEnabled && !ctx.assistantMessage.error) {
+            const hit = StallGuard.detect(ctx.assistantMessage.finish, ctx.stallText, ctx.stallHadToolCall)
+            if (hit) {
+              ctx.stallFired = true
+              ctx.stallHit = hit.detail
+            }
+          }
           if (ctx.needsCompaction) return "compact"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
@@ -739,6 +776,18 @@ const layer = Layer.effect(
         },
         get loopGuardHit() {
           return ctx.loopGuardHit
+        },
+        get stallText() {
+          return ctx.stallText
+        },
+        get stallHadToolCall() {
+          return ctx.stallHadToolCall
+        },
+        get stallFired() {
+          return ctx.stallFired
+        },
+        get stallHit() {
+          return ctx.stallHit
         },
       } satisfies Handle
     })

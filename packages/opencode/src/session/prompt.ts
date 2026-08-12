@@ -1,7 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
-import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { SessionV1, StallGuardError } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
@@ -9,6 +9,7 @@ import { TimeContext } from "./time-context"
 import { Epoch } from "./epoch"
 
 import { LoopGuard } from "./loop-guard"
+import { StallGuard } from "./stall-guard"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
 import { Agent } from "../agent/agent"
@@ -1090,8 +1091,8 @@ const layer = Layer.effect(
         let compactingPrompt: string | undefined
         let steerPrompt: string | undefined
 
-        let steerBudget = 2
         let loopGuardEnabled = true
+        let stallGuardEnabled = true
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1155,7 +1156,14 @@ const layer = Layer.effect(
             lastAssistant?.finish &&
             !["tool-calls"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastAssistant.parentID === lastUser.id
+            lastAssistant.parentID === lastUser.id &&
+            // A stall-guard-marked message (any of the three signatures:
+            // colon tail, eaten-call remnant, zero text parts) must NOT exit
+            // the loop: the steer prompt is pending and the next iteration
+            // delivers it (the stalled message stays in the request so the
+            // model can continue from its own text). The loop guard never
+            // hits this because its stream is cut mid-flight (no finish).
+            !StallGuardError.isInstance(lastAssistant.error)
           ) {
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
@@ -1274,6 +1282,7 @@ const layer = Layer.effect(
               model,
 
               loopGuardEnabled: !compactingPrompt && loopGuardEnabled,
+              stallGuardEnabled: !compactingPrompt && stallGuardEnabled,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1411,17 +1420,48 @@ TimeContext.stampUserMessages(msgs)
               // request (toModelMessage skips error-marked messages), so the
               // looped garbage is never replayed; the TUI keeps the full text.
               let note = `Loop guard interrupted the response: ${handle.loopGuardHit}`
-              if (steerBudget > 0) {
-                // The banner also shows the exact redirect the model receives
-                // (request-only synthetic trailing user message, never a
-                // visible user turn), so the TUI needs no separate prompt.
-                note += `\n\n${LoopGuard.THINKING_LOOP_REDIRECT}`
-                steerPrompt = LoopGuard.THINKING_LOOP_REDIRECT
-                steerBudget--
-              } else {
-                loopGuardEnabled = false
-              }
+              // Always steer: no budget. The banner shows the exact redirect
+              // the model receives (request-only synthetic trailing user
+              // message, never a visible user turn), so the TUI needs no
+              // separate prompt. Budget exhaustion previously disabled the
+              // detector entirely, letting a loop run unguarded and silent
+              // until agent.steps capped the turn (2026-08-12 live incident:
+              // "Issuing the verification command. Period." repeated
+              // indefinitely after fire #3). agent.steps is the real bound.
+              note += `\n\n${LoopGuard.THINKING_LOOP_REDIRECT}`
+              steerPrompt = LoopGuard.THINKING_LOOP_REDIRECT
               handle.message.error = new NamedError.Unknown({ message: note }).toObject()
+              yield* sessions.updateMessage(handle.message)
+              return "continue" as const
+            }
+            if (handle.stallFired) {
+              yield* Effect.logWarning("stall guard fired", { "session.id": sessionID, detail: handle.stallHit })
+              // Banner-marking with StallGuardError: renders the red banner in
+              // the TUI like the loop guard's, but is exempted from the
+              // toModelMessage error-skip, so the stalled message stays in the
+              // model request - the model needs its own text/reasoning in
+              // context to continue from.
+              // The stalled message is ALSO transformed into a continued-turn
+              // state: the stream completed (finish=stop is the stall
+              // signature), so unlike the loop guard's mid-flight cut, the
+              // turn-completion machinery would otherwise fire (turn.duration
+              // -> "▣" summary header, transport turn resolution). Clearing
+              // finish + time.completed makes the message look exactly like
+              // the loop-cut message: no finished turn, no completed turn.
+              let note = `Stall guard detected a premature stop: ${handle.stallHit}`
+              // The banner shows the exact steer the model receives
+              // (request-only synthetic trailing user message, never a
+              // visible user turn), so the TUI needs no separate prompt.
+              // No steer budget: unlike the loop guard (model stuck in a
+              // genuine repetition attractor, bounded resamples needed), a
+              // stall's "loop" is trivially escapable - the model just must
+              // not end with ":" - and agent.steps already caps the turn.
+              const redirect = StallGuard.detect(handle.message.finish, handle.stallText, handle.stallHadToolCall)
+              note += `\n\n${redirect!.redirect}`
+              steerPrompt = redirect!.redirect
+              handle.message.error = new StallGuardError({ message: note }).toObject()
+              handle.message.finish = undefined
+              if (handle.message.time) handle.message.time.completed = undefined
               yield* sessions.updateMessage(handle.message)
               return "continue" as const
             }

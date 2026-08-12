@@ -208,6 +208,10 @@ function fake(
 
     loopGuardFired: false,
     loopGuardHit: null,
+    stallText: "",
+    stallHadToolCall: false,
+    stallFired: false,
+    stallHit: null,
   } satisfies SessionProcessorModule.SessionProcessor.Handle
 }
 

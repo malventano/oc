@@ -41,6 +41,7 @@ export const AuthError = namedError("ProviderAuthError", {
 })
 
 export const AbortedError = namedError("MessageAbortedError", { message: Schema.String })
+export const StallGuardError = namedError("StallGuardError", { message: Schema.String })
 export const StructuredOutputError = namedError("StructuredOutputError", {
   message: Schema.String,
   retries: NonNegativeInt,
@@ -392,6 +393,7 @@ const AssistantErrorSchema = Schema.Union([
   namedError("UnknownError", { message: Schema.String, ref: Schema.optional(Schema.String) }).EffectSchema,
   OutputLengthError.EffectSchema,
   AbortedError.EffectSchema,
+  StallGuardError.EffectSchema,
   StructuredOutputError.EffectSchema,
   ContextOverflowError.EffectSchema,
   ContentFilterError.EffectSchema,
