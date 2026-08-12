@@ -1168,6 +1168,75 @@ it.instance("cancel records MessageAbortedError on interrupted process", () =>
   }),
 )
 
+it.instance("cancel resumes the loop and processes queued prompts", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Queued resume" })
+    yield* seed(chat.id)
+
+    yield* llm.hang
+    yield* user(chat.id, "first")
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    // Queue a second prompt while the first turn is in flight.
+    const queued = yield* user(chat.id, "second")
+
+    // Cancel interrupts the first turn; the loop must resume and pick up the
+    // queued prompt (the empty mock queue auto-replies "ok").
+    yield* prompt.cancel(chat.id, true)
+    const firstExit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(firstExit)).toBe(true)
+
+    // The resumed loop completes a turn for the queued prompt.
+    yield* pollWithTimeout(
+      Effect.gen(function* () {
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        const done = messages.find((m) => m.info.role === "assistant" && m.info.parentID === queued.id && m.info.finish)
+        return done ? (true as const) : undefined
+      }),
+      "queued prompt was never processed after cancel",
+      "10 seconds",
+    )
+  }),
+)
+
+it.instance("plain cancel does not resume the loop for queued prompts", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Queued stranded" })
+    yield* seed(chat.id)
+
+    yield* llm.hang
+    yield* user(chat.id, "first")
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    // Queue a second prompt while the first turn is in flight.
+    const queued = yield* user(chat.id, "second")
+
+    // Plain cancel (the double-ESC interrupt): the queue must NOT drain.
+    // The queued prompt stays unprocessed until the next submission.
+    yield* prompt.cancel(chat.id)
+    const firstExit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(firstExit)).toBe(true)
+
+    // A buggy resume would complete a turn for the queued prompt within
+    // this window (the mock auto-replies instantly) - assert it never
+    // started.
+    yield* Effect.sleep("1 seconds")
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const turned = messages.find((m) => m.info.role === "assistant" && m.info.parentID === queued.id)
+    expect(turned).toBeUndefined()
+  }),
+)
+
 raceNoLLMServer.instance(
   "finalizes assistant when cancelled before processor creation completes",
   () =>

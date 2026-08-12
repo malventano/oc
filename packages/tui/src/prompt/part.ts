@@ -1,8 +1,23 @@
+import type { Part } from "@opencode-ai/sdk/v2"
+import type { PromptInfo } from "./history"
 import { displaySlice } from "./display"
 
 export function stripPromptPartIDs<Part extends { id: string; messageID: string; sessionID: string }>(part: Part) {
   const { id: _id, messageID: _messageID, sessionID: _sessionID, ...rest } = part
   return rest
+}
+
+export function partsToPromptInfo(parts: readonly Part[]): PromptInfo {
+  return parts.reduce(
+    (agg, part) => {
+      if (part.type === "text") {
+        if (!part.synthetic) agg.input += part.text
+      }
+      if (part.type === "file") agg.parts.push(stripPromptPartIDs(part))
+      return agg
+    },
+    { input: "", parts: [] as PromptInfo["parts"] },
+  )
 }
 
 export function expandPastedTextPlaceholders(text: string, parts: readonly unknown[]) {
