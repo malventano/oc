@@ -674,7 +674,7 @@ export const EditTool = Tool.define(
           // this is a hint, not a rejection).
           const warnings = displayPlans.flatMap((p) => (p.changed && !p.deleted ? findIndentWarnings(p.after, p.before) : []))
           if (warnings.length > 0) {
-            output += `\n\n<system-reminder>Edit applied, but the indentation validator flags ${warnings.length} comment line${warnings.length > 1 ? "s" : ""} that appear one space short (the '+' separator was likely folded into the content):\n- ${warnings.join("\n- ")}\nIf the offset was not intentional, you may wish to re-issue a small edit to adjust it.</system-reminder>`
+            output += `\n\n<system-reminder>Edit applied, but the indentation validator flags ${warnings.length} comment line${warnings.length > 1 ? "s" : ""} that appear${warnings.length > 1 ? "" : "s"} one space short (the '+' separator was likely folded into the content):\n- ${warnings.join("\n- ")}\nIf the offset was not intentional, you may wish to re-issue a small edit to adjust it.</system-reminder>`
           }
           const normalizedFilePath = FSUtil.normalizePath(firstChanged.targetPath)
           const block = LSP.Diagnostic.report(firstChanged.targetPath, diagnostics[normalizedFilePath] ?? [])
