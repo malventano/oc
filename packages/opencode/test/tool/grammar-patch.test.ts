@@ -11,20 +11,20 @@ describe("grammar-patch parsePatch", () => {
   test("parses SET", () => {
     const files = parseOk("*** Begin Patch\n[a.txt#A1B2]\nSET 1#AB:\n+ hello\n*** End Patch")
     expect(files).toEqual([
-     { filePath: "a.txt", tag: "A1B2", edits: [{ type: "set_line", line: "1#AB", text: ["hello"] }] },
+      { filePath: "a.txt", tag: "A1B2", edits: [{ type: "set_line", line: "1#AB", text: ["hello"] }] },
     ])
   })
 
- test("captures the #TAG for basename disambiguation", () => {
-   const files = parseOk("*** Begin Patch\n[a.txt#F00D]\nAPPEND:\n+ x\n*** End Patch")
-   expect(files[0].tag).toBe("F00D")
-   expect(files[0].filePath).toBe("a.txt")
- })
+  test("captures the #TAG for basename disambiguation", () => {
+    const files = parseOk("*** Begin Patch\n[a.txt#F00D]\nAPPEND:\n+ x\n*** End Patch")
+    expect(files[0].tag).toBe("F00D")
+    expect(files[0].filePath).toBe("a.txt")
+  })
 
- test("leaves tag undefined when the header has no #TAG", () => {
-   const files = parseOk("*** Begin Patch\n[a.txt]\nAPPEND:\n+ x\n*** End Patch")
-   expect(files[0].tag).toBeUndefined()
- })
+  test("leaves tag undefined when the header has no #TAG", () => {
+    const files = parseOk("*** Begin Patch\n[a.txt]\nAPPEND:\n+ x\n*** End Patch")
+    expect(files[0].tag).toBeUndefined()
+  })
 
   test("parses REPLACE", () => {
     const files = parseOk("*** Begin Patch\n[a.txt#A1B2]\nREPLACE 1#AB 3#CD:\n+ a\n+ b\n*** End Patch")
@@ -86,43 +86,43 @@ describe("grammar-patch parsePatch", () => {
     ])
   })
 
- test("parses PASTE with optional trailing colon (matches other op headers)", () => {
-   const files = parseOk(
-     ["*** Begin Patch", "[a.txt#A1B2]", "PASTE @fn AFTER 5#JK:", "PASTE @fn BEFORE 6#LM:", "*** End Patch"].join("\n"),
-   )
-   expect(files[0].edits).toEqual([
-     { type: "paste", register: "@fn", insert_after_line: "5#JK" },
-     { type: "paste", register: "@fn", insert_before_line: "6#LM" },
-   ])
- })
+  test("parses PASTE with optional trailing colon (matches other op headers)", () => {
+    const files = parseOk(
+      ["*** Begin Patch", "[a.txt#A1B2]", "PASTE @fn AFTER 5#JK:", "PASTE @fn BEFORE 6#LM:", "*** End Patch"].join("\n"),
+    )
+    expect(files[0].edits).toEqual([
+      { type: "paste", register: "@fn", insert_after_line: "5#JK" },
+      { type: "paste", register: "@fn", insert_before_line: "6#LM" },
+    ])
+  })
 
   test("parses DELETE and RENAME as file-level ops", () => {
     const files = parseOk(
       ["*** Begin Patch", "[a.txt#A1B2]", "RENAME b.txt", "[c.txt#C3D4]", "DELETE", "*** End Patch"].join("\n"),
     )
-   expect(files[0]).toEqual({ filePath: "a.txt", tag: "A1B2", edits: [], rename: "b.txt" })
-   expect(files[1]).toEqual({ filePath: "c.txt", tag: "C3D4", edits: [], delete: true })
+    expect(files[0]).toEqual({ filePath: "a.txt", tag: "A1B2", edits: [], rename: "b.txt" })
+    expect(files[1]).toEqual({ filePath: "c.txt", tag: "C3D4", edits: [], delete: true })
   })
 
- test("strips one required separator space and keeps extra whitespace", () => {
-   const files = parseOk(
-     ["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+ x", "+  x", "+", "+   y", "*** End Patch"].join("\n"),
-   )
-   const append = files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
-   expect(append.text).toEqual(["x", " x", "", "  y"])
- })
+  test("strips one required separator space and keeps extra whitespace", () => {
+    const files = parseOk(
+      ["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+ x", "+  x", "+", "+   y", "*** End Patch"].join("\n"),
+    )
+    const append = files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
+    expect(append.text).toEqual(["x", " x", "", "  y"])
+  })
 
- test("rejects `+x` content rows (separator space is required)", () => {
-   const result = parsePatch(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+x", "*** End Patch"].join("\n"))
-   expect(result.ok).toBe(false)
-   if (!result.ok) expect(result.errors[0]).toContain("separator space")
- })
+  test("rejects `+x` content rows (separator space is required)", () => {
+    const result = parsePatch(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+x", "*** End Patch"].join("\n"))
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.errors[0]).toContain("separator space")
+  })
 
- test("blank line is `+` alone", () => {
-   const files = parseOk(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+", "*** End Patch"].join("\n"))
-   const append = files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
-   expect(append.text).toEqual([""])
- })
+  test("blank line is `+` alone", () => {
+    const files = parseOk(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+", "*** End Patch"].join("\n"))
+    const append = files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
+    expect(append.text).toEqual([""])
+  })
 
   test("parses multiple file sections in one patch", () => {
     const files = parseOk(
@@ -231,22 +231,22 @@ describe("grammar-patch patchSectionPath", () => {
 })
 
 describe("grammar-patch patchSectionPaths", () => {
- test("returns all section headers in order", () => {
-   const paths = patchSectionPaths(
-     ["*** Begin Patch", "[a.txt#A1B2]", "SET 1#AB:", "+ x", "[b.txt#C3D4]", "APPEND:", "+ y", "*** End Patch"].join("\n"),
-   )
-   expect(paths).toEqual(["a.txt", "b.txt"])
- })
+  test("returns all section headers in order", () => {
+    const paths = patchSectionPaths(
+      ["*** Begin Patch", "[a.txt#A1B2]", "SET 1#AB:", "+ x", "[b.txt#C3D4]", "APPEND:", "+ y", "*** End Patch"].join("\n"),
+    )
+    expect(paths).toEqual(["a.txt", "b.txt"])
+  })
 
- test("skips op lines and content rows", () => {
-   const paths = patchSectionPaths(
-     ["*** Begin Patch", "[a.txt#A1B2]", "SET 1#AB:", "+ [not-a-section]", "*** End Patch"].join("\n"),
-   )
-   expect(paths).toEqual(["a.txt"])
- })
+  test("skips op lines and content rows", () => {
+    const paths = patchSectionPaths(
+      ["*** Begin Patch", "[a.txt#A1B2]", "SET 1#AB:", "+ [not-a-section]", "*** End Patch"].join("\n"),
+    )
+    expect(paths).toEqual(["a.txt"])
+  })
 
- test("handles null/empty input", () => {
-   expect(patchSectionPaths(null)).toEqual([])
-   expect(patchSectionPaths("")).toEqual([])
- })
+  test("handles null/empty input", () => {
+    expect(patchSectionPaths(null)).toEqual([])
+    expect(patchSectionPaths("")).toEqual([])
+  })
 })
