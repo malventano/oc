@@ -2549,8 +2549,8 @@ function Edit(props: ToolProps) {
      <Match when={fileDiffs().length > 0}>
        <For each={fileDiffs()}>
          {(file) => (
-          <BlockTool title={fileTitle(file)} part={props.part} gap={file.additions + file.deletions > 0 ? 1 : 0}>
-           <Show when={file.additions + file.deletions > 0} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
+         <BlockTool title={fileTitle(file)} part={props.part} gap={file.changed ? 1 : 0}>
+          <Show when={file.changed} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
                <box paddingLeft={1}>
                  <diff
                    diff={file.patch}
@@ -2902,8 +2902,9 @@ export function parseApplyPatchFiles(value: unknown) {
     const patch = stringValue(file.patch)
    const additions = numberValue(file.additions) ?? 0
    const deletions = numberValue(file.deletions) ?? 0
-   if (!type || !relativePath || !filePath || patch === undefined) return []
-   return [{ type, relativePath, filePath, patch, additions, deletions, movePath: stringValue(file.movePath) }]
+  const changed = file.changed === true
+  if (!type || !relativePath || !filePath || patch === undefined) return []
+  return [{ type, relativePath, filePath, patch, additions, deletions, changed, movePath: stringValue(file.movePath) }]
   })
 }
 
