@@ -285,6 +285,11 @@ export const EditTool = Tool.define(
           }
 
           const planned: Planned[] = []
+         // Chain later sections of the same path onto the previous section's
+         // result. At preflight time nothing has been written yet, so each
+         // section would otherwise re-read the original from disk and the
+         // earlier sections would silently be discarded (last write wins).
+         const plannedByPath = new Map<string, Planned>()
           for (const section of sections) {
            const sourcePath = yield* resolveSourcePath(section)
            const targetPath = section.rename
@@ -343,16 +348,18 @@ export const EditTool = Tool.define(
                 }
               }
 
-              const parsed = exists
-                ? parseHashlineContent(Buffer.from(yield* afs.readFile(sourcePath)))
-                : {
-                    bom: false,
-                    eol: "\n" as const,
-                    trailing: false,
-                    lines: [] as string[],
-                    text: "",
-                    raw: "",
-                  }
+             const prev = plannedByPath.get(sourcePath)
+             const diskParsed = exists
+               ? parseHashlineContent(Buffer.from(yield* afs.readFile(sourcePath)))
+               : {
+                   bom: false,
+                   eol: "\n" as const,
+                   trailing: false,
+                   lines: [] as string[],
+                   text: "",
+                   raw: "",
+                 }
+             const parsed = prev ? parseHashlineContent(Buffer.from(prev.after)) : diskParsed
 
               const expanded = expandRegisters(edits, parsed.lines, registers, anonymousRegister)
               if (expanded.anonymous) anonymousRegister = expanded.anonymous
@@ -363,32 +370,42 @@ export const EditTool = Tool.define(
               let recoveryWarning = ""
 
               if (exists) {
-                const snapshot = snapshotOf(sourcePath)
-                const liveTag = fileTag(parsed.text)
-                if (snapshot && snapshot.tag === liveTag) {
-                  if (enforceSeenLines) {
-                    const unseen = unseenReferencedLines(appliedEdits, snapshot.seenLines)
-                    if (unseen.length > 0) {
-                      const reveal = unseen
-                        .slice(0, UNSEEN_REVEAL_CAP)
-                        .map((n) => ({ line: n, text: parsed.lines[n - 1] ?? "" }))
-                      mergeSeenLines(sourcePath, reveal.map((r) => r.line))
-                      throw new Error(unseenLinesMessage(sourcePath, snapshot.tag, unseen, reveal))
-                    }
-                  }
-                } else if (snapshot) {
-                  const oldLines = splitTextLines(snapshot.content)
-                  const remapped = remapEditsToCurrent(appliedEdits, oldLines, parsed.lines)
-                  if (remapped) {
-                    appliedEdits = remapped
-                    recoveryWarning =
-                      "\n\nWarning: file changed since your read; anchors were remapped through unchanged lines. Re-read for fresh anchors if you continue editing."
-                  }
-                }
-                // No snapshot (e.g. after a restart): validate anchors against
-                // live content on the fly - a matching hash is direct proof the
-                // file is unchanged since the agent's read.
-              }
+               const snapshot = snapshotOf(sourcePath)
+               if (prev) {
+                 // Chained section: the model's anchors refer to the read
+                 // output (original content); remap them onto the previous
+                 // section's result.
+                 const oldLines = snapshot ? splitTextLines(snapshot.content) : diskParsed.lines
+                 const remapped = remapEditsToCurrent(appliedEdits, oldLines, parsed.lines)
+                 if (remapped) {
+                   appliedEdits = remapped
+                   recoveryWarning =
+                     "\n\nWarning: section anchors were remapped onto the result of an earlier section of this patch."
+                 }
+               } else if (snapshot && snapshot.tag === fileTag(diskParsed.text)) {
+                 if (enforceSeenLines) {
+                   const unseen = unseenReferencedLines(appliedEdits, snapshot.seenLines)
+                   if (unseen.length > 0) {
+                     const reveal = unseen
+                       .slice(0, UNSEEN_REVEAL_CAP)
+                       .map((n) => ({ line: n, text: parsed.lines[n - 1] ?? "" }))
+                     mergeSeenLines(sourcePath, reveal.map((r) => r.line))
+                     throw new Error(unseenLinesMessage(sourcePath, snapshot.tag, unseen, reveal))
+                   }
+                 }
+               } else if (snapshot) {
+                 const oldLines = splitTextLines(snapshot.content)
+                 const remapped = remapEditsToCurrent(appliedEdits, oldLines, parsed.lines)
+                 if (remapped) {
+                   appliedEdits = remapped
+                   recoveryWarning =
+                     "\n\nWarning: file changed since your read; anchors were remapped through unchanged lines. Re-read for fresh anchors if you continue editing."
+                 }
+               }
+               // No snapshot (e.g. after a restart): validate anchors against
+               // live content on the fly - a matching hash is direct proof the
+               // file is unchanged since the agent's read.
+             }
 
               const before = parsed.text
               let next: ReturnType<typeof applyHashlineEdits>
@@ -461,6 +478,7 @@ export const EditTool = Tool.define(
             }).pipe(Effect.orDie)
 
             planned.push(plan)
+           if (!plan.deleted && plan.sourcePath === plan.targetPath) plannedByPath.set(plan.sourcePath, plan)
           }
 
           // All sections preflighted successfully (atomic) - commit phase.
@@ -534,31 +552,80 @@ export const EditTool = Tool.define(
           }
 
           const diagnostics = yield* lsp.diagnostics()
-          let additions = 0
-          let deletions = 0
-          const file = planned[0]
-          const firstChanged = planned.find((p) => p.changed) ?? planned[0]
-          const diffs = planned.map((p) => p.diff).filter((d) => d.length > 0)
-          for (const change of diffLines(planned.map((p) => p.before).join("\n"), planned.map((p) => p.after).join("\n"))) {
-            if (change.added) additions += change.count || 0
-            if (change.removed) deletions += change.count || 0
-          }
-          const filediff: Snapshot.FileDiff = {
-            file: firstChanged.targetPath,
-            patch: diffs.join("\n"),
-            additions,
-            deletions,
-          }
+         let additions = 0
+         let deletions = 0
 
-         const fileDiffs = planned
+         // Group edit-type sections by source path so the TUI renders ONE
+         // block per file even when a patch touches the same file in
+         // multiple sections (e.g. a CUT+PASTE move or scattered
+         // APPENDs). Sections still apply sequentially in patch order via
+         // `planned`; the merged display view = first section's before,
+         // last section's after, net line counts, final fresh tag.
+         // File-level ops (delete/rename) stay per-section.
+         const displayPlans: Planned[] = []
+         {
+           const byPath = new Map<string, Planned[]>()
+           for (const p of planned) {
+             if (p.deleted || p.section.rename) {
+               displayPlans.push(p)
+               continue
+             }
+             const g = byPath.get(p.sourcePath)
+             if (g) g.push(p)
+             else byPath.set(p.sourcePath, [p])
+           }
+           for (const g of byPath.values()) {
+             if (g.length === 1) {
+               displayPlans.push(g[0])
+               continue
+             }
+             const first = g[0]
+             const last = g[g.length - 1]
+             displayPlans.push({
+               ...first,
+               after: last.after,
+               freshTag: last.freshTag,
+               changed: g.some((p) => p.changed),
+               noop: !g.some((p) => p.changed),
+               diff: trimDiff(
+                 createTwoFilesPatch(
+                   first.sourcePath,
+                   first.targetPath,
+                   normalizeLineEndings(first.before),
+                   normalizeLineEndings(last.after),
+                 ),
+               ),
+               lineCounts: { old: first.lineCounts.old, new: last.lineCounts.new },
+             })
+           }
+         }
+
+         const file = displayPlans[0]
+         const firstChanged = displayPlans.find((p) => p.changed) ?? displayPlans[0]
+         const diffs = planned.map((p) => p.diff).filter((d) => d.length > 0)
+         for (const change of diffLines(
+           displayPlans.map((p) => p.before).join("\n"),
+           displayPlans.map((p) => p.after).join("\n"),
+         )) {
+           if (change.added) additions += change.count || 0
+           if (change.removed) deletions += change.count || 0
+         }
+         const filediff: Snapshot.FileDiff = {
+           file: firstChanged.targetPath,
+           patch: diffs.join("\n"),
+           additions,
+           deletions,
+         }
+
+         const fileDiffs = displayPlans
            .map((p) => ({
              filePath: p.sourcePath,
-            relativePath: path.relative(instance.directory, p.targetPath).replaceAll("\\", "/"),
+             relativePath: path.relative(instance.directory, p.targetPath).replaceAll("\\", "/"),
              type: p.deleted ? "delete" : p.section.rename ? "move" : "edit",
-            changed: !p.noop && p.before !== p.after,
+             changed: !p.noop && p.before !== p.after,
              patch: p.diff,
-            additions: Math.max(0, p.lineCounts.new - p.lineCounts.old),
-            deletions: Math.max(0, p.lineCounts.old - p.lineCounts.new),
+             additions: Math.max(0, p.lineCounts.new - p.lineCounts.old),
+             deletions: Math.max(0, p.lineCounts.old - p.lineCounts.new),
              movePath: p.section.rename ? p.targetPath : undefined,
            }))
            .filter((f) => f.type === "delete" || f.patch.length > 0)

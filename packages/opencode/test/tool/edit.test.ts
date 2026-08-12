@@ -6,6 +6,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { EditTool } from "../../src/tool/edit"
 import { hashlineRef } from "../../src/tool/hashline"
 import { disposeAllInstances, TestInstance, tmpdirScoped } from "../fixture/fixture"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Format } from "../../src/format"
@@ -38,6 +39,7 @@ afterEach(async () => {
 const layer = LayerNode.compile(
   LayerNode.group([
     LSP.node,
+   CrossSpawnSpawner.node,
     FSUtil.node,
     Format.node,
     EventV2Bridge.node,
@@ -1249,6 +1251,61 @@ describe("section header path rendering", () => {
      })
      expect(err.message).toContain("does not match")
      expect(err.message).toContain("copy the [PATH#TAG] header verbatim")
+   }),
+ )
+})
+
+describe("same-file multi-section patches", () => {
+ it.instance("merges sections of one file into a single files entry with the net diff", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const filepath = path.join(test.directory, "merged.txt")
+     yield* putSnap(filepath, "alpha\nbeta\ngamma\n")
+     // Section 1 shifts every line down; section 2 anchors on an ORIGINAL
+     // line, exercising the chain remap (1#<alpha> -> 2#<alpha>).
+     const result = yield* run({
+       input: [
+         "*** Begin Patch",
+         `[${filepath}#A1B2]`,
+         "PREPEND:",
+         "+ zero",
+         `[${filepath}#A1B2]`,
+         `SET ${hashlineRef(1, "alpha")}:`,
+         "+ ALPHA",
+         "*** End Patch",
+       ].join("\n"),
+     })
+     // One block per file: the files metadata has a single entry for
+     // merged.txt carrying the net diff (original -> final).
+     const files = result.metadata.files as Array<Record<string, unknown>>
+     const mine = files.filter((f) => f.filePath === filepath)
+     expect(mine.length).toBe(1)
+     expect(mine[0].patch).toContain("+zero")
+     expect(mine[0].patch).toContain("+ALPHA")
+     expect(mine[0].changed).toBe(true)
+     expect(yield* load(filepath)).toBe("zero\nALPHA\nbeta\ngamma\n")
+   }),
+ )
+
+ it.instance("success header carries the final tag after all sections of the file", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const filepath = path.join(test.directory, "final-tag.txt")
+     yield* putSnap(filepath, "one\n")
+     const result = yield* run({
+       input: [
+         "*** Begin Patch",
+         `[${filepath}#A1B2]`,
+         "APPEND:",
+         "+ two",
+         `[${filepath}#A1B2]`,
+         "APPEND:",
+         "+ three",
+         "*** End Patch",
+       ].join("\n"),
+     })
+     const finalTag = fileTag(yield* load(filepath))
+     expect(result.output).toMatch(new RegExp(`\\[final-tag\\.txt#${finalTag}\\]`))
    }),
  )
 })
