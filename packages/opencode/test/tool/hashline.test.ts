@@ -392,3 +392,24 @@ test("insert_after echo strip keeps a non-echoing first line intact", () => {
     expect(range.lines).toEqual(["a"])
   })
 })
+test("changedLines tracks both replaced lines through a lower insert (shift collision)", () => {
+  const content = ["a", "b", "c", "d"]
+  const result = applyHashlineEdits({
+    lines: [...content],
+    trailing: false,
+    edits: [
+      {
+        type: "replace_lines",
+        start_line: hashlineRef(2, content[1]),
+        end_line: hashlineRef(3, content[2]),
+        text: ["B", "C"],
+      },
+      { type: "insert_after", line: hashlineRef(1, content[0]), text: ["a1"] },
+    ],
+  })
+  expect(result.lines).toEqual(["a", "a1", "B", "C", "d"])
+  // both replaced lines present at their final after-indexes (2 and 3),
+  // not stomped by the shift of the lower insert
+  expect(result.changedLines.get(2)).toBe("b")
+  expect(result.changedLines.get(3)).toBe("c")
+})
