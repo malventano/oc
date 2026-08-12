@@ -1711,6 +1711,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
       <box
         ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
         paddingLeft={3}
+        paddingRight={2}
         marginTop={1}
         flexDirection="column"
         flexShrink={0}
@@ -2116,6 +2117,7 @@ function BlockTool(props: {
       paddingTop={1}
       paddingBottom={1}
       paddingLeft={2}
+      paddingRight={2}
       marginTop={1}
       gap={props.gap ?? 1}
       backgroundColor={hover() ? theme.backgroundMenu : theme.backgroundPanel}
