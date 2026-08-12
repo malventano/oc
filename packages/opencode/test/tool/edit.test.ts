@@ -1117,6 +1117,46 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
+ it.instance("allows whitespace-only line changes (byte-exact echo detection)", () =>
+   Effect.gen(function* () {
+     const filepath = path.join((yield* TestInstance).directory, "a.txt")
+     const lines = ["def f():", "    return 1"]
+     yield* putSnap(filepath, lines.join("\n") + "\n")
+     const result = yield* run({
+       filePath: filepath,
+       edits: [
+         {
+           type: "set_line",
+           line: hashlineRef(2, lines[1]),
+           text: ["      return 1"],
+         },
+       ],
+     })
+     expect(yield* load(filepath)).toBe("def f():\n      return 1\n")
+     expect(result.output).not.toContain("repeats the anchor line")
+   }),
+ )
+
+ it.instance("still treats a verbatim anchor copy as echoed first line", () =>
+   Effect.gen(function* () {
+     const filepath = path.join((yield* TestInstance).directory, "a.txt")
+     const lines = ["def f():", "    return 1"]
+     yield* putSnap(filepath, lines.join("\n") + "\n")
+     const result = yield* run({
+       filePath: filepath,
+       edits: [
+         {
+           type: "set_line",
+           line: hashlineRef(2, lines[1]),
+           text: ["    return 1", "    return 2"],
+         },
+       ],
+     })
+     expect(yield* load(filepath)).toBe("def f():\n    return 1\n    return 2\n")
+     expect(result.output).toContain("stripped echoed first line")
+   }),
+ )
+
   it.instance("auto-strips echoed first line end-to-end and notes it", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
