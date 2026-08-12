@@ -291,6 +291,7 @@ export const EditTool = Tool.define(
             deleted: boolean
             changed: boolean
             lineCounts: { old: number; new: number }
+            changedLines: Map<number, string>
           }
 
           const planned: Planned[] = []
@@ -341,6 +342,7 @@ export const EditTool = Tool.define(
                   noop: false,
                   deleted: true,
                   changed: true,
+                  changedLines: new Map(),
                   lineCounts: { old: splitTextLines(before).length, new: 0 },
                 })
               }
@@ -484,6 +486,7 @@ export const EditTool = Tool.define(
                 deleted: false,
                 changed: !noop,
                 lineCounts: { old: parsed.lines.length, new: next.lines.length },
+                changedLines: next.changedLines,
               })
             }).pipe(Effect.orDie)
 
@@ -688,7 +691,7 @@ export const EditTool = Tool.define(
           // Post-apply validator: flag the one-short indent fold (comments
           // AND code) so the model can fix it on the next call (the applied
           // edit is valid; this is a hint, not a rejection).
-          const warnings = displayPlans.flatMap((p) => (p.changed && !p.deleted ? findIndentWarnings(p.after, p.before) : []))
+          const warnings = displayPlans.flatMap((p) => (p.changed && !p.deleted ? findIndentWarnings(p.after, p.before, p.changedLines) : []))
           if (warnings.length > 0) {
             output += `\n\n<system-reminder>Edit applied, but the indentation validator flags ${warnings.length} line${warnings.length > 1 ? "s" : ""} that appear${warnings.length > 1 ? "" : "s"} one space short (the '+' separator was likely folded into the content):\n- ${warnings.join("\n- ")}\nIf the offset was not intentional, you may wish to re-issue a small edit to adjust it.</system-reminder>`
           }
@@ -731,6 +734,7 @@ function noopPlan(sourcePath: string, targetPath: string) {
     deleted: false,
     changed: false,
     lineCounts: { old: 0, new: 0 },
+    changedLines: new Map(),
   }
 }
 
@@ -739,13 +743,18 @@ function noopPlan(sourcePath: string, targetPath: string) {
  * (comments AND code) whose indent is exactly one LESS than an adjacent real
  * code line's indent - the signature of the separator-fold error (the model
  * wrote K spaces where K+1 were needed, the parser stripped the separator,
- * content landed K-1). The applied edit is CORRECT as written; this only
- * warns the model so it can fix the indent on the next call. Conservative by
- * design: only the one-short signature is flagged, never dangling block-end
- * comments or intentionally misaligned markers. Blank lines are skipped when
- * finding the adjacent code line (a lone linefeed is not a real neighbor).
+ * content landed K-1). SET/REPLACE lines additionally compare against the
+ * original line they overwrote via the op-derived changed-lines map, which
+ * catches both the fold AND the symmetric one-over shift even when the patch
+ * changed the line count (uniformly shifted blocks sit 2+ spaces from their
+ * enclosing braces and escape the adjacent checks). The applied edit is
+ * CORRECT as written; this only warns the model so it can fix the indent on
+ * the next call. Conservative by design: only the one-short/one-over
+ * signatures are flagged, never dangling block-end comments or
+ * intentionally misaligned markers. Blank lines are skipped when finding
+ * the adjacent code line (a lone linefeed is not a real neighbor).
  */
-export function findIndentWarnings(after: string, before?: string): string[] {
+export function findIndentWarnings(after: string, before?: string, changedLines?: Map<number, string>): string[] {
   const lines = after.split("\n")
   // When the pre-edit content is available, only consider lines the edit
   // actually ADDED or CHANGED - never nudge about pre-existing lines the
@@ -775,27 +784,31 @@ export function findIndentWarnings(after: string, before?: string): string[] {
     if (beforeLinesArr && i < beforeLen && beforeLinesArr[i] === line) continue // pre-existing line, not ours
     const lineIndent = line.match(/^\s*/)![0].length
     const kind = /^\s*(\/\/|\/\*)/.test(line) ? "comment" : "code line"
-    // Original-line check: with equal line counts the position maps 1:1, so
-    // a REPLACE landing one space short (or over) of the line it replaced
-    // is caught even when neither neighbor sits at the expected indent (the
-    // neighbors straddle it). The replaced line's own indent is the
-    // strongest reference; skip the adjacent scan when it fires.
-    if (beforeLinesArr && beforeLinesArr.length === lines.length) {
-      const orig = beforeLinesArr[i]!
-      if (orig.trim() !== "") {
-        const origIndent = orig.match(/^\s*/)![0].length
-        if (origIndent === lineIndent + 1 && origIndent > 0) {
-          warnings.push(
-            `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, original line at ${origIndent} - likely one space short (the content row needs one MORE space after the '+' separator).`,
-          )
-          continue
-        }
-        if (origIndent === lineIndent - 1) {
-          warnings.push(
-            `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, original line at ${origIndent} - likely one space OVER (the previous fix added one space too many).`,
-          )
-          continue
-        }
+    // Original-line check: prefer the op-derived changed-lines map
+    // (after-index -> replaced original), which stays valid when the patch
+    // changed the line count - the index-based fallback (equal counts only)
+    // goes blind the moment any insert lands in the same patch, so a
+    // uniformly shifted block escapes. A SET/REPLACE landing one space short
+    // (or over) of the line it replaced is caught even when neither neighbor
+    // sits at the expected indent (the neighbors straddle it). The replaced
+    // line's own indent is the strongest reference; skip the adjacent scan
+    // when it fires.
+    const orig =
+      changedLines?.get(i) ??
+      (beforeLinesArr && beforeLinesArr.length === lines.length ? beforeLinesArr[i] : undefined)
+    if (orig !== undefined && orig.trim() !== "") {
+      const origIndent = orig.match(/^\s*/)![0].length
+      if (origIndent === lineIndent + 1 && origIndent > 0) {
+        warnings.push(
+          `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, original line at ${origIndent} - likely one space short (the content row needs one MORE space after the '+' separator).`,
+        )
+        continue
+      }
+      if (origIndent === lineIndent - 1) {
+        warnings.push(
+          `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, original line at ${origIndent} - likely one space OVER (the previous fix added one space too many).`,
+        )
+        continue
       }
     }
     // Adjacent real code in EITHER direction (skip blanks and other
