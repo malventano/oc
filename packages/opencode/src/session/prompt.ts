@@ -1387,7 +1387,7 @@ TimeContext.stampUserMessages(msgs)
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
-             epochSystem: epoch.frozen,
+              epochSystem: epoch.frozen,
               user: lastUser,
               agent,
               permission: session.permission,

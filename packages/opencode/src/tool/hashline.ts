@@ -275,20 +275,20 @@ function restoreOldWrappedLines(oldLines: string[], newLines: string[]) {
 
 function stripInsertAnchorEchoAfter(anchorLine: string, lines: string[]) {
   if (lines.length <= 1) return lines
- if (equalsBytes(lines[0], anchorLine)) return lines.slice(1)
+  if (equalsBytes(lines[0], anchorLine)) return lines.slice(1)
   return lines
 }
 
 function stripInsertAnchorEchoBefore(anchorLine: string, lines: string[]) {
   if (lines.length <= 1) return lines
- if (equalsBytes(lines[lines.length - 1], anchorLine)) return lines.slice(0, -1)
+  if (equalsBytes(lines[lines.length - 1], anchorLine)) return lines.slice(0, -1)
   return lines
 }
 
 function stripInsertBoundaryEcho(afterLine: string, beforeLine: string, lines: string[]) {
   let out = lines
- if (out.length > 1 && equalsBytes(out[0], afterLine)) out = out.slice(1)
- if (out.length > 1 && equalsBytes(out[out.length - 1], beforeLine)) out = out.slice(0, -1)
+  if (out.length > 1 && equalsBytes(out[0], afterLine)) out = out.slice(1)
+  if (out.length > 1 && equalsBytes(out[out.length - 1], beforeLine)) out = out.slice(0, -1)
   return out
 }
 
@@ -298,7 +298,7 @@ function stripRangeBoundaryEcho(fileLines: string[], startLine: number, endLine:
 
   let out = lines
   const beforeIdx = startLine - 2
- if (beforeIdx >= 0 && equalsBytes(out[0], fileLines[beforeIdx])) {
+  if (beforeIdx >= 0 && equalsBytes(out[0], fileLines[beforeIdx])) {
     out = out.slice(1)
   }
 
@@ -306,7 +306,7 @@ function stripRangeBoundaryEcho(fileLines: string[], startLine: number, endLine:
   if (
     afterIdx < fileLines.length &&
     out.length > 0 &&
-   equalsBytes(out[out.length - 1], fileLines[afterIdx])
+    equalsBytes(out[out.length - 1], fileLines[afterIdx])
   ) {
     out = out.slice(0, -1)
   }
@@ -529,7 +529,7 @@ export function applyHashlineEdits(input: {
       const line = parseHashlineRef(edit.line, "set_line.line")
       refs.push(line)
       const text = parseText(edit.text)
-     if (text.length > 0 && equalsBytes(text[0], lines[line.line - 1])) {
+      if (text.length > 0 && equalsBytes(text[0], lines[line.line - 1])) {
         if (text.length <= 1) {
           throw new Error(
             `set_line.text repeats the anchor line (line ${line.line}) with no new content - ambiguous (keep as-is vs delete). To keep the line and add content after it, use insert_after with the new content.`,
@@ -573,7 +573,7 @@ export function applyHashlineEdits(input: {
       }
 
       const text = parseText(edit.text)
-     if (text.length > 0 && equalsBytes(text[0], lines[start.line - 1])) {
+      if (text.length > 0 && equalsBytes(text[0], lines[start.line - 1])) {
         if (text.length <= 1) {
           throw new Error(
             `replace_lines.text repeats the range's first line (line ${start.line}) with no new content - ambiguous. To keep the range's first line, start the range at the first differing line; to keep the line and insert after it, use insert_after.`,
