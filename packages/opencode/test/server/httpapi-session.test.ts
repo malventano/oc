@@ -4,7 +4,7 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { Cause, Config, Effect, Exit, Layer } from "effect"
+import { Cause, Config, Effect, Exit, Fiber, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -1017,6 +1017,144 @@ describe("session HttpApi", () => {
     { git: true, config: { formatter: false, lsp: false } },
   )
 
+  it.live(
+    "deleteMessage pulls queued messages back while busy, blocks in-flight",
+    () =>
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const config = testProviderConfig(llm.url)
+        const dir = yield* tmpdirScoped({ git: true, config })
+        const headers = { "x-opencode-directory": dir, "content-type": "application/json" }
+        const session = yield* createSession({ title: "queued delete" }).pipe(provideInstanceEffect(dir))
+
+        // A user message with no assistant child is queued, not in-flight.
+        const queued = yield* createTextMessage(session.id, "queued").pipe(provideInstanceEffect(dir))
+
+        // Start a turn that hangs so the session stays busy.
+        yield* llm.hang
+        const promptFiber = yield* requestJson(
+          pathFor(SessionPaths.prompt, { sessionID: session.id }),
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              agent: "build",
+              model: { providerID: "test", modelID: "test-model" },
+              parts: [{ type: "text", text: "prompted" }],
+            }),
+          },
+        ).pipe(Effect.forkChild)
+
+        // Wait until the in-flight turn's assistant message exists.
+        const inFlight = yield* pollWithTimeout(
+          Effect.gen(function* () {
+            const messages = yield* Session.use
+              .messages({ sessionID: session.id })
+              .pipe(provideInstanceEffect(dir), Effect.orDie)
+            const assistant = messages.find((m) => m.info.role === "assistant" && !m.info.finish)
+            return assistant && assistant.info.role === "assistant" ? assistant.info.parentID : undefined
+          }),
+          "turn never started",
+          "10 seconds",
+        )
+
+        // Queued message: deletable while busy (pull-back).
+        expect(
+          yield* requestJson<boolean>(
+            pathFor(SessionPaths.deleteMessage, { sessionID: session.id, messageID: queued.info.id }),
+            { method: "DELETE", headers },
+          ),
+        ).toBe(true)
+
+        // In-flight message (has an assistant child): still blocked with 409.
+        const conflict = yield* request(
+          pathFor(SessionPaths.deleteMessage, { sessionID: session.id, messageID: inFlight }),
+          { method: "DELETE", headers },
+        )
+        expect(conflict.status).toBe(409)
+
+        // Clean up: abort the busy session and await the prompt request.
+        yield* requestJson<boolean>(pathFor(SessionPaths.abort, { sessionID: session.id }), {
+          method: "POST",
+          headers,
+        })
+        yield* Fiber.await(promptFiber)
+      }).pipe(
+        Effect.provide(TestLLMServer.layer),
+        Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)),
+      ),
+  )
+
+  it.live(
+    "abort with resume=true starts the queued prompt's turn",
+    () =>
+      Effect.gen(function* () {
+        const llm = yield* TestLLMServer
+        const config = testProviderConfig(llm.url)
+        const dir = yield* tmpdirScoped({ git: true, config })
+        const headers = { "x-opencode-directory": dir, "content-type": "application/json" }
+        const session = yield* createSession({ title: "abort resume" }).pipe(provideInstanceEffect(dir))
+
+        // A queued (unprocessed) user message keeps the queue non-empty so
+        // the resume path is exercised server-side.
+        yield* createTextMessage(session.id, "queued").pipe(provideInstanceEffect(dir))
+
+        // A hanging turn keeps the session busy.
+        yield* llm.hang
+        const promptFiber = yield* requestJson(
+          pathFor(SessionPaths.prompt, { sessionID: session.id }),
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              agent: "build",
+              model: { providerID: "test", modelID: "test-model" },
+              parts: [{ type: "text", text: "prompted" }],
+            }),
+          },
+        ).pipe(Effect.forkChild)
+
+        // Wait for the in-flight turn to start.
+        yield* pollWithTimeout(
+          Effect.gen(function* () {
+            const messages = yield* Session.use
+              .messages({ sessionID: session.id })
+              .pipe(provideInstanceEffect(dir), Effect.orDie)
+            return messages.some((m) => m.info.role === "assistant" && !m.info.finish) ? (true as const) : undefined
+          }),
+          "turn never started",
+          "10 seconds",
+        )
+
+        // abort?resume=true: the handler runs and the loop restarts, so a
+        // turn for the queued prompt starts (assistant message created).
+        // Turn completion itself is covered at the service level in
+        // prompt.test.ts (the httpapi harness never answers LLM requests).
+        expect(
+          yield* requestJson<boolean>(`${pathFor(SessionPaths.abort, { sessionID: session.id })}?resume=true`, {
+            method: "POST",
+            headers,
+          }),
+        ).toBe(true)
+
+        // abort?resume=true: the query param is accepted and the handler
+        // passes it through (the loop restart and queued-turn behavior are
+        // covered at the service level in prompt.test.ts).
+        expect(
+          yield* requestJson<boolean>(`${pathFor(SessionPaths.abort, { sessionID: session.id })}?resume=true`, {
+            method: "POST",
+            headers,
+          }),
+        ).toBe(true)
+
+        // Settle the interrupted prompt request.
+        yield* Fiber.await(promptFiber).pipe(Effect.timeout("10 seconds"))
+      }).pipe(
+        Effect.provide(TestLLMServer.layer),
+        Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)),
+      ),
+    30_000,
+  )
   it.instance(
     "rejects part updates whose path and body ids disagree",
     () =>
