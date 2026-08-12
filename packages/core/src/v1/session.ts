@@ -48,6 +48,7 @@ export {
 export const OutputLengthError = NamedError.create("MessageOutputLengthError", {})
 export const AuthError = NamedError.create("ProviderAuthError", { providerID: Schema.String, message: Schema.String })
 export const AbortedError = NamedError.create("MessageAbortedError", { message: Schema.String })
+export const StallGuardError = NamedError.create("StallGuardError", { message: Schema.String })
 export const StructuredOutputError = NamedError.create("StructuredOutputError", {
   message: Schema.String,
   retries: NonNegativeInt,

@@ -4,6 +4,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import {
   APIError,
   AbortedError,
+  StallGuardError,
   Assistant,
   AuthError,
   CompactionPart,
@@ -247,6 +248,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 
       if (
         msg.info.error &&
+        !StallGuardError.isInstance(msg.info.error) &&
         !(
           AbortedError.isInstance(msg.info.error) &&
           msg.parts.some((part) => part.type !== "step-start" && part.type !== "reasoning")

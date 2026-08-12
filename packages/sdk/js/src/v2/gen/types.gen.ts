@@ -291,6 +291,13 @@ export type MessageAbortedError = {
   }
 }
 
+export type StallGuardError = {
+  name: "StallGuardError"
+  data: {
+    message: string
+  }
+}
+
 export type StructuredOutputError = {
   name: "StructuredOutputError"
   data: {
@@ -343,6 +350,7 @@ export type AssistantMessage = {
     | UnknownError
     | MessageOutputLengthError
     | MessageAbortedError
+    | StallGuardError
     | StructuredOutputError
     | ContextOverflowError
     | ContentFilterError
