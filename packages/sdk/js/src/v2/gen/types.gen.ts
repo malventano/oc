@@ -622,6 +622,7 @@ export type CompactionPart = {
   auto: boolean
   overflow?: boolean
   tail_start_id?: string
+  virtual?: boolean
 }
 
 export type Part =
@@ -2026,6 +2027,8 @@ export type Config = {
     continue_loop_on_deny?: boolean
     mcp_timeout?: number
     policies?: Array<ConfigV2ExperimentalPolicy>
+    hashline_autocorrect?: boolean
+    hashline_seen_lines?: boolean
   }
 }
 
@@ -10132,9 +10135,9 @@ export type SessionSummarizeError = SessionSummarizeErrors[keyof SessionSummariz
 
 export type SessionSummarizeResponses = {
   /**
-   * Summarized session
+   * Compaction outcome: compacted (summary generated), virtual_reduced (oldest retained pre-compaction turn dropped), virtual_empty (no retained turns to drop), or in_progress (a compaction is already running)
    */
-  200: boolean
+  200: "compacted" | "virtual_reduced" | "virtual_empty" | "in_progress"
 }
 
 export type SessionSummarizeResponse = SessionSummarizeResponses[keyof SessionSummarizeResponses]

@@ -1665,6 +1665,342 @@ describe("session.compaction.process", () => {
   )
 })
 
+
+describe("session.compaction.virtual", () => {
+ // Builds: [user turn][assistant] xN, then a compaction marker whose part
+ // carries tail_start_id, then a completed summary assistant. Mirrors the
+ // post-compaction message layout virtual() expects.
+ // Builds: [user turn][assistant] xN, then a compaction marker whose part
+ // carries tail_start_id (when given), then a completed summary assistant.
+ // Mirrors the post-compaction message layout virtual() expects.
+ function completeCompaction(input: {
+   sessionID: SessionID
+   root: string
+   tailStartID?: MessageID
+   summaryText?: string
+ }) {
+   return SessionNs.Service.use((ssn) =>
+     Effect.gen(function* () {
+       yield* createCompactionMarker(input.sessionID)
+       const msgs = yield* ssn.messages({ sessionID: input.sessionID })
+       const marker = msgs.at(-1)
+       if (!marker || marker.info.role !== "user") throw new Error("no marker message")
+       const markerInfo = marker.info
+       const part = marker.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")
+       if (!part) throw new Error("no compaction part")
+       if (input.tailStartID) yield* ssn.updatePart({ ...part, tail_start_id: input.tailStartID })
+       yield* createSummaryAssistantMessage(
+         input.sessionID,
+         markerInfo.id,
+         input.root,
+         input.summaryText ?? "OLD SUMMARY",
+       )
+       return markerInfo.id
+     }),
+   )
+ }
+
+it.instance(
+   "returns ineligible when nothing was compacted yet",
+   Effect.gen(function* () {
+     const ssn = yield* SessionNs.Service
+     const session = yield* ssn.create({})
+     yield* createUserMessage(session.id, "first")
+     yield* createAssistantMessage(session.id, (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id, "")
+     const msgs = yield* ssn.messages({ sessionID: session.id })
+     const outcome = yield* SessionCompaction.use.virtual({ sessionID: session.id, messages: msgs })
+     expect(outcome).toBe("ineligible")
+   }),
+ )
+
+it.instance(
+  "returns in_progress while a compaction is still running",
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const ssn = yield* SessionNs.Service
+    const session = yield* ssn.create({})
+    yield* createUserMessage(session.id, "first")
+    yield* createAssistantMessage(session.id, (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id, test.directory)
+    yield* createCompactionMarker(session.id)
+    const msgs = yield* ssn.messages({ sessionID: session.id })
+    const outcome = yield* SessionCompaction.use.virtual({ sessionID: session.id, messages: msgs })
+    expect(outcome).toBe("in_progress")
+  }),
+)
+
+it.instance(
+   "returns ineligible when a user message arrived after the compaction",
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const ssn = yield* SessionNs.Service
+     const session = yield* ssn.create({})
+     const first = yield* createUserMessage(session.id, "first")
+     yield* createAssistantMessage(session.id, first.id, test.directory)
+     const markerID = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+     expect(markerID).toBeTruthy()
+     yield* createUserMessage(session.id, "after compaction")
+     const msgs = yield* ssn.messages({ sessionID: session.id })
+     const outcome = yield* SessionCompaction.use.virtual({ sessionID: session.id, messages: msgs })
+     expect(outcome).toBe("ineligible")
+   }),
+ )
+
+it.instance(
+   "returns virtual_empty when no retained turns remain",
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const ssn = yield* SessionNs.Service
+     const session = yield* ssn.create({})
+     const first = yield* createUserMessage(session.id, "first")
+     yield* createAssistantMessage(session.id, first.id, test.directory)
+     const markerID = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+     expect(markerID).toBeTruthy()
+     // Drop the only retained turn once...
+     const firstOutcome = yield* SessionCompaction.use.virtual({
+       sessionID: session.id,
+       messages: yield* ssn.messages({ sessionID: session.id }),
+     })
+     expect(firstOutcome).toBe("virtual_reduced")
+     // ...then the tail is empty.
+     const outcome = yield* SessionCompaction.use.virtual({
+       sessionID: session.id,
+       messages: yield* ssn.messages({ sessionID: session.id }),
+     })
+     expect(outcome).toBe("virtual_empty")
+   }),
+ )
+
+it.instance(
+ "drops the oldest turn when the whole conversation was retained (no tail_start_id)",
+ Effect.gen(function* () {
+   const test = yield* TestInstance
+   const ssn = yield* SessionNs.Service
+   const session = yield* ssn.create({})
+   const first = yield* createUserMessage(session.id, "first")
+   yield* createAssistantMessage(session.id, first.id, test.directory)
+   const second = yield* createUserMessage(session.id, "second")
+   yield* createAssistantMessage(session.id, second.id, test.directory)
+   // select() leaves tail_start_id undefined when keep.start === 0 (fresh
+   // session where everything fits): the retained region starts at message 0.
+   yield* completeCompaction({ sessionID: session.id, root: test.directory })
+
+   const outcome = yield* SessionCompaction.use.virtual({
+     sessionID: session.id,
+     messages: yield* ssn.messages({ sessionID: session.id }),
+   })
+   expect(outcome).toBe("virtual_reduced")
+
+   const msgs = yield* ssn.messages({ sessionID: session.id })
+   const marker = msgs.at(-2)
+   const summary = msgs.at(-1)
+   const part = marker?.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")
+   expect(part?.tail_start_id).toBe(second.id)
+   expect(summary?.info.summary).toBe(true)
+   const text = summary?.parts.find((p): p is SessionV1.TextPart => p.type === "text")
+   expect(text?.text).toContain("Pre-compaction tail reduced: 2 → 1")
+ }),
+)
+
+it.instance(
+   "drops the oldest retained turn and emits a synthetic summary",
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const ssn = yield* SessionNs.Service
+     const session = yield* ssn.create({})
+     const first = yield* createUserMessage(session.id, "first")
+     yield* createAssistantMessage(session.id, first.id, test.directory)
+     const second = yield* createUserMessage(session.id, "second")
+     yield* createAssistantMessage(session.id, second.id, test.directory)
+     yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+
+     const outcome = yield* SessionCompaction.use.virtual({
+       sessionID: session.id,
+       messages: yield* ssn.messages({ sessionID: session.id }),
+     })
+     expect(outcome).toBe("virtual_reduced")
+
+     const msgs = yield* ssn.messages({ sessionID: session.id })
+     const marker = msgs.at(-2)
+     const summary = msgs.at(-1)
+     const part = marker?.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")
+     expect(part?.tail_start_id).toBe(second.id)
+     expect(summary?.info.role).toBe("assistant")
+     expect(summary?.info.summary).toBe(true)
+     const text = summary?.parts.find((p): p is SessionV1.TextPart => p.type === "text")
+     expect(text?.text).toContain("Pre-compaction tail reduced: 2 → 1")
+    expect(text?.text).not.toContain("OLD SUMMARY")
+   }),
+ )
+
+it.instance(
+ "skips virtual compaction summaries when picking previousSummary",
+ Effect.gen(function* () {
+   const test = yield* TestInstance
+   const ssn = yield* SessionNs.Service
+   const session = yield* ssn.create({})
+   const first = yield* createUserMessage(session.id, "first")
+   yield* createAssistantMessage(session.id, first.id, test.directory)
+   const second = yield* createUserMessage(session.id, "second")
+   yield* createAssistantMessage(session.id, second.id, test.directory)
+   yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+
+   yield* SessionCompaction.use.virtual({
+     sessionID: session.id,
+     messages: yield* ssn.messages({ sessionID: session.id }),
+   })
+
+   const promptText = yield* SessionCompaction.use.prompt({
+     sessionID: session.id,
+     messages: yield* ssn.messages({ sessionID: session.id }),
+   })
+   expect(promptText).toContain("<previous-summary>")
+   expect(promptText).toContain("OLD SUMMARY")
+   expect(promptText).not.toContain("Pre-compaction tail reduced")
+ }),
+)
+it.instance(
+   "chains: second virtual drops the remaining turn (1 → 0)",
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const ssn = yield* SessionNs.Service
+     const session = yield* ssn.create({})
+     const first = yield* createUserMessage(session.id, "first")
+     yield* createAssistantMessage(session.id, first.id, test.directory)
+     const second = yield* createUserMessage(session.id, "second")
+     yield* createAssistantMessage(session.id, second.id, test.directory)
+     const markerID = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+     expect(markerID).toBeTruthy()
+
+     const firstOutcome = yield* SessionCompaction.use.virtual({
+       sessionID: session.id,
+       messages: yield* ssn.messages({ sessionID: session.id }),
+     })
+     expect(firstOutcome).toBe("virtual_reduced")
+     const firstVirtualMarkerID = (yield* ssn.messages({ sessionID: session.id })).at(-2)!.info.id
+
+     const secondOutcome = yield* SessionCompaction.use.virtual({
+       sessionID: session.id,
+       messages: yield* ssn.messages({ sessionID: session.id }),
+     })
+     expect(secondOutcome).toBe("virtual_reduced")
+
+     const msgs = yield* ssn.messages({ sessionID: session.id })
+     const marker = msgs.at(-2)
+     const summary = msgs.at(-1)
+     const part = marker?.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")
+     expect(part?.tail_start_id).toBe(firstVirtualMarkerID)
+     expect(summary?.info.summary).toBe(true)
+     const text = summary?.parts.find((p): p is SessionV1.TextPart => p.type === "text")
+     expect(text?.text).toContain("Pre-compaction tail reduced: 1 → 0")
+   }),
+ )
+
+it.instance(
+ "filterCompacted excludes virtual markers and notes, keeping the last real pair",
+ Effect.gen(function* () {
+   const test = yield* TestInstance
+   const ssn = yield* SessionNs.Service
+   const session = yield* ssn.create({})
+   const first = yield* createUserMessage(session.id, "first")
+   yield* createAssistantMessage(session.id, first.id, test.directory)
+   const second = yield* createUserMessage(session.id, "second")
+   yield* createAssistantMessage(session.id, second.id, test.directory)
+   const realMarkerID = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+   const realSummaryID = (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id
+
+   const firstOutcome = yield* SessionCompaction.use.virtual({
+     sessionID: session.id,
+     messages: yield* ssn.messages({ sessionID: session.id }),
+   })
+   expect(firstOutcome).toBe("virtual_reduced")
+   const firstVirtualID = (yield* ssn.messages({ sessionID: session.id })).at(-2)!.info.id
+
+   let filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+   let ids = filtered.map((m) => m.info.id)
+   expect(ids).toContain(realMarkerID)
+   expect(ids).toContain(realSummaryID)
+   expect(ids).not.toContain(firstVirtualID)
+   expect(ids.slice(-2)).toEqual([realMarkerID, realSummaryID])
+   expect(ids).not.toContain(first.id)
+   expect(ids).toContain(second.id)
+
+   const secondOutcome = yield* SessionCompaction.use.virtual({
+     sessionID: session.id,
+     messages: yield* ssn.messages({ sessionID: session.id }),
+   })
+   expect(secondOutcome).toBe("virtual_reduced")
+
+   filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+   ids = filtered.map((m) => m.info.id)
+   expect(ids).toEqual([realMarkerID, realSummaryID])
+ }),
+)
+
+it.instance(
+  "filterCompacted keeps the real pair when the real marker has no tail",
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const ssn = yield* SessionNs.Service
+    const session = yield* ssn.create({})
+    const first = yield* createUserMessage(session.id, "first")
+    yield* createAssistantMessage(session.id, first.id, test.directory)
+    const second = yield* createUserMessage(session.id, "second")
+    yield* createAssistantMessage(session.id, second.id, test.directory)
+    const realMarkerID = yield* completeCompaction({ sessionID: session.id, root: test.directory })
+    const realSummaryID = (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id
+    const before = yield* ssn.messages({ sessionID: session.id })
+    const part = before.find((m) => m.info.id === realMarkerID)?.parts.find(
+      (p): p is SessionV1.CompactionPart => p.type === "compaction",
+    )
+    expect(part?.tail_start_id).toBeUndefined()
+
+    yield* SessionCompaction.use.virtual({
+      sessionID: session.id,
+      messages: yield* ssn.messages({ sessionID: session.id }),
+    })
+    yield* SessionCompaction.use.virtual({
+      sessionID: session.id,
+      messages: yield* ssn.messages({ sessionID: session.id }),
+    })
+
+    const newTurn = yield* createUserMessage(session.id, "after virtuals")
+    const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+    const ids = filtered.map((m) => m.info.id)
+    expect(ids).toEqual([realMarkerID, realSummaryID, newTurn.id])
+    expect(filtered.filter((m) => m.info.role === "assistant" && m.info.summary).length).toBe(1)
+  }),
+)
+
+it.instance(
+   "undo chain: removing the synthetic marker restores the previous tail",
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const ssn = yield* SessionNs.Service
+     const session = yield* ssn.create({})
+     const first = yield* createUserMessage(session.id, "first")
+     yield* createAssistantMessage(session.id, first.id, test.directory)
+     const second = yield* createUserMessage(session.id, "second")
+     yield* createAssistantMessage(session.id, second.id, test.directory)
+     yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+
+     yield* SessionCompaction.use.virtual({
+       sessionID: session.id,
+       messages: yield* ssn.messages({ sessionID: session.id }),
+     })
+     const after = yield* ssn.messages({ sessionID: session.id })
+     const marker = after.at(-2)
+     if (!marker) throw new Error("no marker")
+     yield* ssn.removeMessage({ sessionID: session.id, messageID: marker.info.id })
+
+     const restored = yield* ssn.messages({ sessionID: session.id })
+     const lastPart = restored
+       .flatMap((m) => m.parts)
+       .findLast((p): p is SessionV1.CompactionPart => p.type === "compaction")
+     expect(lastPart?.tail_start_id).toBe(first.id)
+     expect(restored.some((m) => m.info.id === second.id)).toBe(true)
+   }),
+ )
+})
 describe("util.token.estimate", () => {
   test("estimates tokens from text (4 chars per token)", () => {
     const text = "x".repeat(4000)
