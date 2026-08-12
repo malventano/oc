@@ -1323,6 +1323,121 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
+  it.instance("warns on the one-over comment fold via the validator", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["   // three spaces, one over"] }],
+      })
+      expect(yield* load(filepath)).toContain("   // three spaces, one over")
+      expect(result.output).toContain("indentation validator")
+      expect(result.output).toContain("one space OVER")
+    }),
+  )
+
+  it.instance("does not warn on a two-spaces-deeper continuation (legit indent)", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["    // four spaces, two deeper"] }],
+      })
+      expect(yield* load(filepath)).toContain("    // four spaces, two deeper")
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+
+  it.instance("warns when a replacement lands one space OVER the line it replaced", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      // Equal-count REPLACE: orig at 10, new at 11 - the adjacent scan sees
+      // 8 above and 12 below (11 is one MORE than 10 and one LESS than 12),
+      // so the original-line symmetric check must fire.
+      const body = ["function outer() {", "        const alpha = 1", "          const beta = 2", "            const gamma = 3", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "replace_lines",
+            start_line: hashlineRef(3, body[2]),
+            end_line: hashlineRef(3, body[2]),
+            text: ["           const beta = 22"],
+          },
+        ],
+      })
+      expect(yield* load(filepath)).toContain("           const beta = 22")
+      expect(result.output).toContain("indentation validator")
+      expect(result.output).toContain("original line at 10")
+      expect(result.output).toContain("one space OVER")
+    }),
+  )
+
+  it.instance("does not warn when a replacement lands two spaces over the replaced line", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "        const alpha = 1", "          const beta = 2", "            const gamma = 3", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "replace_lines",
+            start_line: hashlineRef(3, body[2]),
+            end_line: hashlineRef(3, body[2]),
+            text: ["            const beta = 22"],
+          },
+        ],
+      })
+      expect(yield* load(filepath)).toContain("            const beta = 22")
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+
+  it.instance("checks a changed line even when its text byte-matches a line elsewhere (Set-collision)", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      // The file already holds a one-short comment. The edit REPLACES a code
+      // line with text byte-identical to that pre-existing comment - the
+      // old string-Set filter wrongly classified it as pre-existing and
+      // skipped it. The position-aware filter compares by index, so the
+      // changed line is still checked and the fold is flagged.
+      const body = ["function outer() {", " // pre-existing fold", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "replace_lines",
+            start_line: hashlineRef(3, body[2]),
+            end_line: hashlineRef(3, body[2]),
+            text: [" // pre-existing fold"],
+          },
+        ],
+      })
+      expect(result.output).toContain("indentation validator")
+    }),
+  )
+
+  it.instance("does not warn on a top-level 0-indent line (no fold signature)", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["# heading", "text", ""]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["**bold note**"] }],
+      })
+      expect(yield* load(filepath)).toContain("**bold note**")
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+
   it.instance("skips a blank line when finding the adjacent code (LF-only neighbor)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
