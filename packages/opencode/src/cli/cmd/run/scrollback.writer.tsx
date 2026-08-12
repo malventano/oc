@@ -170,7 +170,7 @@ export function RunEntryContent(props: {
           <text width="100%" wrapMode="word" fg={theme().block.muted}>
             {code_snapshot()!.title}
           </text>
-          <box width="100%" paddingLeft={1}>
+          <box width="100%" paddingLeft={1} paddingRight={2}>
             <line_number width="100%" fg={theme().block.muted} minWidth={3} paddingRight={1}>
               <code
                 width="100%"
@@ -228,7 +228,7 @@ export function RunEntryContent(props: {
           <text width="100%" wrapMode="word" fg={theme().block.muted}>
             {task_snapshot()!.title}
           </text>
-          <box width="100%" flexDirection="column" gap={0} paddingLeft={1}>
+          <box width="100%" flexDirection="column" gap={0} paddingLeft={1} paddingRight={2}>
             {task_snapshot()!.rows.map((row) => (
               <text width="100%" wrapMode="word" fg={theme().block.text}>
                 {row}
@@ -247,7 +247,7 @@ export function RunEntryContent(props: {
           <text width="100%" wrapMode="word" fg={theme().block.muted}>
             # Todos
           </text>
-          <box width="100%" flexDirection="column" gap={0}>
+          <box width="100%" flexDirection="column" gap={0} paddingRight={2}>
             {todo_snapshot()!.items.map((item) => (
               <text width="100%" wrapMode="word" fg={todoColor(theme(), item.status)}>
                 {todoText(item)}
@@ -266,7 +266,7 @@ export function RunEntryContent(props: {
           <text width="100%" wrapMode="word" fg={theme().block.muted}>
             # Questions
           </text>
-          <box width="100%" flexDirection="column" gap={1}>
+             <box width="100%" flexDirection="column" gap={1} paddingRight={2}>
             {question_snapshot()!.items.map((item) => (
               <box width="100%" flexDirection="column" gap={0}>
                 <text width="100%" wrapMode="word" fg={theme().block.muted}>
