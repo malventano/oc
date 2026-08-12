@@ -1,35 +1,86 @@
-Performs file edits with hashline anchors.
+Performs file edits with a line-anchored patch grammar. The ONLY argument is `input`, a patch text block:
 
-Usage:
-- Anchors are validated against the file's LIVE content on every edit: stale or fabricated hashes are rejected with retry-with anchors (including the target line's content). Reading first is recommended and is the only source of valid anchors — bash views (cat/sed) produce none, and editing blind means probing for anchors one line at a time.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- `{ filePath, edits?, delete?, rename? }` — one of edits/delete/rename is required
-- `edits` is required unless delete or rename is used (use `[]` for delete/rename-only). Deleting lines: `text: []` (empty array) removes them; `text: ""` is treated the same (deletion), and trailing empty strings in text arrays are dropped, so a copied block ending in a newline inserts no blank line.
+*** Begin Patch
+[path/to/file.ts#AB12]
+OP ANCHOR:
++ content row
++ content row
+[path/to/other.ts#CD34]
+OP ...
+*** End Patch
+
+Anchors are `LINE#ID` taken verbatim from your latest `read`/`grep` — they name ORIGINAL lines, never lines shifted by applied hunks. The read output you need is ALREADY in the conversation — edit from it directly. Do NOT call `read` again before editing; only re-read after an edit was REJECTED.
+
+Operations (colon headers take `+` body rows, the final content):
+- `SET N#ID:` — replace line N with the body rows
+- `REPLACE A#ID B#ID:` — replace lines A through B (inclusive) with the body rows
+- `AFTER N#ID:` — insert body rows after line N
+- `BEFORE N#ID:` — insert body rows before line N
+- `BETWEEN A#ID B#ID:` — insert body rows between lines A and B
+- `APPEND:` — add body rows at the end of the file
+- `PREPEND:` — add body rows at the start of the file
+- `CUT A#ID B#ID` — delete lines A..B, capture into the anonymous register
+- `CUT A#ID B#ID @name` — delete lines A..B, capture into register `@name`
+- `PASTE @name AFTER N#ID` — insert register content after line N
+- `PASTE @name BEFORE N#ID` — insert register content before line N
+- `DELETE` — delete the file (file-level: no other op in the section)
+- `RENAME NEWPATH` — rename/move the file (file-level)
+
+Content rows:
+- Every body row is `+TEXT`; `+` alone is a blank line.
+- A single space after `+` is a SEPARATOR, not content: the parser strips exactly one space if present. `+ x` = content `x`, `+  x` = content ` x`, `+   x` = content `  x`. Write content's leading spaces AFTER the separator (or just after `+` if none).
+- Content is RAW: backticks, `${...}`, double quotes, `\` sequences, and all punctuation after the separator are literal content. NEVER escape, backslash, or wrap them. Text-based search/replace is not available — anchors only.
+- A literal leading `-` or `+` in the content keeps its prefix: Markdown bullet `- item` becomes `+ - item` (or `+- item`); a literal `+ item` becomes `+ + item` (or `++ item`).
+- The range deletes; the body is ONLY the final content. Body length is irrelevant to the range.
+- To delete lines, use `CUT`. Empty `SET`/`REPLACE` bodies are invalid.
+
+Rules:
+- Anchors come from the latest `read`/`grep` output. Never invent or guess them — a wrong anchor is rejected with retry-with anchors; re-read if unsure.
+- Every section header carries the 4-hex `#TAG` from the latest `read` of that file (`[PATH#TAG]`); copy it verbatim from the read output.
+- Touch only lines displayed by the read. Undisplayed/elided lines are UNSEEN — re-read the range first.
+- Ranges are tight: cover only the lines that change. Non-adjacent changes are separate ops.
+- Applied edits renumber the file and change IDs — take the next op's anchors from the edit response or a fresh `read`.
+- Multiple file sections in one patch apply independently (atomically validated). `CUT` + `PASTE @name` flows across sections; a paste's anchor must exist in its OWN section's file — give the paste its own [PATH] section targeting the destination.
+- Every line must be exactly one op or one `+` body row. A malformed line fails the WHOLE patch with a parse error naming the line — fix it and resend the full patch; do not fall back to any other edit format.
 - NEVER copy lines from Read or edit-diff output into your replacement text — type fresh content. If you do copy, leading `N#ID:` / `+N#ID:` / `>>>` prefixes are stripped automatically.
-- Anchors are valid only for the exact file version you read: after any edit, compaction, or model switch, re-read the target region. Stale anchors are rejected with retry-with anchors (fail-closed by design).
-- Use strict anchor references from `Read` output: `LINE#ID`.
-- Autocorrect cleanup is on by default and can be turned off with `experimental.hashline_autocorrect: false`.
-- Default autocorrect only strips copied `LINE#ID:`/`>>>` prefixes; set `OPENCODE_HL_AUTOCORRECT=1` to opt into heavier cleanup heuristics.
-- When `Read` returns `LINE#ID:<content>`, prefer hashline operations.
-- Operations: EVERY op object REQUIRES a `type` field as its first key: `set_line | replace_lines | insert_after | insert_before | insert_between | append | prepend | replace | cut | paste` — never omit it. Unknown keys on any op or payload are REJECTED (exact keys only); if you meant a position anchor, remember: insert_after/insert_before take a single `line`; insert_between takes `after_line` + `before_line`; paste takes `insert_after_line` / `insert_before_line`.
-  - `set_line { line, text }`
-  - `replace_lines { start_line, end_line, text }`
-  - `insert_after { line, text }`
-  - `insert_before { line, text }`
-  - `insert_between { after_line, before_line, text }`
-  - `append { text }`
-  - `prepend { text }`
-  - `replace { old_text, new_text, all? }` — matches RAW text literally (no escape unescaping; multi-line old_text needs real newlines); substring matches count, so a bare word can collide with longer lines — use all=true or include context
-  - `cut { start_line, end_line, register? }` — delete a range and capture it to a register (payload-scoped); start_line/end_line are LINE#ID anchors
-  - `paste { insert_after_line | insert_before_line, register? }` — insert a captured register's content at a position (no text); insert_after_line/insert_before_line are LINE#ID anchors
-- Multi-file: `files: [{ filePath, edits, delete?, rename? }, ...]` applies across files atomically (all validated before any write). `cut` registers captured in one section can be `paste`d in later sections, but a paste's anchor must exist in ITS OWN section's file — cut from one file, then paste in a separate section targeting the destination: `files: [{ filePath: a, edits: [{ type: "cut", start_line: ..., end_line: ..., register: "@x" }] }, { filePath: b, edits: [{ type: "paste", insert_after_line: ..., register: "@x" }] }]`. Use for refactors that touch several files at once.
-- Provide the exact `LINE#ID` anchors from the latest `Read` result. Mismatched anchors are rejected and should be retried with the returned `retry with` anchors.
-- Only lines displayed by a `Read`/`grep` are editable: hunks on never-displayed lines are REJECTED with the actual content so you can retry directly. Mismatch errors show the target line content so you can confirm the line number before retrying.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required. Only use emojis if the user explicitly requests it.
 - If the file changed between your read and this edit, anchors are remapped through unchanged lines automatically (with a warning) when unambiguous, and rejected otherwise — re-read for fresh anchors.
-- First-attempt rejections are usually avoidable: re-read the target region immediately before editing (anchors from older reads are stale after any intervening edit); `edits` must be a JSON array of op objects, never a quoted/escaped string; set_line/replace_lines with a first text line that echoes the range's first line are AUTO-STRIPPED — the op becomes insert_after (or the range shifts to start at the first differing line) and the output notes it; a lone echo (no new content after it) still fails closed as ambiguous; append/prepend text is never stripped against the file boundary, boundary echoes there are usually coincidental structural text, not copy artifacts; when a replacement line sits INSIDE a backtick template/description string, keep that string's closing backtick (+ comma if it was a property) on the line.
-- LARGE ESCAPE-HEAVY PAYLOADS ARE ERROR-PRONE: replacement text containing backticks, `${}` template literals, or heavy escaping (a dozen+ such lines in one replace_lines/set_line text array) frequently breaks the tool-call JSON — the op's `type` key or whole fields get dropped, and the error retry loop often regenerates the same broken payload. For such content SPLIT into several smaller edits (each with fewer escaped lines, keeping the hashline anchors and previews of this tool), or write the whole file (the write tool keeps LINE#ID anchors in its output). GPT-family models may also fall back to apply_patch. (See BUG_EDIT_ESCAPE_PAYLOAD.md.)
 - After every successful edit, the response starts with a fresh `[PATH#TAG]` header; added lines in the diff carry their new `LINE#ID` refs (`+3#AB:content`), and each `*** path (N → M lines) [#TAG]` header shows its file tag — chain the next edit from those, or use a fresh `Read`.
-- Success output includes boundary previews (`[op lines N-M]` first/last line content) and unified diffs so you can verify intent after every write.
-- Batch discipline: when a change touches multiple locations, read once, then issue all edits back-to-back in a single response (one output, no re-reads). Single-line `set_line` replacements never shift anchors — any order works. Inserts/deletes shift lines below them: order separate calls bottom-up, or prefer ONE call with multiple ops (atomic against a single snapshot — strictly safer than sequential calls). Split only when the payload would exceed your output budget; never batch dependent/exploratory edits (next edit decided by a prior diff → separate turns).
-- GPT-family models can use `apply_patch` as fallback when needed.
+
+Example — `read` output:
+
+[greet.py#A1B2]
+1#ZP:def greet(name):
+2#QM:    msg = "Hello, " + name
+3#VR:    print(msg)
+4#WS:greet("world")
+
+Replace lines 2-3 with an f-string, then insert a call before line 4:
+
+*** Begin Patch
+[greet.py#A1B2]
+REPLACE 2#QM 3#VR:
++     print(f"Hi, {name}")
+BEFORE 4#WS:
++ greet("user")
+*** End Patch
+
+Markdown bullet insertion after line 1:
+
+*** Begin Patch
+[PLAN.md#E1F2]
+AFTER 1#YZ:
++ - task
++   - nested task
+*** End Patch
+
+Move a function to another file (register flows across sections):
+
+*** Begin Patch
+[greet.py#A1B2]
+CUT 1#ZP 3#VR @fn
+[other.py#3C4D]
+BEFORE 1#KH:
++ def greet(name):
++     print(f"Hi, {name}")
+*** End Patch

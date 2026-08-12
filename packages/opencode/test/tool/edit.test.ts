@@ -54,15 +54,60 @@ const init = Effect.fn("EditToolTest.init")(function* () {
   return yield* info.init()
 })
 
+// Render legacy JSON payloads to the patch grammar so behavior tests exercise the
+// parser + engine path end-to-end (the schema now takes only { input }).
+const PATCH_TAG = "A1B2"
+function toRows(text: string | string[]): string[] {
+  return Array.isArray(text) ? text : [text]
+}
+function renderOp(op: any): string {
+  switch (op.type) {
+    case "set_line":
+      return `SET ${op.line}:\n${toRows(op.text).map((r) => (r === "" ? "+" : `+ ${r}`)).join("\n")}`
+    case "replace_lines":
+      return `REPLACE ${op.start_line} ${op.end_line}:\n${toRows(op.text).map((r) => (r === "" ? "+" : `+ ${r}`)).join("\n")}`
+    case "insert_after":
+      return `AFTER ${op.line}:\n${toRows(op.text).map((r) => (r === "" ? "+" : `+ ${r}`)).join("\n")}`
+    case "insert_before":
+      return `BEFORE ${op.line}:\n${toRows(op.text).map((r) => (r === "" ? "+" : `+ ${r}`)).join("\n")}`
+    case "insert_between":
+      return `BETWEEN ${op.after_line} ${op.before_line}:\n${toRows(op.text).map((r) => (r === "" ? "+" : `+ ${r}`)).join("\n")}`
+    case "append":
+      return `APPEND:\n${toRows(op.text).map((r) => (r === "" ? "+" : `+ ${r}`)).join("\n")}`
+    case "prepend":
+      return `PREPEND:\n${toRows(op.text).map((r) => (r === "" ? "+" : `+ ${r}`)).join("\n")}`
+    case "cut":
+      return `CUT ${op.start_line} ${op.end_line}${op.register ? ` @${op.register}` : ""}`
+    case "paste":
+      return `PASTE @${op.register} ${op.insert_after_line ? `AFTER ${op.insert_after_line}` : `BEFORE ${op.insert_before_line}`}`
+    default:
+      throw new Error(`grammar has no op: ${op.type}`)
+  }
+}
+function renderPatch(args: any): string {
+  const secs = args.files ?? [{ filePath: args.filePath, edits: args.edits, delete: args.delete, rename: args.rename }]
+  const out = ["*** Begin Patch"]
+  for (const s of secs) {
+    out.push(`[${s.filePath}#${PATCH_TAG}]`)
+    if (s.rename) out.push(`RENAME ${s.rename}`)
+    if (s.delete) out.push("DELETE")
+    for (const op of s.edits ?? []) out.push(renderOp(op))
+  }
+  out.push("*** End Patch")
+  return out.join("\n")
+}
+function toParams(args: any): Tool.InferParameters<typeof EditTool> {
+  return typeof args.input === "string" ? args : { input: renderPatch(args) }
+}
 const run = Effect.fn("EditToolTest.run")(function* (
-  args: Tool.InferParameters<typeof EditTool>,
+  args: Tool.InferParameters<typeof EditTool> | Record<string, any>,
   next: Tool.Context = ctx,
 ) {
   const tool = yield* init()
-  return yield* tool.execute(args, next)
+  return yield* tool.execute(toParams(args), next)
 })
 
-const fail = Effect.fn("EditToolTest.fail")(function* (args: Tool.InferParameters<typeof EditTool>) {
+const fail = Effect.fn("EditToolTest.fail")(function* (args: Tool.InferParameters<typeof EditTool> | Record<string, any>) {
   const exit = yield* run(args).pipe(Effect.exit)
   if (Exit.isFailure(exit)) {
     const err = Cause.squash(exit.cause)
@@ -306,35 +351,29 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("applies string replacement via the replace op", () =>
+    it.instance("applies a full-line replacement via replace_lines", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "existing.txt")
-        yield* putSnap(filepath, "foo bar foo baz foo")
+        const lines = ["foo bar foo baz foo"]
+        yield* putSnap(filepath, lines.join("\n"))
 
         yield* run({
           filePath: filepath,
-          edits: [{ type: "replace", old_text: "foo", new_text: "qux", all: true }],
+          edits: [
+            {
+              type: "replace_lines",
+              start_line: hashlineRef(1, lines[0]),
+              end_line: hashlineRef(1, lines[0]),
+              text: ["qux bar qux baz qux"],
+            },
+          ],
         })
 
         expect(yield* load(filepath)).toBe("qux bar qux baz qux")
       }),
     )
 
-    it.instance("rejects ambiguous replace without all=true", () =>
-      Effect.gen(function* () {
-        const test = yield* TestInstance
-        const filepath = path.join(test.directory, "existing.txt")
-        yield* putSnap(filepath, "foo foo")
-
-        expect(
-          (yield* fail({
-            filePath: filepath,
-            edits: [{ type: "replace", old_text: "foo", new_text: "qux" }],
-          })).message,
-        ).toContain("matched multiple times")
-      }),
-    )
 
     it.instance("rejects mismatched anchors with retry hints and leaves content unchanged", () =>
       Effect.gen(function* () {
@@ -355,13 +394,15 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("requires edits in the payload", () =>
+    it.instance("treats an empty patch section as a no-op", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "existing.txt")
         yield* put(filepath, "content")
 
-        expect((yield* fail({ filePath: filepath })).message).toContain("requires edits")
+        const result = yield* run({ filePath: filepath })
+        expect(result.output).toContain("No changes applied")
+        expect(result.metadata.noop).toBe(1)
       }),
     )
 
@@ -419,20 +460,18 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("detects no-op edits", () =>
+    it.instance("rejects same-content replace_lines as ambiguous", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "existing.txt")
         const lines = ["alpha"]
         yield* putSnap(filepath, lines.join("\n"))
 
-        const result = yield* run({
+        const message = (yield* fail({
           filePath: filepath,
-          edits: [{ type: "replace", old_text: "alpha", new_text: "alpha" }],
-        })
-
-        expect(result.output).toContain("No changes applied")
-        expect(result.metadata.noop).toBe(1)
+          edits: [{ type: "replace_lines", start_line: hashlineRef(1, lines[0]), end_line: hashlineRef(1, lines[0]), text: ["alpha"] }],
+        })).message
+        expect(message).toContain("ambiguous")
       }),
     )
 
@@ -568,7 +607,7 @@ describe("tool.edit", () => {
             delete: true,
             rename: path.join(test.directory, "other.txt"),
           })).message,
-        ).toContain("cannot be combined")
+       ).toContain("file-level")
       }),
     )
 
@@ -752,17 +791,15 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("rejects batch sections with no edits/delete/rename", () =>
+    it.instance("treats empty batch sections as no-ops", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const a = path.join(test.directory, "a.txt")
         yield* putSnap(a, "alpha")
 
-        expect(
-          (yield* fail({
-            files: [{ filePath: a }],
-          })).message,
-        ).toContain("at least one of edits/delete/rename")
+        const result = yield* run({ files: [{ filePath: a }] })
+        expect(result.output).toContain("No changes applied")
+        expect(result.metadata.noop).toBe(1)
       }),
     )
 
@@ -822,24 +859,11 @@ describe("tool.edit", () => {
           ],
         })).message
         expect(message).toContain("anchor mismatch")
-        expect(message).toContain("files:")
+       expect(message).toContain("[PATH]")
         expect(message).toContain("@x")
       }),
     )
 
-    it.instance("hints the files-form when a section-shaped object lands in the edits position", () =>
-      Effect.gen(function* () {
-        const test = yield* TestInstance
-        const a = path.join(test.directory, "a.txt")
-        yield* putSnap(a, "alpha")
-        const message = (yield* fail({
-          filePath: a,
-          edits: [{ filePath: path.join(test.directory, "b.txt"), edits: [] }] as never,
-        })).message
-        expect(message).toContain("files:")
-        expect(message).toContain("filePath")
-      }),
-    )
 
     it.instance("moves lines across files via batch cut/paste", () =>
       Effect.gen(function* () {
@@ -949,42 +973,39 @@ describe("tool.edit", () => {
     )
   })
 })
-describe("0053 exact keys + auto-strip", () => {
-  it.instance("rejects unknown keys on edit ops with a targeted hint", () =>
+describe("grammar parser + legacy hints", () => {
+  it.instance("rejects unknown op lines with a grammar error naming the line", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       yield* putSnap(filepath, "one\ntwo\n")
       const err = yield* fail({
-        filePath: filepath,
-        edits: [{ type: "set_line", line: hashlineRef(1, "one"), text: "x", insert_before_line: "9#ZZ" } as never],
+        input: ["*** Begin Patch", `[${filepath}#A1B2]`, "SET 1#AB:", "+ x", "BOGUS 2#CD:", "*** End Patch"].join("\n"),
       })
-      expect(err.message).toContain("Unexpected key")
-      expect(err.message).toContain("insert_before_line")
-      expect(err.message).toContain("insert_before")
+      expect(err.message).toContain("Patch grammar error")
+      expect(err.message).toContain("line 5")
+      expect(err.message).toContain("BOGUS")
     }),
   )
 
-  it.instance("rejects stringified edits with a dedicated hint", () =>
+  it.instance("rejects legacy JSON payloads with the migration hint", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       yield* putSnap(filepath, "one\n")
       const err = yield* fail({
+        input: "",
         filePath: filepath,
-        edits: '[{"type": "set_line", "line": "1#AB", "text": "x"}]',
-      } as never)
-      expect(err.message).toContain("edits must be a JSON array of op objects")
+        edits: [{ type: "set_line", line: hashlineRef(1, "one"), text: "x" }],
+      })
+      expect(err.message).toContain("Legacy JSON edit payload has been removed")
     }),
   )
 
-  it.instance("rejects null anchors with an anchor-required hint", () =>
+  it.instance("rejects pre-hashline payloads with the migration hint", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       yield* putSnap(filepath, "one\n")
-      const err = yield* fail({
-        filePath: filepath,
-        edits: [{ type: "set_line", line: null as never, text: "x" }],
-      })
-      expect(err.message).toContain("anchor fields must be LINE#ID strings")
+      const err = yield* fail({ input: "", oldString: "one", newString: "two" })
+      expect(err.message).toContain("Legacy edit payload has been removed")
     }),
   )
 
@@ -1011,19 +1032,21 @@ describe("0053 exact keys + auto-strip", () => {
 })
 
 describe("0055 escape-payload hardening", () => {
-  it.instance("missing-type on a big escape-heavy payload gets the type-first hint with a truncated dump", () =>
+  it.instance("applies an escape-heavy replace payload cleanly", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       yield* putSnap(filepath, "one\ntwo\nthree\n")
-      const bigText = Array.from({ length: 40 }, (_, i) => `line ${i} with "quotes" and \`ticks\` and ${i}${i} and \${x} content`)
-      const err = yield* fail({
-        filePath: filepath,
-        edits: [{ start_line: hashlineRef(1, "one"), end_line: hashlineRef(3, "three"), text: bigText }] as never,
-      })
-      expect(err.message).toContain("every edit op requires a type field")
-      expect(err.message).toContain("[payload truncated]")
-      expect(err.message).not.toContain("replace_lines/cut require BOTH")
-      expect(err.message.length).toBeLessThan(1500)
+      const rows = Array.from({ length: 40 }, (_, i) => `line ${i} with "quotes" and \`ticks\` and ${i}${i} and \${x} content`)
+      const input = [
+        "*** Begin Patch",
+        `[${filepath}#A1B2]`,
+        `REPLACE ${hashlineRef(1, "one")} ${hashlineRef(3, "three")}:`,
+        ...rows.map((r) => `+ ${r}`),
+        "*** End Patch",
+      ].join("\n")
+      const result = yield* run({ input })
+      expect(result.output).toContain("Edit applied successfully")
+      expect(yield* load(filepath)).toBe(rows.join("\n") + "\n")
     }),
   )
 })
