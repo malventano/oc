@@ -396,15 +396,15 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("treats an empty patch section as a no-op", () =>
+    it.instance("errors on an empty patch section (no content change)", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "existing.txt")
         yield* put(filepath, "content")
 
-        const result = yield* run({ filePath: filepath })
-        expect(result.output).toContain("No changes applied")
-        expect(result.metadata.noop).toBe(1)
+        const message = (yield* fail({ filePath: filepath })).message
+        expect(message).toContain("No changes applied")
+        expect(message).toContain("no content change")
       }),
     )
 
@@ -609,7 +609,7 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("treats delete of missing file as no-op", () =>
+    it.instance("treats delete of missing file as a satisfied no-op", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "missing.txt")
@@ -617,6 +617,7 @@ describe("tool.edit", () => {
         const result = yield* run({ filePath: filepath, edits: [], delete: true })
 
         expect(result.output).toContain("No changes applied")
+        expect(result.output).toContain("file does not exist")
         expect(result.metadata.noop).toBe(1)
       }),
     )
@@ -899,15 +900,15 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("treats empty batch sections as no-ops", () =>
+    it.instance("errors on empty batch sections (no content change)", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const a = path.join(test.directory, "a.txt")
         yield* putSnap(a, "alpha")
 
-        const result = yield* run({ files: [{ filePath: a }] })
-        expect(result.output).toContain("No changes applied")
-        expect(result.metadata.noop).toBe(1)
+        const message = (yield* fail({ files: [{ filePath: a }] })).message
+        expect(message).toContain("No changes applied")
+        expect(message).toContain("no content change")
       }),
     )
 
@@ -1238,6 +1239,63 @@ describe("grammar parser + legacy hints", () => {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       // The file ALREADY has a one-space-short comment before the edit runs.
       const body = ["function outer() {", " // pre-existing fold", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(3, body[2]), text: ["  // correct new comment"] }],
+      })
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+  it.instance("warns on the one-short CODE-line fold via the validator", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: [" const beta = 2"] }],
+      })
+      expect(yield* load(filepath)).toContain(" const beta = 2")
+      expect(result.output).toContain("indentation validator")
+      expect(result.output).toContain("one space short")
+      expect(result.output).toContain("code line")
+    }),
+  )
+
+  it.instance("does not warn on correctly indented code lines", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["  const beta = 2"] }],
+      })
+      expect(yield* load(filepath)).toContain("  const beta = 2")
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+
+  it.instance("skips a blank line when finding the adjacent code (LF-only neighbor)", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      // The folded line sits one space short of the code BELOW it, with a
+      // blank line in between - the blank must not break the adjacency scan.
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["", " const beta = 2"] }],
+      })
+      expect(result.output).toContain("indentation validator")
+    }),
+  )
+
+  it.instance("does not warn about pre-existing folded CODE lines the edit did not touch", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", " const pre-existing-fold", "  const alpha = 1", "}"]
       yield* putSnap(filepath, body.join("\n") + "\n")
       const result = yield* run({
         filePath: filepath,
