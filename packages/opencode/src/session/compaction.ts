@@ -31,11 +31,17 @@ export const PRUNE_PROTECT = 40_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
-<<<<<<< HEAD
-const MIN_PRESERVE_RECENT_TOKENS = 2_000
-const MAX_PRESERVE_RECENT_TOKENS = 15_000
-=======
->>>>>>> feat(compaction): remove 2K/8K clamp from tail-retention budget
+// A real user prompt queued while the summary turn was in flight must win the
+// next turn over the synthetic auto-continue: the auto-continue would be the
+// newest user message and the loop turns on the newest message only,
+// stranding the queued prompt without its own turn. Message ids are
+// time-ordered (MessageID.ascending()), so id comparison selects anything
+// queued after the compaction marker; other compaction markers are excluded
+// by the part check.
+export const hasNewerPrompt = (messages: SessionV1.WithParts[], parentID: MessageID) =>
+  messages.some(
+    (m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction") && m.info.id > parentID,
+  )
 
 // Appended to the injected summary prompt of the "inject" compaction method.
 // The method runs the summary turn through the normal agent loop with the
@@ -542,7 +548,9 @@ TimeContext.stampUserMessages(msgs)
           }
         }
 
-        if (!replay) {
+        // A prompt queued during the summary turn supersedes the synthetic
+        // auto-continue: the loop turns on the newest user message only.
+        if (!replay && !hasNewerPrompt(input.messages, userMessage.id)) {
           const info = yield* provider.getProvider(userMessage.model.providerID)
           if (
             (yield* plugin.trigger(
@@ -760,7 +768,9 @@ TimeContext.stampUserMessages(msgs)
         })
       }
 
-      if (compactionPart.auto) {
+      // A prompt queued during the summary turn supersedes the synthetic
+      // auto-continue: the loop turns on the newest user message only.
+      if (compactionPart.auto && !hasNewerPrompt(input.messages, parent.info.id)) {
         const info = yield* provider.getProvider(parent.info.model.providerID)
         if (
           (yield* plugin.trigger(
