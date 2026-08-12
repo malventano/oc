@@ -2,9 +2,13 @@ import { createMemo, createSignal, Show } from "solid-js"
 import { useRouteData } from "../../context/route"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
+import { useLocation } from "../../context/location"
+import { useTuiPaths } from "../../context/runtime"
+import { getStreamBatchWindow } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
+import { abbreviateHome } from "../../runtime"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 
@@ -13,6 +17,8 @@ export function SubagentFooter() {
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const session = createMemo(() => sync.session.get(route.sessionID))
+  const location = useLocation()
+  const paths = useTuiPaths()
 
   const subagentInfo = createMemo(() => {
     const s = session()
@@ -76,24 +82,32 @@ export function SubagentFooter() {
         backgroundColor={theme.backgroundPanel}
       >
         <box flexDirection="row" justifyContent="space-between" gap={1} minWidth={0} overflow="hidden">
-          <box flexDirection="row" gap={1} flexGrow={1} minWidth={0}>
-            <text fg={theme.text} wrapMode="none">
+         <box flexDirection="row" gap={1} flexGrow={1} minWidth={0} overflow="hidden">
+           <text flexShrink={0} fg={theme.text} wrapMode="none">
               <b>{subagentInfo().label}</b>
             </text>
             <Show when={subagentInfo().total > 0}>
-              <text style={{ fg: theme.textMuted }} wrapMode="none">
+             <text flexShrink={0} style={{ fg: theme.textMuted }} wrapMode="none">
                 ({subagentInfo().index} of {subagentInfo().total})
               </text>
             </Show>
-            <Show when={usage()}>
-              {(item) => (
-                <text fg={theme.textMuted} wrapMode="none" truncate>
-                  {[item().context, item().cost].filter(Boolean).join(" · ")}
-                </text>
-              )}
-            </Show>
+           <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
+           <box flexShrink={1} minWidth={0}>
+             <text fg={theme.textMuted} wrapMode="none" truncate>
+               {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
+               <Show when={session()?.title}>{(t) => <span> · {t()}</span>}</Show>
+             </text>
+           </box>
           </box>
-          <box flexDirection="row" gap={2} flexShrink={0}>
+         <box flexDirection="row" gap={1} flexShrink={0}>
+           <Show when={usage()}>
+             {(item) => (
+               <text fg={theme.textMuted} wrapMode="none">
+                 {[`${getStreamBatchWindow()}ms`, item().context, item().cost].filter(Boolean).join(" · ")}
+               </text>
+             )}
+           </Show>
+           <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
             <box
               onMouseOver={() => setHover("parent")}
               onMouseOut={() => setHover(null)}
