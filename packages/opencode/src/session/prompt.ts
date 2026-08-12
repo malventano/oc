@@ -106,7 +106,7 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 }
 
 export interface Interface {
-  readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  readonly cancel: (sessionID: SessionID, resume?: boolean) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
@@ -155,9 +155,24 @@ const layer = Layer.effect(
       } satisfies TaskPromptOps
     })
 
-    const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
+    const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID, resume = false) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       yield* state.cancel(sessionID)
+      // resume=true is the Enter-flush path: the caller wants the queued
+      // (unprocessed) user messages processed right after the interrupt.
+      // Plain cancels (e.g. the double-ESC interrupt) must NOT restart the
+      // loop - the queue would drain one turn per abort, producing output
+      // past the cancel. The resumed loop exits immediately when nothing is
+      // pending (the aborted turn's assistant message already carries error
+      // + time.completed, and latest() targets the newest user message), so
+      // resume with an empty queue is a no-op. Best-effort: message read
+      // failures (e.g. session deleted mid-abort) must not fail the abort.
+      if (!resume) return
+      const messages = yield* sessions.messages({ sessionID }).pipe(Effect.catch(() => Effect.succeed([])))
+      const hasQueued = messages.some(
+        (m) => m.info.role === "user" && !messages.some((a) => a.info.role === "assistant" && a.info.parentID === m.info.id),
+      )
+      if (hasQueued) yield* Effect.forkIn(scope)(loop({ sessionID }))
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {

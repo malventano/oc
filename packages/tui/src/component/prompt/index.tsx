@@ -33,7 +33,7 @@ import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
-import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
+import { expandPastedTextPlaceholders, expandTrackedPastedText, partsToPromptInfo } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
@@ -262,6 +262,19 @@ export function Prompt(props: PromptProps) {
     return messages.findLast((m): m is UserMessage => m.role === "user")
   })
 
+  // User messages with no assistant child yet: saved while the session was
+  // busy and not picked up by the run loop. Mirrors the `pending` logic in
+  // routes/session (messages after the last in-flight assistant message).
+  const queuedMessages = createMemo(() => {
+    if (!props.sessionID) return []
+    const messages = sync.data.message[props.sessionID]
+    if (!messages || messages.length === 0) return []
+    const completed = messages.findLastIndex((m) => m.role === "assistant" && m.time.completed)
+    const pending = messages.findLastIndex((m, index) => index > completed && m.role === "assistant" && !m.time.completed)
+    if (pending === -1) return []
+    return messages.filter((m, index): m is UserMessage => index > pending && m.role === "user")
+  })
+
   const usage = createMemo(() => {
     if (!props.sessionID) return
     const msg = sync.data.message[props.sessionID] ?? []
@@ -417,23 +430,33 @@ export function Prompt(props: PromptProps) {
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
-          // TODO: this should be its own command
+          // Sync the buffer before the draft/queued checks: restored text
+          // (pull-back, message menu) must count as a draft immediately,
+          // even while onContentChange is still pending.
+          if (input.plainText !== store.prompt.input) setStore("prompt", "input", input.plainText)
           if (store.mode === "shell") {
+            // Full cancel: exit shell mode and wipe the buffer, mirroring the
+            // autocomplete cancel (which deletes the trigger text).
             setStore("mode", "normal")
+            input.clear()
+            input.extmarks.clear()
+            setStore("prompt", { input: "", parts: [] })
+            setStore("extmarkToPartIndex", new Map())
             return
           }
           if (!props.sessionID) return
 
-        if (store.prompt.input.trim()) {
-          // ESC with a draft = interrupt-and-send in one press. Reset the
-          // escalation counter first so a pending "esc again" state can't also
-          // fire, and send only after abort settles (else the run races the
-          // abort).
-          setStore("interrupt", 0)
-          void sdk.client.session.abort({ sessionID: props.sessionID }).finally(() => void submit())
-          dialog.clear()
-          return
-        }
+          if (!store.prompt.input.trim()) {
+            // Empty field with queued prompts: ESC pulls the last queued
+            // prompt back into the field. Never counts toward the double-ESC
+            // interrupt escalation.
+            const queued = queuedMessages()
+            const last = queued[queued.length - 1]
+            if (last) {
+              void pullBackPrompt(last)
+              return
+            }
+          }
 
           setStore("interrupt", store.interrupt + 1)
 
@@ -627,6 +650,12 @@ export function Prompt(props: PromptProps) {
       setStore("prompt", prompt)
       restoreExtmarksFromParts(prompt.parts)
       input.gotoBufferEnd()
+      // Restored text (pull-back, message menu) must behave as an entered
+      // draft immediately: focus synchronously (the dialog-clear focus
+      // effect lags one flush, which swallowed the first ESC) and re-arm
+      // the cursorVersion-gated bindings.
+      input.focus()
+      setCursorVersion((value) => value + 1)
     },
     reset() {
       input.clear()
@@ -957,11 +986,46 @@ export function Prompt(props: PromptProps) {
     }
   })
 
-  // Mirrors the session.interrupt guard: ESC only interrupts and sends the
-  // draft when all of these hold, so the hint must not show otherwise.
-  function escInterruptsAndSends() {
+  // Pull the last queued prompt back out of the session queue: delete the
+  // message server-side (allowed while busy for queued messages) and restore
+  // its text/parts into the field. Failure means the run loop just picked it
+  // up, so the message is already in processing - leave the field untouched.
+  async function pullBackPrompt(message: UserMessage) {
+    const parts = sync.data.part[message.id] ?? []
+    const promptInfo = partsToPromptInfo(parts)
+    const result = await sdk.client.session.deleteMessage({ sessionID: props.sessionID!, messageID: message.id })
+    if (result.error) {
+      toast.show({
+        variant: "warning",
+        message: "Queued prompt is already in processing",
+        duration: 3000,
+      })
+      return
+    }
+    input.setText(promptInfo.input)
+    setStore("prompt", promptInfo)
+    restoreExtmarksFromParts(promptInfo.parts)
+    input.gotoBufferEnd()
+    input.focus()
+    setCursorVersion((value) => value + 1)
+  }
+
+  // Empty field with queued prompts while busy: esc reverts, enter injects.
+  function emptyWithQueued() {
     return (
-      status().type !== "idle" &&
+      store.prompt.input.trim() === "" &&
+      queuedMessages().length > 0 &&
+      !auto()?.visible &&
+      input.focused &&
+      props.sessionID &&
+      store.mode === "normal"
+    )
+  }
+
+  // Draft present while busy: enter queues it; esc still escalates toward
+  // the double-ESC interrupt.
+  function busyWithDraft() {
+    return (
       store.prompt.input.trim() !== "" &&
       !auto()?.visible &&
       input.focused &&
@@ -999,7 +1063,18 @@ export function Prompt(props: PromptProps) {
     if (props.disabled) return false
     if (workspace.creating() || move.creating()) return false
     if (auto()?.visible) return false
-    if (!store.prompt.input) return false
+    if (!store.prompt.input) {
+      // Empty field with queued prompts: Enter interrupts the current turn
+      // and injects the queue (abort with resume=true restarts the loop).
+      // Also covers idle stranded queues (abort no-ops, resume still runs).
+      // A plain empty submit otherwise stays a no-op.
+      if (queuedMessages().length > 0) {
+        if (!props.sessionID) return false
+        void sdk.client.session.abort({ sessionID: props.sessionID, resume: true })
+        return true
+      }
+      return false
+    }
     const agent = local.agent.current()
     if (!agent) return false
     const trimmed = store.prompt.input.trim()
@@ -1631,18 +1706,29 @@ export function Prompt(props: PromptProps) {
                 </box>
                 <text flexShrink={0} fg={store.interrupt > 0 ? theme.primary : theme.text} wrapMode="none" truncate>
                   <Show
-                  when={escInterruptsAndSends()}
+                    when={store.mode === "shell" || auto()?.visible}
                     fallback={
-                      <>
-                        esc{" "}
-                        <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                          {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                        </span>
-                      </>
+                      <Show
+                        when={emptyWithQueued()}
+                        fallback={
+                          <>
+                            esc{" "}
+                            <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
+                              {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                            </span>
+                            <Show when={busyWithDraft()}>
+                              {" "}·{" "}enter{" "}
+                              <span style={{ fg: theme.textMuted }}>queue</span>
+                            </Show>
+                          </>
+                        }
+                      >
+                        esc <span style={{ fg: theme.textMuted }}>revert</span>{" "}·{" "}enter{" "}
+                        <span style={{ fg: theme.textMuted }}>inject queued</span>
+                      </Show>
                     }
                   >
-                    esc <span style={{ fg: theme.textMuted }}>interrupt+send</span>{" "}·{" "}enter{" "}
-                    <span style={{ fg: theme.textMuted }}>queue</span>
+                    esc <span style={{ fg: theme.textMuted }}>cancel</span>
                   </Show>
                 </text>
                 <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
@@ -1749,7 +1835,7 @@ export function Prompt(props: PromptProps) {
                 </Match>
                 <Match when={store.mode === "shell"}>
                   <text fg={theme.text}>
-                    esc <span style={{ fg: theme.textMuted }}>exit shell mode</span>
+                    esc <span style={{ fg: theme.textMuted }}>cancel</span>
                   </text>
                 </Match>
               </Switch>
