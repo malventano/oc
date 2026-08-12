@@ -1806,6 +1806,90 @@ it.instance(
 )
 
 it.instance(
+    "finalize anchors the retained tail at the window start when select() misfires on the windowed input",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      // 4 turns, then a completed compaction whose tail starts at turn 4.
+      let lastId: MessageID | undefined
+      for (let i = 0; i < 4; i++) {
+        const u = yield* createUserMessage(session.id, `turn ${i}`)
+        lastId = u.id
+        yield* createAssistantMessage(session.id, u.id, test.directory)
+      }
+      const firstTail = lastId!
+      const firstMarker = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: firstTail })
+      // 2 more turns: the retained window between compaction #1 and #2. With
+      // tail_turns = 2 (the test default) select() keeps all 2 (keep.start
+      // === 0) and would leave the marker tailless; the fallback must anchor
+      // the tail at the window's oldest turn instead.
+      for (let i = 0; i < 2; i++) {
+        const u = yield* createUserMessage(session.id, `window ${i}`)
+        yield* createAssistantMessage(session.id, u.id, test.directory)
+      }
+      yield* createCompactionMarker(session.id)
+      const all = yield* ssn.messages({ sessionID: session.id })
+      const markerId = all.at(-1)!.info.id
+      yield* createSummaryAssistantMessage(session.id, markerId, test.directory, "SUMMARY")
+      // filterCompacted-shaped windowed input: [M1, S1, <window turns>, M2, S2]
+      const refreshed = yield* ssn.messages({ sessionID: session.id })
+      const marker2 = refreshed.find((m) => m.info.id === markerId)!
+      const summary2 = refreshed.find((m) => m.info.role === "assistant" && m.info.parentID === markerId)!
+      const m1 = refreshed.find((m) => m.info.id === firstMarker)!
+      const s1 = refreshed.find((m) => m.info.role === "assistant" && m.info.parentID === firstMarker)!
+      // Chronological slice (id prefixes collide within a millisecond, so the
+      // window is identified by position, not by id comparison).
+      const window = refreshed.slice(refreshed.findIndex((m) => m.info.id === s1.info.id) + 1)
+      window.length = window.findIndex((m) => m.info.id === markerId)
+      const windowFirst = window.find((m) => m.info.role === "user")!.info.id
+      yield* SessionCompaction.use.finalize({
+        sessionID: session.id,
+        parentID: markerId,
+        assistantID: summary2.info.id,
+        messages: [m1, s1, ...window, marker2, summary2],
+      })
+      const after = yield* ssn.messages({ sessionID: session.id })
+      const marker2After = after.find((m) => m.info.id === marker2.info.id)!
+      const part2 = marker2After.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")!
+      expect(part2.tail_start_id).toBe(windowFirst)
+      // A virtual compact now reduces the 2-turn window: 2 -> 1.
+      const outcome = yield* SessionCompaction.use.virtual({
+        sessionID: session.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      expect(outcome).toBe("virtual_reduced")
+      const summary3 = (yield* ssn.messages({ sessionID: session.id })).at(-1)!
+      const text3 = summary3.parts.find((p): p is SessionV1.TextPart => p.type === "text")
+      expect(text3?.text).toContain("Pre-compaction tail reduced: 2 → 1")
+    }),
+  )
+
+it.instance(
+    "refuses the huge-count reduce when a tailless marker precedes budget-exceeding content",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      // 60 substantial turns: the pre-marker content exceeds the preserve
+      // budget (usable 68K * 0.25 = 17K tokens), so the marker's missing tail
+      // cannot mean "the whole conversation was retained" - the tailless
+      // marker is a select() misfire and counting from message 0 would drop
+      // the session's oldest turns with a bogus note.
+      for (let i = 0; i < 60; i++) {
+        const user = yield* createUserMessage(session.id, `turn ${i} ${"x".repeat(1500)}`)
+        yield* createAssistantMessage(session.id, user.id, test.directory)
+      }
+      yield* completeCompaction({ sessionID: session.id, root: test.directory })
+      const outcome = yield* SessionCompaction.use.virtual({
+        sessionID: session.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      expect(outcome).toBe("virtual_empty")
+    }),
+  )
+
+it.instance(
     "drops the oldest retained turn and emits a synthetic summary",
     Effect.gen(function* () {
       const test = yield* TestInstance
