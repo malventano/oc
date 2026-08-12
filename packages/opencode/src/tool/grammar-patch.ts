@@ -137,7 +137,7 @@ export function parsePatch(input: string | null | undefined): ParseResult {
         continue
       }
       if (!rest.startsWith(" ")) {
-        fail(i, line, "content row must be `+` then a space then content (`+x` without the separator space is invalid; `+  x` means content ` x`)")
+        fail(i, line, "content row must be `+` then a space then content (`+x` without the separator space is invalid, EVEN at column 0: `+ }` not `+}`, `+ # h` not `+# h`, `+ **b**` not `+**b**`; `+  x` means content ` x`)")
         return { ok: false, errors }
       }
       body.push(rest.slice(1))
