@@ -2549,7 +2549,7 @@ function Edit(props: ToolProps) {
        <For each={fileDiffs()}>
          {(file) => (
            <BlockTool title={fileTitle(file)} part={props.part}>
-           <Show when={file.patch.length > 0} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
+           <Show when={file.patch.length > 0} fallback={file.type === "move" ? <text fg={theme.textMuted}>renamed, no content changes</text> : file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
                <box paddingLeft={1}>
                  <diff
                    diff={file.patch}
