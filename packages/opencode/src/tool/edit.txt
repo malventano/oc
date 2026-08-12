@@ -41,6 +41,7 @@ Rules:
 - Ranges are tight: cover only the lines that change. Non-adjacent changes are separate ops.
 - Applied edits renumber the file and change IDs — take the next op's anchors from the edit response or a fresh `read`.
 - Multiple file sections in one patch apply independently (atomically validated). `CUT` + `PASTE @name` flows across sections; a paste's anchor must exist in its OWN section's file — give the paste its own [PATH] section targeting the destination.
+- Prefer one call per file: independent changes to different files are separate edit calls (each renders its own block). Use a single multi-file patch only for one cohesive change spanning files, e.g. a `CUT` + `PASTE @name` move between files.
 - Every line must be exactly one op or one `+` body row. A malformed line fails the WHOLE patch with a parse error naming the line — fix it and resend the full patch; do not fall back to any other edit format.
 - NEVER copy lines from Read or edit-diff output into your replacement text — type fresh content. If you do copy, leading `N#ID:` / `+N#ID:` / `>>>` prefixes are stripped automatically.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required. Only use emojis if the user explicitly requests it.
