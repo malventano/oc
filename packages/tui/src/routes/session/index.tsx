@@ -2551,7 +2551,7 @@ function Edit(props: ToolProps) {
           {(file) => (
           <BlockTool title={fileTitle(file)} part={props.part} gap={file.changed ? 1 : 0}>
           <Show when={file.changed} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
-                <box paddingLeft={1}>
+                <box paddingLeft={1} paddingRight={2}>
                   <diff
                     diff={file.patch}
                     view={view()}
@@ -2580,7 +2580,7 @@ function Edit(props: ToolProps) {
       </Match>
       <Match when={stringValue(props.metadata.diff) !== undefined}>
         <BlockTool title={"← " + title()} part={props.part}>
-          <box paddingLeft={1}>
+          <box paddingLeft={1} paddingRight={2}>
             <diff
               diff={stringValue(props.metadata.diff) ?? ""}
               view={view()}
@@ -2628,7 +2628,7 @@ function ApplyPatch(props: ToolProps) {
 
   function Diff(p: { diff: string; filePath: string }) {
     return (
-      <box paddingLeft={1}>
+      <box paddingLeft={1} paddingRight={2}>
         <diff
           diff={p.diff}
           view={view()}
