@@ -25,6 +25,8 @@ export const UpgradeCommand = {
     UI.println(UI.logo("  "))
     UI.empty()
     prompts.intro("Upgrade")
+    // oc builds carry the "-oc" version suffix (set in script/build.ts);
+    // custom builds must never touch the upstream release channel.
     if (InstallationVersion.endsWith("-oc")) {
       prompts.log.info("oc is a custom build; update it from its source repo (git pull/rebuild), not from the opencode release channel")
       prompts.outro("Nothing to do")

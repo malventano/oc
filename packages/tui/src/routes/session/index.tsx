@@ -210,18 +210,18 @@ export function Session() {
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
- // Marker message ids whose compaction part is `virtual` (created by the
- // virtual-compact path). Their synthetic summaries render as compact blocks
- // instead of full assistant messages, mirroring the undo block.
- const virtualCompactionMarkers = createMemo(() => {
-   const set = new Set<string>()
-   for (const message of messages()) {
-     if (message.role !== "user") continue
-     const parts = sync.data.part[message.id] ?? []
-     if (parts.some((p) => p.type === "compaction" && p.virtual === true)) set.add(message.id)
-   }
-   return set
- })
+  // Marker message ids whose compaction part is `virtual` (created by the
+  // virtual-compact path). Their synthetic summaries render as compact blocks
+  // instead of full assistant messages, mirroring the undo block.
+  const virtualCompactionMarkers = createMemo(() => {
+    const set = new Set<string>()
+    for (const message of messages()) {
+      if (message.role !== "user") continue
+      const parts = sync.data.part[message.id] ?? []
+      if (parts.some((p) => p.type === "compaction" && p.virtual === true)) set.add(message.id)
+    }
+    return set
+  })
   const messagesBeforeRevert = () => {
     const messageID = session()?.revert?.messageID
     if (!messageID) return messages()
@@ -588,15 +588,15 @@ export function Session() {
           })
           return
         }
-       void sdk.client.session
-         .summarize({
-           sessionID: route.sessionID,
-           modelID: selectedModel.modelID,
-           providerID: selectedModel.providerID,
-           variant: local.model.variant.current(),
-         })
-         .then((outcome) => {
-         if (outcome.data === "virtual_empty") {
+        void sdk.client.session
+          .summarize({
+            sessionID: route.sessionID,
+            modelID: selectedModel.modelID,
+            providerID: selectedModel.providerID,
+            variant: local.model.variant.current(),
+          })
+          .then((outcome) => {
+          if (outcome.data === "virtual_empty") {
           toast.show({
             variant: "warning",
             message: "Pre-compaction tail is empty. Nothing to reduce.",
@@ -609,8 +609,8 @@ export function Session() {
             duration: 3000,
           })
         }
-       })
-       dialog.clear()
+        })
+        dialog.clear()
       },
     },
     {
@@ -1311,18 +1311,18 @@ export function Session() {
                           pending={pending()}
                         />
                       </Match>
-                     <Match
-                       when={
-                         message.role === "assistant" &&
-                         message.parentID !== undefined &&
-                         virtualCompactionMarkers().has(message.parentID)
-                       }
-                     >
-                       <VirtualCompactionBlock
-                         parts={sync.data.part[message.id] ?? []}
-                         message={message as AssistantMessage}
-                       />
-                     </Match>
+                      <Match
+                        when={
+                          message.role === "assistant" &&
+                          message.parentID !== undefined &&
+                          virtualCompactionMarkers().has(message.parentID)
+                        }
+                      >
+                        <VirtualCompactionBlock
+                          parts={sync.data.part[message.id] ?? []}
+                          message={message as AssistantMessage}
+                        />
+                      </Match>
                       <Match when={message.role === "assistant"}>
                         <AssistantMessage
                           last={lastAssistant()?.id === message.id}
@@ -1511,30 +1511,30 @@ function UserMessage(props: {
 // Synthetic summary of a "virtual" compaction (no LLM turn): a compact
 // bordered block like the undo/revert block, carrying the note text.
 function VirtualCompactionBlock(props: { message: AssistantMessage; parts: Part[] }) {
- const { theme } = useTheme()
- const note = createMemo(() =>
-   props.parts
-     .filter((p): p is TextPart => p.type === "text")
-     .map((p) => p.text)
-     .filter(Boolean)
-     .join("\n\n"),
- )
- return (
-   <Show when={note()}>
-     <box
-       ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-       marginTop={1}
-       flexShrink={0}
-       border={["left"]}
-       customBorderChars={SplitBorder.customBorderChars}
-       borderColor={theme.backgroundPanel}
-     >
-       <box paddingTop={1} paddingBottom={1} paddingLeft={2} backgroundColor={theme.backgroundPanel}>
-         <text fg={theme.textMuted}>{note()}</text>
-       </box>
-     </box>
-   </Show>
- )
+  const { theme } = useTheme()
+  const note = createMemo(() =>
+    props.parts
+      .filter((p): p is TextPart => p.type === "text")
+      .map((p) => p.text)
+      .filter(Boolean)
+      .join("\n\n"),
+  )
+  return (
+    <Show when={note()}>
+      <box
+        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+        marginTop={1}
+        flexShrink={0}
+        border={["left"]}
+        customBorderChars={SplitBorder.customBorderChars}
+        borderColor={theme.backgroundPanel}
+      >
+        <box paddingTop={1} paddingBottom={1} paddingLeft={2} backgroundColor={theme.backgroundPanel}>
+          <text fg={theme.textMuted}>{note()}</text>
+        </box>
+      </box>
+    </Show>
+  )
 }
 
 function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
@@ -1689,6 +1689,9 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
           return
         }
         const body = summary().body?.length ?? 0
+        // Load hint kicks in past ~4KB of reasoning body and scales ~1ms
+        // per KB (capped at the batch max): below the threshold the worker
+        // keeps up anyway, so the hint stays off.
         setStreamLoadHintMs(body < 4096 ? 0 : Math.min(STREAM_BATCH_MAX_MS, body / 1024))
       },
     ),
@@ -2089,7 +2092,7 @@ function BlockTool(props: {
   onClick?: () => void
   part?: ToolPart
   spinner?: boolean
- gap?: number
+  gap?: number
 }) {
   const { theme } = useTheme()
   const renderer = useRenderer()
@@ -2103,7 +2106,7 @@ function BlockTool(props: {
       paddingBottom={1}
       paddingLeft={2}
       marginTop={1}
-     gap={props.gap ?? 1}
+      gap={props.gap ?? 1}
       backgroundColor={hover() ? theme.backgroundMenu : theme.backgroundPanel}
       customBorderChars={SplitBorder.customBorderChars}
       borderColor={theme.background}
@@ -2491,118 +2494,118 @@ function Edit(props: ToolProps) {
   const pathFormatter = usePathFormatter()
 
   const editPaths = createMemo(() => {
-   const fromMetadata = props.metadata.paths
-   if (Array.isArray(fromMetadata)) {
-     return fromMetadata.filter((p): p is string => typeof p === "string" && p.length > 0)
-   }
-   const single = stringValue(props.input.filePath)
-   if (single) return [single]
-   const files = props.input.files
-   if (Array.isArray(files)) {
-     return files.map((f) => stringValue(f?.filePath)).filter((p): p is string => p !== undefined && p.length > 0)
-   }
-   const patch = stringValue(props.input.input)
-   if (patch) {
-     const paths: string[] = []
-     for (const line of patch.split("\n")) {
-       const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]$/.exec(line)
-       if (match) paths.push(match[1])
-     }
-     return paths
-   }
-   return []
- })
+    const fromMetadata = props.metadata.paths
+    if (Array.isArray(fromMetadata)) {
+      return fromMetadata.filter((p): p is string => typeof p === "string" && p.length > 0)
+    }
+    const single = stringValue(props.input.filePath)
+    if (single) return [single]
+    const files = props.input.files
+    if (Array.isArray(files)) {
+      return files.map((f) => stringValue(f?.filePath)).filter((p): p is string => p !== undefined && p.length > 0)
+    }
+    const patch = stringValue(props.input.input)
+    if (patch) {
+      const paths: string[] = []
+      for (const line of patch.split("\n")) {
+        const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]$/.exec(line)
+        if (match) paths.push(match[1])
+      }
+      return paths
+    }
+    return []
+  })
 
   const title = createMemo(() => {
-   const paths = editPaths()
-   if (paths.length === 0) return "Edit"
-   if (paths.length === 1) return `Edit ${pathFormatter.format(paths[0])}`
-   return `Edit ${paths.length} files`
- })
+    const paths = editPaths()
+    if (paths.length === 0) return "Edit"
+    if (paths.length === 1) return `Edit ${pathFormatter.format(paths[0])}`
+    return `Edit ${paths.length} files`
+  })
 
- const view = createMemo(() => {
-   const diffStyle = ctx.tui.diff_style
-   if (diffStyle === "stacked") return "unified"
-   // Default to "auto" behavior
-   return ctx.width > 120 ? "split" : "unified"
- })
+  const view = createMemo(() => {
+    const diffStyle = ctx.tui.diff_style
+    if (diffStyle === "stacked") return "unified"
+    // Default to "auto" behavior
+    return ctx.width > 120 ? "split" : "unified"
+  })
 
- const fileDiffs = createMemo(() => parseApplyPatchFiles(props.metadata.files))
+  const fileDiffs = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
- function fileTitle(file: { type: string; relativePath: string; filePath: string; movePath?: string }) {
-   const to = pathFormatter.format(file.relativePath)
-   if (file.type === "delete") return "# Deleted " + to
-   if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " > " + to
-   return "← Patched " + to
- }
+  function fileTitle(file: { type: string; relativePath: string; filePath: string; movePath?: string }) {
+    const to = pathFormatter.format(file.relativePath)
+    if (file.type === "delete") return "# Deleted " + to
+    if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " > " + to
+    return "← Patched " + to
+  }
 
- return (
-   <Switch>
-     <Match when={fileDiffs().length > 0}>
-       <For each={fileDiffs()}>
-         {(file) => (
-         <BlockTool title={fileTitle(file)} part={props.part} gap={file.changed ? 1 : 0}>
+  return (
+    <Switch>
+      <Match when={fileDiffs().length > 0}>
+        <For each={fileDiffs()}>
+          {(file) => (
+          <BlockTool title={fileTitle(file)} part={props.part} gap={file.changed ? 1 : 0}>
           <Show when={file.changed} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
-               <box paddingLeft={1}>
-                 <diff
-                   diff={file.patch}
-                   view={view()}
-                   filetype={filetype(file.filePath)}
-                   syntaxStyle={syntax()}
-                   showLineNumbers={true}
-                   width="100%"
-                   wrapMode={ctx.diffWrapMode()}
-                   fg={theme.text}
-                   addedBg={theme.diffAddedBg}
-                   removedBg={theme.diffRemovedBg}
-                   contextBg={theme.diffContextBg}
-                   addedSignColor={theme.diffHighlightAdded}
-                   removedSignColor={theme.diffHighlightRemoved}
-                   lineNumberFg={theme.diffLineNumber}
-                   lineNumberBg={theme.diffContextBg}
-                   addedLineNumberBg={theme.diffAddedLineNumberBg}
-                   removedLineNumberBg={theme.diffRemovedLineNumberBg}
-                 />
-               </box>
-               <Diagnostics diagnostics={props.metadata.diagnostics} filePath={file.movePath ?? file.filePath} />
-             </Show>
-           </BlockTool>
-         )}
-       </For>
-     </Match>
-     <Match when={stringValue(props.metadata.diff) !== undefined}>
-       <BlockTool title={"← " + title()} part={props.part}>
-         <box paddingLeft={1}>
-           <diff
-             diff={stringValue(props.metadata.diff) ?? ""}
-             view={view()}
-             filetype={filetype(editPaths()[0] ?? "")}
-             syntaxStyle={syntax()}
-             showLineNumbers={true}
-             width="100%"
-             wrapMode={ctx.diffWrapMode()}
-             fg={theme.text}
-             addedBg={theme.diffAddedBg}
-             removedBg={theme.diffRemovedBg}
-             contextBg={theme.diffContextBg}
-             addedSignColor={theme.diffHighlightAdded}
-             removedSignColor={theme.diffHighlightRemoved}
-             lineNumberFg={theme.diffLineNumber}
-             lineNumberBg={theme.diffContextBg}
-             addedLineNumberBg={theme.diffAddedLineNumberBg}
-             removedLineNumberBg={theme.diffRemovedLineNumberBg}
-           />
-         </box>
-         <Diagnostics diagnostics={props.metadata.diagnostics} filePath={editPaths()[0] ?? ""} />
-       </BlockTool>
-     </Match>
-     <Match when={true}>
-       <InlineTool icon="←" pending="Preparing edit..." complete={title()} part={props.part}>
-         {title()}
-       </InlineTool>
-     </Match>
-   </Switch>
- )
+                <box paddingLeft={1}>
+                  <diff
+                    diff={file.patch}
+                    view={view()}
+                    filetype={filetype(file.filePath)}
+                    syntaxStyle={syntax()}
+                    showLineNumbers={true}
+                    width="100%"
+                    wrapMode={ctx.diffWrapMode()}
+                    fg={theme.text}
+                    addedBg={theme.diffAddedBg}
+                    removedBg={theme.diffRemovedBg}
+                    contextBg={theme.diffContextBg}
+                    addedSignColor={theme.diffHighlightAdded}
+                    removedSignColor={theme.diffHighlightRemoved}
+                    lineNumberFg={theme.diffLineNumber}
+                    lineNumberBg={theme.diffContextBg}
+                    addedLineNumberBg={theme.diffAddedLineNumberBg}
+                    removedLineNumberBg={theme.diffRemovedLineNumberBg}
+                  />
+                </box>
+                <Diagnostics diagnostics={props.metadata.diagnostics} filePath={file.movePath ?? file.filePath} />
+              </Show>
+            </BlockTool>
+          )}
+        </For>
+      </Match>
+      <Match when={stringValue(props.metadata.diff) !== undefined}>
+        <BlockTool title={"← " + title()} part={props.part}>
+          <box paddingLeft={1}>
+            <diff
+              diff={stringValue(props.metadata.diff) ?? ""}
+              view={view()}
+              filetype={filetype(editPaths()[0] ?? "")}
+              syntaxStyle={syntax()}
+              showLineNumbers={true}
+              width="100%"
+              wrapMode={ctx.diffWrapMode()}
+              fg={theme.text}
+              addedBg={theme.diffAddedBg}
+              removedBg={theme.diffRemovedBg}
+              contextBg={theme.diffContextBg}
+              addedSignColor={theme.diffHighlightAdded}
+              removedSignColor={theme.diffHighlightRemoved}
+              lineNumberFg={theme.diffLineNumber}
+              lineNumberBg={theme.diffContextBg}
+              addedLineNumberBg={theme.diffAddedLineNumberBg}
+              removedLineNumberBg={theme.diffRemovedLineNumberBg}
+            />
+          </box>
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={editPaths()[0] ?? ""} />
+        </BlockTool>
+      </Match>
+      <Match when={true}>
+        <InlineTool icon="←" pending="Preparing edit..." complete={title()} part={props.part}>
+          {title()}
+        </InlineTool>
+      </Match>
+    </Switch>
+  )
 }
 
 function ApplyPatch(props: ToolProps) {
@@ -2892,8 +2895,8 @@ export function parseApplyPatchFiles(value: unknown) {
     const relativePath = stringValue(file.relativePath)
     const filePath = stringValue(file.filePath)
     const patch = stringValue(file.patch)
-   const additions = numberValue(file.additions) ?? 0
-   const deletions = numberValue(file.deletions) ?? 0
+    const additions = numberValue(file.additions) ?? 0
+    const deletions = numberValue(file.deletions) ?? 0
   const changed = file.changed === true
   if (!type || !relativePath || !filePath || patch === undefined) return []
   return [{ type, relativePath, filePath, patch, additions, deletions, changed, movePath: stringValue(file.movePath) }]

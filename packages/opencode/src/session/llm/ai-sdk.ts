@@ -60,6 +60,8 @@ function usage(value: unknown, reasoningTextCharCount?: number) {
   // text IS produced), estimate from accumulated reasoning text character count.
   // Note: AI SDK v2 normalizes absent reasoning_tokens to 0 (a number), so `??` alone
   // never fires — use `||` so 0 also triggers the fallback.
+  // ~4 chars/token heuristic for reasoning text (CJK/English mix); only
+  // used when the provider reports 0/undefined reasoning_tokens.
   const fallbackReasoningTokens =
     (reasoningTokens === undefined || reasoningTokens === 0) &&
     reasoningTextCharCount != null &&

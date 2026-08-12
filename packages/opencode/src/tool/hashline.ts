@@ -4,6 +4,8 @@
 import z from "zod"
 
 export const HASHLINE_ALPHABET = "ZPMQVRWSNKTXJBYH"
+// Vowel-free alphabet: 2-char IDs must never spell words and stay visually
+// distinct from each other (no 0/O, 1/I, 5/S confusables).
 
 const HASHLINE_ID_LENGTH = 2
 const HASHLINE_ID_REGEX = new RegExp(`^[${HASHLINE_ALPHABET}]{${HASHLINE_ID_LENGTH}}$`)
@@ -104,6 +106,10 @@ export type HashlinePaste = z.infer<typeof HashlinePaste>
 export const HashlineEditInput = z.union([HashlineEdit, HashlineCut, HashlinePaste])
 export type HashlineEditInput = z.infer<typeof HashlineEditInput>
 
+// Low-signal lines (empty, <= 2 chars, or punctuation-only) would collide
+// after whitespace normalization - seed the hash with the line number so
+// distinct low-signal lines get distinct IDs. The 8-bit hash keeps IDs to
+// 2 chars; collisions are rare and handled by the recovery remap.
 function isLowSignalContent(normalized: string) {
   if (normalized.length === 0) return true
   if (normalized.length <= 2) return true
@@ -164,8 +170,12 @@ function toLines(text: TextValue) {
 }
 
 const HASHLINE_PREFIX_RE = /^\s*(?:>>>|>>)?\s*[+-]?\s*\d+#[ZPMQVRWSNKTXJBYH]{2}:/
+// Optional diff markers ([+-]) before the anchor: the model echoes the
+// annotated `+N#ID:` diff output back as payload, so accept that form.
 const WRAPPER_PREFIX_RE = /^\s*(?:>>>|>>)\s?/
 
+// Majority rule: only strip when >= 50% of non-empty lines match, so
+// content that legitimately contains `N#ID:`-shaped lines is never mangled.
 function stripByMajority(lines: string[], test: (line: string) => boolean, rewrite: (line: string) => string) {
   const nonEmpty = lines.filter((line) => line.length > 0)
   if (nonEmpty.length === 0) return lines
@@ -228,6 +238,11 @@ function stripAllWhitespace(s: string) {
   return s.replace(/\s+/g, "")
 }
 
+// Models rewrap long lines when replacing them; restore the original
+// single-line wrapping (when unambiguous) so the result matches the file's
+// formatting and future anchors stay valid. Canonical match = whitespace-
+// insensitive equality; require a unique match and a >= 6 char span to
+// avoid false positives.
 function restoreOldWrappedLines(oldLines: string[], newLines: string[]) {
   if (oldLines.length === 0 || newLines.length < 2) return newLines
 
@@ -680,6 +695,9 @@ export function applyHashlineEdits(input: {
 
   validateAnchors(lines, refs)
 
+  // Bottom-up splice order: apply later lines first so earlier anchors stay
+  // valid; at the same line, replacements/deletions (precedence 0) run before
+  // insertions (1-3) so inserts land on the final content.
   const sorted = [...ops].sort((a, b) => {
     if (a.sortLine !== b.sortLine) return b.sortLine - a.sortLine
     if (a.precedence !== b.precedence) return a.precedence - b.precedence

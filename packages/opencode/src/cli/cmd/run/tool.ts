@@ -348,14 +348,14 @@ function runWebfetch(p: ToolProps<typeof WebFetchTool>): ToolInline {
 }
 
 function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
- const paths = list<string>(p.metadata.paths).map((f) => toolPath(f))
- const title = paths.length > 0 ? paths.join(" → ") : toolPath(patchSectionPath(p.input.input ?? "") ?? "")
- return {
-   icon: "←",
-   title: `Edit ${title}`,
-   mode: "block",
-   body: p.metadata.diff,
- }
+  const paths = list<string>(p.metadata.paths).map((f) => toolPath(f))
+  const title = paths.length > 0 ? paths.join(" → ") : toolPath(patchSectionPath(p.input.input ?? "") ?? "")
+  return {
+    icon: "←",
+    title: `Edit ${title}`,
+    mode: "block",
+    body: p.metadata.diff,
+  }
 }
 
 function runWebSearch(p: ToolProps<typeof WebSearchTool>): ToolInline {
@@ -516,23 +516,23 @@ function snapWrite(p: ToolProps<typeof WriteTool>): ToolSnapshot | undefined {
 }
 
 function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
- const paths = list<string>(p.metadata.paths)
- const files = paths.length > 0 ? paths : patchSectionPaths(p.input.input)
- const diff = p.metadata.diff || ""
- if (files.length === 0 || !diff.trim()) {
-   return undefined
- }
+  const paths = list<string>(p.metadata.paths)
+  const files = paths.length > 0 ? paths : patchSectionPaths(p.input.input)
+  const diff = p.metadata.diff || ""
+  if (files.length === 0 || !diff.trim()) {
+    return undefined
+  }
 
- return {
-   kind: "diff",
-   items: [
-     {
-     title: `# Edited ${files.map((f) => toolPath(f)).join(" → ")}`,
-       diff,
-       file: files[0],
-     },
-   ],
- }
+  return {
+    kind: "diff",
+    items: [
+      {
+      title: `# Edited ${files.map((f) => toolPath(f)).join(" → ")}`,
+        diff,
+        file: files[0],
+      },
+    ],
+  }
 }
 
 function snapPatch(p: ToolProps<typeof ApplyPatchTool>): ToolSnapshot | undefined {
