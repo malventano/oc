@@ -25,6 +25,7 @@ type PrepareInput = {
   readonly agent: Agent.Info
   readonly permission?: PermissionV1.Ruleset
   readonly system: string[]
+  readonly epochSystem?: string
   readonly messages: ModelMessage[]
   readonly small?: boolean
   readonly tools: Record<string, Tool>
@@ -55,15 +56,21 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
-  const system = [
-    [
-      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
-      ...input.system,
-      ...(input.user.system ? [input.user.system] : []),
-    ]
-      .filter((x) => x)
-      .join("\n"),
-  ]
+ // Frozen-system epoch: when the epoch module returns the frozen snapshot
+ // bytes, serve them verbatim (byte-identical n-1 prefix) instead of the
+ // live join. The transform hook below still fires; no plugin currently
+ // mutates the system text.
+ const system = input.epochSystem
+   ? [input.epochSystem]
+   : [
+       [
+         ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+         ...input.system,
+         ...(input.user.system ? [input.user.system] : []),
+       ]
+         .filter((x) => x)
+         .join("\n"),
+     ]
 
   const header = system[0]
   yield* input.plugin.trigger(

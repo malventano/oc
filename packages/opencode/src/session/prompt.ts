@@ -6,6 +6,7 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { TimeContext } from "./time-context"
+import { Epoch } from "./epoch"
 
 import { LoopGuard } from "./loop-guard"
 import { SessionRevert } from "./revert"
@@ -1329,13 +1330,38 @@ const layer = Layer.effect(
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 TimeContext.stampUserMessages(msgs)
 
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
+            const [skills, env, instructions, mcpInstructions] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
             ])
+
+            // Frozen-system epoch: snapshot the wire system at the first
+            // prompt of each epoch (session start / first post-compaction
+            // prompt), serve the frozen bytes on every later request
+            // (byte-identical n-1 prefix) and inject context-drift deltas as
+            // tail system-reminder parts on user messages. Bypassed on
+            // json_schema turns (the structured-output prompt is per-turn)
+            // and on user messages with an explicit system override.
+            const epoch =
+              (lastUser.format?.type ?? "text") === "json_schema"
+                ? { frozen: undefined }
+                : yield* Epoch.apply({
+                    msgs,
+                    sessionID,
+                    user: lastUserMsg!,
+                    agentPrompt: agent.prompt ?? SystemPrompt.provider(model).join("\n"),
+                    env,
+                    instructions,
+                    mcpInstructions,
+                    skills,
+                    userSystem: lastUser.system,
+                    step,
+                    compactingPrompt: !!compactingPrompt,
+                  }).pipe(Effect.provideService(Session.Service, sessions))
+
+            const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model)
             // "Inject"-method compaction: the last rendered user message (the
             // compaction marker) is replaced in the request by the injected
             // summary prompt, keeping the entire preceding chain byte-identical
@@ -1361,6 +1387,7 @@ TimeContext.stampUserMessages(msgs)
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
+             epochSystem: epoch.frozen,
               user: lastUser,
               agent,
               permission: session.permission,
