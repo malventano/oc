@@ -3,7 +3,7 @@ import z from "zod"
 
 // Plugin tool port of tmux-pane MCP server.
 // No stderr writes (leak to TUI), no JSON-RPC, no progress notifications
-// (plugin tools have no execution timeout — poll loops survive up to 3600s).
+// (plugin tools have no execution timeout - poll loops survive up to 3600s).
 // Abort via ctx.abort (AbortSignal) instead of MCP cancelled notification.
 
 function runTmux(args) {
@@ -53,7 +53,7 @@ async function checkPaneIdle(paneId) {
     if (!lastLine) return { idle: false, lastLine: "" }
 
     // DD-WRT BusyBox ash fancy prompt: bare "└─" line, cursor right after it. Must be checked
-    // before hasDialogBox — "└" is in the dialog-box class and would classify the ash prompt as busy.
+    // before hasDialogBox - "└" is in the dialog-box class and would classify the ash prompt as busy.
     const isAshPrompt = /^\s*└─\s*$/.test(lastLine)
     if (isAshPrompt) return { idle: true, lastLine, promptType: "shell" }
     const hasDialogBox = /[│┌┐└┘║═╗╝╚╔╣╠╦╬╧╩]/.test(lastLine)
@@ -228,7 +228,7 @@ async function pollForDone(paneId, suffix, timeoutSeconds, abort, lines = 50) {
           const { promptType } = await checkPaneIdle(paneId)
           return {
             status: "abnormal",
-            message: `Shell prompt returned without DONE_${suffix} marker — command may have crashed or been interrupted. Inspect pane output with capture for details.`,
+            message: `Shell prompt returned without DONE_${suffix} marker - command may have crashed or been interrupted. Inspect pane output with capture for details.`,
             elapsed, promptType, lastLine: lastNonEmpty, lastLines,
           }
         }
@@ -260,7 +260,7 @@ REQUIRED vs OPTIONAL args differ per op:
 |----|----------|----------|
 | run | paneId, command | wait, timeoutSeconds, lines |
 | poll | paneId, suffix | timeoutSeconds, lines |
-| keys | paneId, keys | — |
+| keys | paneId, keys | - |
 | capture | paneId | lines |
 | wait | paneId | timeoutSeconds |
 | manage | action | paneId (kill), confirm (kill/kill-all) |
@@ -276,22 +276,22 @@ Operations:
 Status codes (poll/run wait=true): complete, error, abnormal, stuck, input-needed, timeout, cancelled.
 Wait status codes: ready, stuck, input-needed, timeout, cancelled.
 
-Safety: Use this tool's run (bash -c wrapper isolates child processes). NEVER pipe pane commands through tail/head — the pane is where output is meant to be seen (that's the point of running work in a pane); piping to tail hides it from the visible pane and buffers until close. The lines parameter only controls what the model receives, never the visible pane.
+Safety: Use this tool's run (bash -c wrapper isolates child processes). NEVER pipe pane commands through tail/head - the pane is where output is meant to be seen (that's the point of running work in a pane); piping to tail hides it from the visible pane and buffers until close. The lines parameter only controls what the model receives, never the visible pane.
 
 DONE marker format: bash -c '<command>' ; echo "DONE_<suffix>=\$?"
 Subshell wrapper prevents destructive commands (exit, kill \$\$) from killing pane.
 Unanchored match (progress-bar tools use \\r, file tails lack trailing \\n).
 
 WORKFLOW PATTERNS:
-- A pane is where work runs, not where you watch a detached process from. For any long-running job (local build/test/Docker OR remote sweep/training), run the job INSIDE the pane — the user sees live output and poll/wait returns the job's real exit code.
+- A pane is where work runs, not where you watch a detached process from. For any long-running job (local build/test/Docker OR remote sweep/training), run the job INSIDE the pane - the user sees live output and poll/wait returns the job's real exit code.
 - Local long-running job: spawn pane, run the job. Prefer wait=false + poll when the same turn has independent file writes/reads/searches to overlap; use wait=true otherwise.
-- Remote long-running job: spawn pane locally, keys 'ssh user@host', wait for prompt, keys 'sudo su -' if needed, wait, then run the job in that pane. SSH is transparent to run — the DONE marker is written to the pane regardless of host.
-- Anti-pattern: launching a detached remote job via ssh ... 'nohup ... &' and using a local pane as a sentinel watcher (while ! ssh ... 'test -f ...'; do sleep 60; done). Hides live output, two layers of indirection, poll returns the watcher's exit code (always 0) rather than the job's, doubles SSH connections. The pane IS where work runs — SSH into the remote first, then run the job there.
+- Remote long-running job: spawn pane locally, keys 'ssh user@host', wait for prompt, keys 'sudo su -' if needed, wait, then run the job in that pane. SSH is transparent to run - the DONE marker is written to the pane regardless of host.
+- Anti-pattern: launching a detached remote job via ssh ... 'nohup ... &' and using a local pane as a sentinel watcher (while ! ssh ... 'test -f ...'; do sleep 60; done). Hides live output, two layers of indirection, poll returns the watcher's exit code (always 0) rather than the job's, doubles SSH connections. The pane IS where work runs - SSH into the remote first, then run the job there.
 - Anti-pattern: running remote-only scripts directly on the local pane shell (silently fails on remote-only paths like /mnt/vast/).
 - Foreground (wait=true, default): blocks until complete. Use when no parallel work is available.
 - Overlapped (wait=false): PREFER this when a turn combines a long-running job with independent file writes, reads, or searches. Pattern: spawn pane; then in ONE message issue run(wait=false) alongside the independent tool calls; then poll as the final call of the turn. The job runs concurrently with those tool calls.
 - Anti-pattern: wait=false immediately followed by poll with nothing in between (just a worse wait=true). If you have no parallel work, use wait=true.
-- Interactive (SSH/REPL): keys to send control keys/prompts, wait to detect ready prompt. Never poll after keys — no DONE marker is produced.
+- Interactive (SSH/REPL): keys to send control keys/prompts, wait to detect ready prompt. Never poll after keys - no DONE marker is produced.
 - Recovery: wait returns stuck (continuation '>') -> keys 'C-c C-c C-c' -> wait. wait returns input-needed -> keys with response -> wait. Triple C-c unwinds nested/stacked prompts (SSH+sudo, chained reads, sentinel loops) in one call; harmless at a clean prompt. Single 'C-c' works for simple stuck states.
 
 USAGE NOTES:
@@ -443,7 +443,7 @@ USAGE NOTES:
         } else {
           reason = `Last line: ${lastLine}. Wait for the previous command to complete by running poll first, or use a different pane.`
         }
-        throw new Error(`Pane ${args.paneId} is busy — ${reason}`)
+        throw new Error(`Pane ${args.paneId} is busy - ${reason}`)
       }
 
       freshPanes.delete(args.paneId)
@@ -466,7 +466,7 @@ USAGE NOTES:
           output: JSON.stringify({
             suffix,
             pollCommand: `poll with paneId=${args.paneId} suffix=${suffix}`,
-            info: "Background mode (wait=false). You MUST call poll next with paneId and this suffix to get the result — do NOT end your turn without polling.",
+            info: "Background mode (wait=false). You MUST call poll next with paneId and this suffix to get the result - do NOT end your turn without polling.",
           }, null, 2),
           metadata: { suffix, background: true },
         }
