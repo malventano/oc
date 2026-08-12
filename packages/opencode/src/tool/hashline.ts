@@ -497,6 +497,10 @@ export function applyHashlineEdits(input: {
   const refs: Array<{ raw: string; line: number; id: string }> = []
   const replaceOps: Array<Extract<HashlineEdit, { type: "replace" }>> = []
   const ops: Splice[] = []
+// After-index -> original line text for lines a SET/REPLACE overwrote.
+// Keys index into the FINAL result (post-application); later splices at
+// lower indices shift earlier entries, tracked below.
+const changedLines = new Map<number, string>()
   const autocorrect = input.autocorrect ?? Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
   const aggressiveAutocorrect = input.aggressiveAutocorrect ?? Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
   const parseText = (text: TextValue) => {
@@ -732,6 +736,35 @@ export function applyHashlineEdits(input: {
       }
     }
 
+    if (op.kind === "set_line" || op.kind === "replace_lines") {
+      for (let k = 0; k < text.length && k < op.del; k++) {
+        const orig = lines[op.start + k]
+        if (orig !== undefined) changedLines.set(op.start + k, orig)
+      }
+    }
+
+
+    // This splice shifts every later line at index >= op.start by
+    // (text.length - del); earlier entries keyed at or past the splice
+    // point must move to their final positions. Entries inside the
+    // deleted range are gone. Entries below op.start are already final
+    // (bottom-up order applies higher lines first).
+    const delta = text.length - op.del
+    if (delta !== 0) {
+      // Rebuild the map instead of shifting in place: sequential deletes +
+      // re-sets can collide when two entries shift onto each other (e.g. a
+      // multi-line replace followed by a lower insert: 3->4 stomps the
+      // entry already at 4, dropping the first replaced line). The mapping
+      // idx -> idx + delta is injective, so a fresh map has no collisions.
+      const shifted = new Map<number, string>()
+      for (const [idx, orig] of changedLines) {
+        if (idx < op.start) shifted.set(idx, orig)
+        else if (idx >= op.start + op.del) shifted.set(idx + delta, orig)
+        // entries inside the deleted range are gone
+      }
+      changedLines.clear()
+      for (const [idx, orig] of shifted) changedLines.set(idx, orig)
+    }
     lines.splice(op.start, op.del, ...text)
   })
 
@@ -751,6 +784,7 @@ export function applyHashlineEdits(input: {
     lines,
     trailing,
     notes,
+    changedLines,
   }
 }
 
