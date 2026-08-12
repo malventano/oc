@@ -11,9 +11,20 @@ describe("grammar-patch parsePatch", () => {
   test("parses SET", () => {
     const files = parseOk("*** Begin Patch\n[a.txt#A1B2]\nSET 1#AB:\n+ hello\n*** End Patch")
     expect(files).toEqual([
-      { filePath: "a.txt", edits: [{ type: "set_line", line: "1#AB", text: ["hello"] }] },
+     { filePath: "a.txt", tag: "A1B2", edits: [{ type: "set_line", line: "1#AB", text: ["hello"] }] },
     ])
   })
+
+ test("captures the #TAG for basename disambiguation", () => {
+   const files = parseOk("*** Begin Patch\n[a.txt#F00D]\nAPPEND:\n+ x\n*** End Patch")
+   expect(files[0].tag).toBe("F00D")
+   expect(files[0].filePath).toBe("a.txt")
+ })
+
+ test("leaves tag undefined when the header has no #TAG", () => {
+   const files = parseOk("*** Begin Patch\n[a.txt]\nAPPEND:\n+ x\n*** End Patch")
+   expect(files[0].tag).toBeUndefined()
+ })
 
   test("parses REPLACE", () => {
     const files = parseOk("*** Begin Patch\n[a.txt#A1B2]\nREPLACE 1#AB 3#CD:\n+ a\n+ b\n*** End Patch")
@@ -79,8 +90,8 @@ describe("grammar-patch parsePatch", () => {
     const files = parseOk(
       ["*** Begin Patch", "[a.txt#A1B2]", "RENAME b.txt", "[c.txt#C3D4]", "DELETE", "*** End Patch"].join("\n"),
     )
-    expect(files[0]).toEqual({ filePath: "a.txt", edits: [], rename: "b.txt" })
-    expect(files[1]).toEqual({ filePath: "c.txt", edits: [], delete: true })
+   expect(files[0]).toEqual({ filePath: "a.txt", tag: "A1B2", edits: [], rename: "b.txt" })
+   expect(files[1]).toEqual({ filePath: "c.txt", tag: "C3D4", edits: [], delete: true })
   })
 
   test("strips one separator space and keeps extra whitespace", () => {

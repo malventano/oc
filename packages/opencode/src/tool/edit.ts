@@ -13,6 +13,7 @@ import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./edit.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
+import { FOLDERS } from "@opencode-ai/core/filesystem/ignore"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Format } from "../format"
@@ -29,7 +30,7 @@ import {
   parseHashlineContent,
   serializeHashlineContent,
 } from "./hashline"
-import { type GrammarOp as GrammarOpT, parsePatch } from "./grammar-patch"
+import { type GrammarOp as GrammarOpT, type GrammarSection as GrammarSectionT, parsePatch } from "./grammar-patch"
 import { remapEditsToCurrent } from "./hashline-recovery"
 import { fileTag, invalidateSnapshot, mergeSeenLines, recordSnapshot, relocateSnapshot, snapshotOf } from "./hashline-store"
 import { hashlineRef, parseHashlineRef } from "./hashline"
@@ -173,6 +174,45 @@ export const EditTool = Tool.define(
           const instance = yield* InstanceState.context
           const resolvePath = (p: string) => (path.isAbsolute(p) ? p : path.join(instance.directory, p))
 
+         // Basename fallback: the read/success headers render `[basename#TAG]`
+         // and models copy them into patch headers verbatim. Resolve a bare
+         // basename by walking the worktree; the `#TAG` disambiguates
+         // collisions (it is copied verbatim from the read output).
+         const resolveSourcePath = (section: GrammarSectionT): Effect.Effect<string> =>
+           Effect.gen(function* () {
+             const direct = resolvePath(section.filePath)
+             const info = yield* afs.stat(direct).pipe(Effect.catch(() => Effect.succeed(undefined)))
+             if (info) return direct
+             const bare = !section.filePath.includes("/") && !section.filePath.includes("\\")
+             if (!bare) return direct
+             const matches: string[] = []
+             const walk = (dir: string, depth: number): Effect.Effect<void> => {
+               if (depth > 12 || matches.length >= 32) return Effect.void
+               return Effect.gen(function* () {
+                 const entries = yield* afs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))
+                 for (const entry of entries) {
+                   if (entry.type === "directory") {
+           if (!FOLDERS.has(entry.name)) yield* walk(path.join(dir, entry.name), depth + 1)
+                   } else if (entry.type === "file" && entry.name === section.filePath) {
+                     matches.push(path.join(dir, entry.name))
+                   }
+                 }
+               })
+             }
+             yield* walk(instance.directory, 0)
+             if (matches.length === 0) return direct
+             if (matches.length === 1) return matches[0]
+             if (section.tag) {
+               for (const m of matches) {
+       const text = yield* afs.readFileStringSafe(m).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                 if (text !== undefined && fileTag(text) === section.tag) return m
+               }
+             }
+             throw new Error(
+               `Basename ${JSON.stringify(section.filePath)} is ambiguous (${matches.length} files match): ${matches.join(", ")}. Use the full path in the [PATH] section header.`,
+             )
+           })
+
           const registers = new Map<string, string[]>()
           let anonymousRegister: string[] | undefined
 
@@ -196,7 +236,7 @@ export const EditTool = Tool.define(
 
           const planned: Planned[] = []
           for (const section of sections) {
-            const sourcePath = resolvePath(section.filePath)
+           const sourcePath = yield* resolveSourcePath(section)
             const targetPath = section.rename ? resolvePath(section.rename) : sourcePath
             const edits = HashlineEditInputZ.array().parse(section.edits)
 
