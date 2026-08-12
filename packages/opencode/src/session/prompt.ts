@@ -1093,6 +1093,13 @@ const layer = Layer.effect(
 
         let loopGuardEnabled = true
         let stallGuardEnabled = true
+        // 3x fire budget per turn, shared reset: fires 1-2 steer in-turn, the
+        // 3rd fire of either guard completes its banner then triggers an
+        // auto-compaction (auto: true - the model continues from the compacted
+        // summary after it completes) instead of resuming with another steer.
+        // Exhaustion NEVER disables the detectors.
+        let loopFires = 0
+        let stallFires = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1420,16 +1427,26 @@ TimeContext.stampUserMessages(msgs)
               // request (toModelMessage skips error-marked messages), so the
               // looped garbage is never replayed; the TUI keeps the full text.
               let note = `Loop guard interrupted the response: ${handle.loopGuardHit}`
-              // Always steer: no budget. The banner shows the exact redirect
-              // the model receives (request-only synthetic trailing user
-              // message, never a visible user turn), so the TUI needs no
-              // separate prompt. Budget exhaustion previously disabled the
-              // detector entirely, letting a loop run unguarded and silent
-              // until agent.steps capped the turn (2026-08-12 live incident:
-              // "Issuing the verification command. Period." repeated
-              // indefinitely after fire #3). agent.steps is the real bound.
-              note += `\n\n${LoopGuard.THINKING_LOOP_REDIRECT}`
-              steerPrompt = LoopGuard.THINKING_LOOP_REDIRECT
+              // 3x fire budget per turn. Fires 1-2 steer in-turn: the banner
+              // shows the exact redirect the model receives (request-only
+              // synthetic trailing user message, never a visible user turn),
+              // so the TUI needs no separate prompt. The 3rd fire does NOT
+              // resume with a steer: it completes the banner, then triggers
+              // an auto-compaction so the model continues from the compacted
+              // summary instead of the polluted context.
+              loopFires++
+              if (loopFires < 3) {
+                note += `\n\n${LoopGuard.THINKING_LOOP_REDIRECT}`
+                steerPrompt = LoopGuard.THINKING_LOOP_REDIRECT
+              } else {
+                // 3rd fire: banner complete, now auto-compact. The compaction
+                // task is picked up on the next loop iteration; the counter
+                // reset gives the post-compaction continuation a fresh budget.
+                note += `\n\nLoop guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                loopFires = 0
+                stallFires = 0
+                yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+              }
               handle.message.error = new NamedError.Unknown({ message: note }).toObject()
               yield* sessions.updateMessage(handle.message)
               return "continue" as const
@@ -1449,16 +1466,24 @@ TimeContext.stampUserMessages(msgs)
               // finish + time.completed makes the message look exactly like
               // the loop-cut message: no finished turn, no completed turn.
               let note = `Stall guard detected a premature stop: ${handle.stallHit}`
-              // The banner shows the exact steer the model receives
-              // (request-only synthetic trailing user message, never a
-              // visible user turn), so the TUI needs no separate prompt.
-              // No steer budget: unlike the loop guard (model stuck in a
-              // genuine repetition attractor, bounded resamples needed), a
-              // stall's "loop" is trivially escapable - the model just must
-              // not end with ":" - and agent.steps already caps the turn.
-              const redirect = StallGuard.detect(handle.message.finish, handle.stallText, handle.stallHadToolCall)
-              note += `\n\n${redirect!.redirect}`
-              steerPrompt = redirect!.redirect
+              // 3x fire budget per turn. Fires 1-2 steer in-turn: the banner
+              // shows the exact steer the model receives (request-only
+              // synthetic trailing user message, never a visible user turn),
+              // so the TUI needs no separate prompt. The 3rd fire does NOT
+              // resume with a steer: it completes the banner, then triggers
+              // an auto-compaction so the model continues from the compacted
+              // summary instead of the polluted context.
+              stallFires++
+              if (stallFires < 3) {
+                const redirect = StallGuard.detect(handle.message.finish, handle.stallText, handle.stallHadToolCall)
+                note += `\n\n${redirect!.redirect}`
+                steerPrompt = redirect!.redirect
+              } else {
+                note += `\n\nStall guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                loopFires = 0
+                stallFires = 0
+                yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+              }
               handle.message.error = new StallGuardError({ message: note }).toObject()
               handle.message.finish = undefined
               if (handle.message.time) handle.message.time.completed = undefined
