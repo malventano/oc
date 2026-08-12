@@ -193,7 +193,7 @@ export function RunEntryContent(props: {
                 {item.title}
               </text>
               {item.diff.trim() ? (
-                <box width="100%" paddingLeft={1}>
+                <box width="100%" paddingLeft={1} paddingRight={2}>
                   <diff
                     diff={item.diff}
                     view="unified"
