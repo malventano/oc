@@ -15,11 +15,11 @@ export type GrammarOp =
   | { type: "paste"; register: string; insert_after_line?: string; insert_before_line?: string }
 
 export type GrammarSection = {
- filePath: string
- tag?: string
- edits: GrammarOp[]
- delete?: boolean
- rename?: string
+  filePath: string
+  tag?: string
+  edits: GrammarOp[]
+  delete?: boolean
+  rename?: string
 }
 
 export type ParseResult = { ok: true; files: GrammarSection[] } | { ok: false; errors: string[] }
@@ -53,7 +53,7 @@ const OPS: Array<{ re: RegExp; build: (m: RegExpExecArray) => GrammarOp | "fileL
     },
   },
   {
-   re: new RegExp(`^PASTE (${REG}) (AFTER|BEFORE) (${ANCHOR}):?$`),
+    re: new RegExp(`^PASTE (${REG}) (AFTER|BEFORE) (${ANCHOR}):?$`),
     build: (m) =>
       m[2] === "AFTER"
         ? { type: "paste", register: m[1], insert_after_line: m[3] }
@@ -105,7 +105,7 @@ export function parsePatch(input: string | null | undefined): ParseResult {
 
     const sec = /^\[([^#\r\n]+)(?:#([0-9A-Za-z]{1,16}))?\]$/.exec(trimmed)
     if (sec) {
-     cur = { filePath: sec[1], edits: [], tag: sec[2] }
+      cur = { filePath: sec[1], edits: [], tag: sec[2] }
       files.push(cur)
       body = null
       fileLevelDone = false
@@ -121,24 +121,24 @@ export function parsePatch(input: string | null | undefined): ParseResult {
         fail(i, line, "body row outside of an op that takes rows")
         return { ok: false, errors }
       }
-     // STRICT separator: `+` alone is a blank line; otherwise the single
-     // space after `+` is a REQUIRED separator, stripped (the model's
-     // natural diff-style `+ ` writing matches content byte-exactly:
-     // `+ x` -> "x", `+  x` -> " x"). Text immediately after `+` without
-     // the separator space is a parse error - there is no optional-space
-     // ambiguity. Eval-verified (textgrammar-eval): separator 86% OK vs
-     // verbatim 35% OK on the same scenarios.
-     const rest = line.slice(1)
-     if (rest === "") {
-       body.push("")
-       continue
-     }
-     if (!rest.startsWith(" ")) {
-       fail(i, line, "content row must be `+` then a space then content (`+x` without the separator space is invalid; `+  x` means content ` x`)")
-       return { ok: false, errors }
-     }
-     body.push(rest.slice(1))
-     continue
+      // STRICT separator: `+` alone is a blank line; otherwise the single
+      // space after `+` is a REQUIRED separator, stripped (the model's
+      // natural diff-style `+ ` writing matches content byte-exactly:
+      // `+ x` -> "x", `+  x` -> " x"). Text immediately after `+` without
+      // the separator space is a parse error - there is no optional-space
+      // ambiguity. Eval-verified (textgrammar-eval): separator 86% OK vs
+      // verbatim 35% OK on the same scenarios.
+      const rest = line.slice(1)
+      if (rest === "") {
+        body.push("")
+        continue
+      }
+      if (!rest.startsWith(" ")) {
+        fail(i, line, "content row must be `+` then a space then content (`+x` without the separator space is invalid; `+  x` means content ` x`)")
+        return { ok: false, errors }
+      }
+      body.push(rest.slice(1))
+      continue
     }
     if (line.startsWith(" ")) {
       fail(i, line, "content row must start with `+` (found leading whitespace)")
@@ -187,10 +187,10 @@ export function patchSectionPath(input: string): string | undefined {
 
 /** All `[PATH#TAG]` section headers in a patch, in order (for TUI/CLI titles). */
 export function patchSectionPaths(input: string | null | undefined): string[] {
- const paths: string[] = []
- for (const line of String(input ?? "").split(/\r?\n/)) {
-   const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]$/.exec(line.trim())
-   if (match) paths.push(match[1])
- }
- return paths
+  const paths: string[] = []
+  for (const line of String(input ?? "").split(/\r?\n/)) {
+    const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]$/.exec(line.trim())
+    if (match) paths.push(match[1])
+  }
+  return paths
 }

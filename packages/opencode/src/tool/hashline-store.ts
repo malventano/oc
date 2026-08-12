@@ -83,8 +83,8 @@ export function fileTag(text: string): string {
 * file of the same name in the project root.
 */
 export function hashlineHeaderPath(instanceDirectory: string, filepath: string): string {
- const rel = path.relative(instanceDirectory, filepath)
- return rel === "" || rel.startsWith("..") ? filepath : rel
+  const rel = path.relative(instanceDirectory, filepath)
+  return rel === "" || rel.startsWith("..") ? filepath : rel
 }
 
 export function snapshotBytesLimit() {

@@ -39,7 +39,7 @@ afterEach(async () => {
 const layer = LayerNode.compile(
   LayerNode.group([
     LSP.node,
-   CrossSpawnSpawner.node,
+    CrossSpawnSpawner.node,
     FSUtil.node,
     Format.node,
     EventV2Bridge.node,
@@ -200,7 +200,7 @@ describe("tool.edit", () => {
             filePath: filepath,
             edits: [{ type: "set_line", line: "1#ZZ", text: "x" }],
           })).message,
-       ).toContain("can only be created with append/prepend")
+        ).toContain("can only be created with append/prepend")
       }),
     )
 
@@ -518,15 +518,15 @@ describe("tool.edit", () => {
       }),
     )
 
-   it.instance("emits per-file files metadata for multi-file patches", () =>
-     Effect.gen(function* () {
-       const test = yield* TestInstance
-       const first = path.join(test.directory, "first.txt")
-       const second = path.join(test.directory, "second.txt")
-       yield* putSnap(first, "alpha\nbeta")
-       yield* putSnap(second, "gamma")
+    it.instance("emits per-file files metadata for multi-file patches", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const first = path.join(test.directory, "first.txt")
+        const second = path.join(test.directory, "second.txt")
+        yield* putSnap(first, "alpha\nbeta")
+        yield* putSnap(second, "gamma")
 
-       const result = yield* run({
+        const result = yield* run({
       input: [
         "*** Begin Patch",
         `[${first}#A1B2]`,
@@ -538,46 +538,46 @@ describe("tool.edit", () => {
         "*** End Patch",
       ].join("\n"),
     })
-       expect(result.metadata.files).toBeDefined()
-       const files = result.metadata.files as Array<Record<string, unknown>>
-       expect(files.length).toBe(2)
+        expect(result.metadata.files).toBeDefined()
+        const files = result.metadata.files as Array<Record<string, unknown>>
+        expect(files.length).toBe(2)
       expect(files[0]).toMatchObject({ type: "edit", filePath: first, changed: true })
       expect(files[1]).toMatchObject({ type: "edit", filePath: second, changed: true })
       expect(files[0].patch).toContain("+BETA")
       expect(files[1].patch).toContain("+delta")
-     }),
-   )
+      }),
+    )
 
-   it.instance("emits delete and move types in files metadata", () =>
-     Effect.gen(function* () {
-       const test = yield* TestInstance
-       const doomed = path.join(test.directory, "doomed.txt")
-       const moved = path.join(test.directory, "moved.txt")
-       yield* putSnap(doomed, "bye")
-       yield* putSnap(moved, "hello")
+    it.instance("emits delete and move types in files metadata", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const doomed = path.join(test.directory, "doomed.txt")
+        const moved = path.join(test.directory, "moved.txt")
+        yield* putSnap(doomed, "bye")
+        yield* putSnap(moved, "hello")
 
-       const result = yield* run({
-         input: [
-           "*** Begin Patch",
-           `[${doomed}#A1B2]`,
-           "DELETE",
-           `[${moved}#A1B2]`,
-           "RENAME renamed.txt",
-           "*** End Patch",
-         ].join("\n"),
-       })
+        const result = yield* run({
+          input: [
+            "*** Begin Patch",
+            `[${doomed}#A1B2]`,
+            "DELETE",
+            `[${moved}#A1B2]`,
+            "RENAME renamed.txt",
+            "*** End Patch",
+          ].join("\n"),
+        })
 
-       const files = result.metadata.files as Array<Record<string, unknown>>
-       expect(files.length).toBe(2)
-     expect(files[0]).toMatchObject({ type: "delete", filePath: doomed, changed: true })
-       expect(files[1]).toMatchObject({
+        const files = result.metadata.files as Array<Record<string, unknown>>
+        expect(files.length).toBe(2)
+      expect(files[0]).toMatchObject({ type: "delete", filePath: doomed, changed: true })
+        expect(files[1]).toMatchObject({
         type: "move",
         filePath: moved,
         changed: false,
         movePath: path.join(test.directory, "renamed.txt"),
       })
-     }),
-   )
+      }),
+    )
   })
 
   describe("delete and rename", () => {
@@ -641,50 +641,50 @@ describe("tool.edit", () => {
       }),
     )
 
-   it.instance("renames with a relative target into the source file's own directory", () =>
-     Effect.gen(function* () {
-       const test = yield* TestInstance
-       const source = path.join(test.directory, "source.txt")
-       yield* putSnap(source, "alpha\nbeta")
+    it.instance("renames with a relative target into the source file's own directory", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const source = path.join(test.directory, "source.txt")
+        yield* putSnap(source, "alpha\nbeta")
 
-       const result = yield* run({
-         filePath: source,
-         edits: [],
-         rename: "target.txt",
-       })
+        const result = yield* run({
+          filePath: source,
+          edits: [],
+          rename: "target.txt",
+        })
 
-       expect(result.output).toContain("Edit applied successfully")
-       expect(yield* fileExists(source)).toBe(false)
-       expect(yield* load(path.join(test.directory, "target.txt"))).toBe("alpha\nbeta")
-     }),
-   )
+        expect(result.output).toContain("Edit applied successfully")
+        expect(yield* fileExists(source)).toBe(false)
+        expect(yield* load(path.join(test.directory, "target.txt"))).toBe("alpha\nbeta")
+      }),
+    )
 
-   it.instance("reports deleted and renamed counts separately in the output message", () =>
-     Effect.gen(function* () {
-       const test = yield* TestInstance
-       const doomed = path.join(test.directory, "doomed.txt")
-       const moved = path.join(test.directory, "moved.txt")
-       yield* putSnap(doomed, "bye")
-       yield* putSnap(moved, "hello")
+    it.instance("reports deleted and renamed counts separately in the output message", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const doomed = path.join(test.directory, "doomed.txt")
+        const moved = path.join(test.directory, "moved.txt")
+        yield* putSnap(doomed, "bye")
+        yield* putSnap(moved, "hello")
 
-       const result = yield* run({
-         input: [
-           "*** Begin Patch",
-           `[${doomed}#A1B2]`,
-           "DELETE",
-           `[${moved}#A1B2]`,
-           "RENAME renamed.txt",
-           "*** End Patch",
-         ].join("\n"),
-       })
+        const result = yield* run({
+          input: [
+            "*** Begin Patch",
+            `[${doomed}#A1B2]`,
+            "DELETE",
+            `[${moved}#A1B2]`,
+            "RENAME renamed.txt",
+            "*** End Patch",
+          ].join("\n"),
+        })
 
-       expect(result.output).toContain("deleted 1 file")
-       expect(result.output).toContain("renamed 1 file")
-       expect(yield* fileExists(doomed)).toBe(false)
-       expect(yield* fileExists(moved)).toBe(false)
-       expect(yield* load(path.join(test.directory, "renamed.txt"))).toBe("hello")
-     }),
-   )
+        expect(result.output).toContain("deleted 1 file")
+        expect(result.output).toContain("renamed 1 file")
+        expect(yield* fileExists(doomed)).toBe(false)
+        expect(yield* fileExists(moved)).toBe(false)
+        expect(yield* load(path.join(test.directory, "renamed.txt"))).toBe("hello")
+      }),
+    )
 
     it.instance("rejects delete combined with edits", () =>
       Effect.gen(function* () {
@@ -715,7 +715,7 @@ describe("tool.edit", () => {
             delete: true,
             rename: path.join(test.directory, "other.txt"),
           })).message,
-       ).toContain("file-level")
+        ).toContain("file-level")
       }),
     )
 
@@ -967,7 +967,7 @@ describe("tool.edit", () => {
           ],
         })).message
         expect(message).toContain("anchor mismatch")
-       expect(message).toContain("[PATH]")
+        expect(message).toContain("[PATH]")
         expect(message).toContain("@x")
       }),
     )
@@ -1117,45 +1117,45 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
- it.instance("allows whitespace-only line changes (byte-exact echo detection)", () =>
-   Effect.gen(function* () {
-     const filepath = path.join((yield* TestInstance).directory, "a.txt")
-     const lines = ["def f():", "    return 1"]
-     yield* putSnap(filepath, lines.join("\n") + "\n")
-     const result = yield* run({
-       filePath: filepath,
-       edits: [
-         {
-           type: "set_line",
-           line: hashlineRef(2, lines[1]),
-           text: ["      return 1"],
-         },
-       ],
-     })
-     expect(yield* load(filepath)).toBe("def f():\n      return 1\n")
-     expect(result.output).not.toContain("repeats the anchor line")
-   }),
- )
+  it.instance("allows whitespace-only line changes (byte-exact echo detection)", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const lines = ["def f():", "    return 1"]
+      yield* putSnap(filepath, lines.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "set_line",
+            line: hashlineRef(2, lines[1]),
+            text: ["      return 1"],
+          },
+        ],
+      })
+      expect(yield* load(filepath)).toBe("def f():\n      return 1\n")
+      expect(result.output).not.toContain("repeats the anchor line")
+    }),
+  )
 
- it.instance("still treats a verbatim anchor copy as echoed first line", () =>
-   Effect.gen(function* () {
-     const filepath = path.join((yield* TestInstance).directory, "a.txt")
-     const lines = ["def f():", "    return 1"]
-     yield* putSnap(filepath, lines.join("\n") + "\n")
-     const result = yield* run({
-       filePath: filepath,
-       edits: [
-         {
-           type: "set_line",
-           line: hashlineRef(2, lines[1]),
-           text: ["    return 1", "    return 2"],
-         },
-       ],
-     })
-     expect(yield* load(filepath)).toBe("def f():\n    return 1\n    return 2\n")
-     expect(result.output).toContain("stripped echoed first line")
-   }),
- )
+  it.instance("still treats a verbatim anchor copy as echoed first line", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const lines = ["def f():", "    return 1"]
+      yield* putSnap(filepath, lines.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [
+          {
+            type: "set_line",
+            line: hashlineRef(2, lines[1]),
+            text: ["    return 1", "    return 2"],
+          },
+        ],
+      })
+      expect(yield* load(filepath)).toBe("def f():\n    return 1\n    return 2\n")
+      expect(result.output).toContain("stripped echoed first line")
+    }),
+  )
 
   it.instance("auto-strips echoed first line end-to-end and notes it", () =>
     Effect.gen(function* () {
@@ -1200,152 +1200,152 @@ describe("0055 escape-payload hardening", () => {
 })
 
 describe("basename fallback resolution", () => {
- it.instance("resolves a bare basename to the unique file in the tree", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     const filepath = path.join(test.directory, "nested", "dir", "file.txt")
-     yield* putSnap(filepath, "one\n")
-     const result = yield* run({
-       input: ["*** Begin Patch", "[file.txt#A1B2]", `SET ${hashlineRef(1, "one")}:`, "+ two", "*** End Patch"].join("\n"),
-     })
-     expect(result.output).toContain("Edit applied successfully")
-     expect(yield* load(filepath)).toBe("two\n")
-   }),
- )
+  it.instance("resolves a bare basename to the unique file in the tree", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "nested", "dir", "file.txt")
+      yield* putSnap(filepath, "one\n")
+      const result = yield* run({
+        input: ["*** Begin Patch", "[file.txt#A1B2]", `SET ${hashlineRef(1, "one")}:`, "+ two", "*** End Patch"].join("\n"),
+      })
+      expect(result.output).toContain("Edit applied successfully")
+      expect(yield* load(filepath)).toBe("two\n")
+    }),
+  )
 
- it.instance("resolves a bare basename to the tag-matching file when ambiguous", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     const alpha = path.join(test.directory, "alpha", "shared.txt")
-     const beta = path.join(test.directory, "beta", "shared.txt")
-     yield* putSnap(alpha, "alpha-content\n")
-     yield* putSnap(beta, "beta-content\n")
-     const headerTag = fileTag("alpha-content\n")
-     const result = yield* run({
-       input: ["*** Begin Patch", `[shared.txt#${headerTag}]`, "APPEND:", "+ done", "*** End Patch"].join("\n"),
-     })
-     expect(result.output).toContain("Edit applied successfully")
-     expect(yield* load(alpha)).toBe("alpha-content\ndone\n")
-     expect(yield* load(beta)).toBe("beta-content\n")
-   }),
- )
+  it.instance("resolves a bare basename to the tag-matching file when ambiguous", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const alpha = path.join(test.directory, "alpha", "shared.txt")
+      const beta = path.join(test.directory, "beta", "shared.txt")
+      yield* putSnap(alpha, "alpha-content\n")
+      yield* putSnap(beta, "beta-content\n")
+      const headerTag = fileTag("alpha-content\n")
+      const result = yield* run({
+        input: ["*** Begin Patch", `[shared.txt#${headerTag}]`, "APPEND:", "+ done", "*** End Patch"].join("\n"),
+      })
+      expect(result.output).toContain("Edit applied successfully")
+      expect(yield* load(alpha)).toBe("alpha-content\ndone\n")
+      expect(yield* load(beta)).toBe("beta-content\n")
+    }),
+  )
 
- it.instance("rejects an ambiguous basename without a disambiguating tag", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     yield* putSnap(path.join(test.directory, "alpha", "shared.txt"), "alpha\n")
-     yield* putSnap(path.join(test.directory, "beta", "shared.txt"), "beta\n")
-     const err = yield* fail({
-       input: ["*** Begin Patch", "[shared.txt#A1B2]", "APPEND:", "+ done", "*** End Patch"].join("\n"),
-     })
-     expect(err.message).toContain("is ambiguous")
-     expect(err.message).toContain("shared.txt")
-   }),
- )
+  it.instance("rejects an ambiguous basename without a disambiguating tag", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* putSnap(path.join(test.directory, "alpha", "shared.txt"), "alpha\n")
+      yield* putSnap(path.join(test.directory, "beta", "shared.txt"), "beta\n")
+      const err = yield* fail({
+        input: ["*** Begin Patch", "[shared.txt#A1B2]", "APPEND:", "+ done", "*** End Patch"].join("\n"),
+      })
+      expect(err.message).toContain("is ambiguous")
+      expect(err.message).toContain("shared.txt")
+    }),
+  )
 
- it.instance("keeps the missing-file guard for basenames with no match", () =>
-   Effect.gen(function* () {
-     const err = yield* fail({
-       input: ["*** Begin Patch", "[ghost.txt#A1B2]", "SET 1#AB:", "+ x", "*** End Patch"].join("\n"),
-     })
+  it.instance("keeps the missing-file guard for basenames with no match", () =>
+    Effect.gen(function* () {
+      const err = yield* fail({
+        input: ["*** Begin Patch", "[ghost.txt#A1B2]", "SET 1#AB:", "+ x", "*** End Patch"].join("\n"),
+      })
     expect(err.message).toContain("can only be created with append/prepend")
-   }),
- )
+    }),
+  )
 })
 
 describe("section header path rendering", () => {
- it.instance("renders in-project paths relative to the instance directory in success output", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     const filepath = path.join(test.directory, "nested", "file.txt")
-     yield* putSnap(filepath, "one\n")
-     const result = yield* run({
-       input: ["*** Begin Patch", `[${filepath}#A1B2]`, "APPEND:", "+ two", "*** End Patch"].join("\n"),
-     })
-     expect(result.output).toContain(`[${path.join("nested", "file.txt")}#`)
-   }),
- )
+  it.instance("renders in-project paths relative to the instance directory in success output", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "nested", "file.txt")
+      yield* putSnap(filepath, "one\n")
+      const result = yield* run({
+        input: ["*** Begin Patch", `[${filepath}#A1B2]`, "APPEND:", "+ two", "*** End Patch"].join("\n"),
+      })
+      expect(result.output).toContain(`[${path.join("nested", "file.txt")}#`)
+    }),
+  )
 
- it.instance("renders the absolute path in success output for files outside the instance directory", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     const outer = yield* tmpdirScoped()
-     const filepath = path.join(outer, "global.txt")
-     yield* putSnap(filepath, "one\n")
-     const result = yield* run({
-       input: ["*** Begin Patch", `[${filepath}#A1B2]`, "APPEND:", "+ two", "*** End Patch"].join("\n"),
-     })
-     expect(result.output).toContain(`[${filepath}#`)
-   }),
- )
+  it.instance("renders the absolute path in success output for files outside the instance directory", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const outer = yield* tmpdirScoped()
+      const filepath = path.join(outer, "global.txt")
+      yield* putSnap(filepath, "one\n")
+      const result = yield* run({
+        input: ["*** Begin Patch", `[${filepath}#A1B2]`, "APPEND:", "+ two", "*** End Patch"].join("\n"),
+      })
+      expect(result.output).toContain(`[${filepath}#`)
+    }),
+  )
 
- it.instance("rejects a bare basename header that resolves to a different file with another tag", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     // Same basename as the file the header really names, but never read
-     // (no snapshot) and carrying a different tag: this is the
-     // global-AGENTS.md-vs-project-stub class of collision.
-     yield* put(path.join(test.directory, "AGENTS.md"), "project stub\n")
-     const err = yield* fail({
-       input: ["*** Begin Patch", "[AGENTS.md#FFFF]", "APPEND:", "+ x", "*** End Patch"].join("\n"),
-     })
-     expect(err.message).toContain("does not match")
-     expect(err.message).toContain("copy the [PATH#TAG] header verbatim")
-   }),
- )
+  it.instance("rejects a bare basename header that resolves to a different file with another tag", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      // Same basename as the file the header really names, but never read
+      // (no snapshot) and carrying a different tag: this is the
+      // global-AGENTS.md-vs-project-stub class of collision.
+      yield* put(path.join(test.directory, "AGENTS.md"), "project stub\n")
+      const err = yield* fail({
+        input: ["*** Begin Patch", "[AGENTS.md#FFFF]", "APPEND:", "+ x", "*** End Patch"].join("\n"),
+      })
+      expect(err.message).toContain("does not match")
+      expect(err.message).toContain("copy the [PATH#TAG] header verbatim")
+    }),
+  )
 })
 
 describe("same-file multi-section patches", () => {
- it.instance("merges sections of one file into a single files entry with the net diff", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     const filepath = path.join(test.directory, "merged.txt")
-     yield* putSnap(filepath, "alpha\nbeta\ngamma\n")
-     // Section 1 shifts every line down; section 2 anchors on an ORIGINAL
-     // line, exercising the chain remap (1#<alpha> -> 2#<alpha>).
-     const result = yield* run({
-       input: [
-         "*** Begin Patch",
-         `[${filepath}#A1B2]`,
-         "PREPEND:",
-         "+ zero",
-         `[${filepath}#A1B2]`,
-         `SET ${hashlineRef(1, "alpha")}:`,
-         "+ ALPHA",
-         "*** End Patch",
-       ].join("\n"),
-     })
-     // One block per file: the files metadata has a single entry for
-     // merged.txt carrying the net diff (original -> final).
-     const files = result.metadata.files as Array<Record<string, unknown>>
-     const mine = files.filter((f) => f.filePath === filepath)
-     expect(mine.length).toBe(1)
-     expect(mine[0].patch).toContain("+zero")
-     expect(mine[0].patch).toContain("+ALPHA")
-     expect(mine[0].changed).toBe(true)
-     expect(yield* load(filepath)).toBe("zero\nALPHA\nbeta\ngamma\n")
-   }),
- )
+  it.instance("merges sections of one file into a single files entry with the net diff", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "merged.txt")
+      yield* putSnap(filepath, "alpha\nbeta\ngamma\n")
+      // Section 1 shifts every line down; section 2 anchors on an ORIGINAL
+      // line, exercising the chain remap (1#<alpha> -> 2#<alpha>).
+      const result = yield* run({
+        input: [
+          "*** Begin Patch",
+          `[${filepath}#A1B2]`,
+          "PREPEND:",
+          "+ zero",
+          `[${filepath}#A1B2]`,
+          `SET ${hashlineRef(1, "alpha")}:`,
+          "+ ALPHA",
+          "*** End Patch",
+        ].join("\n"),
+      })
+      // One block per file: the files metadata has a single entry for
+      // merged.txt carrying the net diff (original -> final).
+      const files = result.metadata.files as Array<Record<string, unknown>>
+      const mine = files.filter((f) => f.filePath === filepath)
+      expect(mine.length).toBe(1)
+      expect(mine[0].patch).toContain("+zero")
+      expect(mine[0].patch).toContain("+ALPHA")
+      expect(mine[0].changed).toBe(true)
+      expect(yield* load(filepath)).toBe("zero\nALPHA\nbeta\ngamma\n")
+    }),
+  )
 
- it.instance("success header carries the final tag after all sections of the file", () =>
-   Effect.gen(function* () {
-     const test = yield* TestInstance
-     const filepath = path.join(test.directory, "final-tag.txt")
-     yield* putSnap(filepath, "one\n")
-     const result = yield* run({
-       input: [
-         "*** Begin Patch",
-         `[${filepath}#A1B2]`,
-         "APPEND:",
-         "+ two",
-         `[${filepath}#A1B2]`,
-         "APPEND:",
-         "+ three",
-         "*** End Patch",
-       ].join("\n"),
-     })
-     const finalTag = fileTag(yield* load(filepath))
-     expect(result.output).toMatch(new RegExp(`\\[final-tag\\.txt#${finalTag}\\]`))
-   }),
- )
+  it.instance("success header carries the final tag after all sections of the file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "final-tag.txt")
+      yield* putSnap(filepath, "one\n")
+      const result = yield* run({
+        input: [
+          "*** Begin Patch",
+          `[${filepath}#A1B2]`,
+          "APPEND:",
+          "+ two",
+          `[${filepath}#A1B2]`,
+          "APPEND:",
+          "+ three",
+          "*** End Patch",
+        ].join("\n"),
+      })
+      const finalTag = fileTag(yield* load(filepath))
+      expect(result.output).toMatch(new RegExp(`\\[final-tag\\.txt#${finalTag}\\]`))
+    }),
+  )
 })
