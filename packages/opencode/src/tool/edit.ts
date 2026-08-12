@@ -503,7 +503,7 @@ export const EditTool = Tool.define(
          const fileDiffs = planned
            .map((p) => ({
              filePath: p.sourcePath,
-             relativePath: path.relative(instance.worktree, p.targetPath).replaceAll("\\", "/"),
+            relativePath: path.relative(instance.directory, p.targetPath).replaceAll("\\", "/"),
              type: p.deleted ? "delete" : p.section.rename ? "move" : "edit",
              patch: p.diff,
              additions: p.lineCounts.new - p.lineCounts.old,
