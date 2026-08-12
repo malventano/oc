@@ -32,4 +32,21 @@ export function stampToolOutput(output: { output?: string; [key: string]: unknow
   output.output += `\n\n<system-reminder>${new Date().toISOString()}</system-reminder>`
 }
 
+/** Threshold for the squash hint: ~2K tokens at ~4 chars/token (the squash-output tool's own bar). */
+export const SQUASH_HINT_MIN_CHARS = 8192
+
+/**
+* Append a squash-output hint reminder to very large tool outputs that lack
+* one. The hint tag is dropped again by squash-output's extractOutput when
+* the output is squashed, so it never outlives the output it describes.
+*/
+export function stampSquashHint(output: { output?: string; [key: string]: unknown }): void {
+ if (typeof output.output !== "string") return
+ if (output.output.includes("<system-reminder>")) return
+ const len = output.output.length
+ if (len < SQUASH_HINT_MIN_CHARS) return
+ const tokens = Math.round(len / 4)
+ output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>`
+}
+
 export * as TimeContext from "./time-context"
