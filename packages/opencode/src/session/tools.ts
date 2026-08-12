@@ -125,6 +125,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               output,
             )
 TimeContext.stampToolOutput(output)
+TimeContext.stampSquashHint(output)
             if (options.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(options.toolCallId, output)
             }
@@ -213,6 +214,7 @@ TimeContext.stampToolOutput(output)
               output,
             )
 TimeContext.stampToolOutput(output)
+TimeContext.stampSquashHint(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -297,6 +299,7 @@ TimeContext.stampToolOutput(output)
               output,
             )
 TimeContext.stampToolOutput(output)
+TimeContext.stampSquashHint(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -380,6 +383,7 @@ TimeContext.stampToolOutput(output)
               output,
             )
 TimeContext.stampToolOutput(output)
+TimeContext.stampSquashHint(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -428,6 +432,7 @@ TimeContext.stampToolOutput(output)
             result,
           )
 TimeContext.stampToolOutput(result)
+TimeContext.stampSquashHint(result)
 
           const textParts: string[] = []
           const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []
