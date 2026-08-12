@@ -40,8 +40,8 @@ export type StreamInput = {
   agent: Agent.Info
   permission?: PermissionV1.Ruleset
   system: string[]
- /** Frozen-system epoch: exact system bytes to serve instead of the live join. */
- epochSystem?: string
+  /** Frozen-system epoch: exact system bytes to serve instead of the live join. */
+  epochSystem?: string
   messages: ModelMessage[]
   small?: boolean
   tools: Record<string, Tool>

@@ -344,7 +344,7 @@ export const ReadTool = Tool.define<
       if (snapshotText !== undefined) {
         const seen = Array.from({ length: file.raw.length }, (_, i) => i + file.offset)
         const tag = recordSnapshot(filepath, snapshotText, seen)
-       output += `[${hashlineHeaderPath(instance.directory, filepath)}#${tag}]\n`
+        output += `[${hashlineHeaderPath(instance.directory, filepath)}#${tag}]\n`
       }
       output += file.raw.map((line, i) => `${hashlineRef(i + file.offset, file.full[i] ?? line)}:${line}`).join("\n")
 
