@@ -1157,6 +1157,96 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
+  it.instance("warns on the one-short comment-indent fold via the validator", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: [" // one space short"] }],
+      })
+      // The edit applies (the fold is a warning, not a rejection)...
+      expect(yield* load(filepath)).toContain(" // one space short")
+      // ...but the validator flags it for the model to fix on the next call.
+      expect(result.output).toContain("indentation validator")
+      expect(result.output).toContain("one space short")
+    }),
+  )
+ 
+  it.instance("does not warn on correctly indented comments", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["  // two spaces, correct"] }],
+      })
+      expect(yield* load(filepath)).toContain("  // two spaces, correct")
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+
+  it.instance("warns on a one-short block-comment opener via the validator", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: [" /* one space short", "  * continuation", "  */"] }],
+      })
+      expect(yield* load(filepath)).toContain(" /* one space short")
+      expect(result.output).toContain("indentation validator")
+      expect(result.output).toContain("one space short")
+    }),
+  )
+  
+  it.instance("does not warn on a correctly indented block comment", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["  /* two spaces", "   * continuation", "   */"] }],
+      })
+      expect(yield* load(filepath)).toContain("  /* two spaces")
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+
+  it.instance("warns when the fold is against the line ABOVE the comment", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      const body = ["function outer() {", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(2, body[1]), text: [" // one space short"] }],
+      })
+      // Inserted after line 2: the comment at 1 space sits against the code
+      // above at 2 (the closing brace below is at 0) - the above check fires.
+      expect(yield* load(filepath)).toContain(" // one space short")
+      expect(result.output).toContain("indentation validator")
+    }),
+  )
+  
+  it.instance("does not warn about pre-existing comments the edit did not touch", () =>
+    Effect.gen(function* () {
+      const filepath = path.join((yield* TestInstance).directory, "a.txt")
+      // The file ALREADY has a one-space-short comment before the edit runs.
+      const body = ["function outer() {", " // pre-existing fold", "  const alpha = 1", "}"]
+      yield* putSnap(filepath, body.join("\n") + "\n")
+      const result = yield* run({
+        filePath: filepath,
+        edits: [{ type: "insert_after", line: hashlineRef(3, body[2]), text: ["  // correct new comment"] }],
+      })
+      expect(result.output).not.toContain("indentation validator")
+    }),
+  )
+  
   it.instance("auto-strips echoed first line end-to-end and notes it", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")

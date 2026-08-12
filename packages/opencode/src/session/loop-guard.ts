@@ -97,6 +97,8 @@ function detectVerbatimRepetition(text: string): [unit: string, count: number] |
   for (let len = 2; len <= VERBATIM_MAX_UNIT; len++) {
     if (searchSpace.length < len * 4) continue
     const unit = searchSpace.slice(-len)
+    // Only letter/emoji units can signal a real loop: punctuation-only units
+    // (separator dashes, dots) repeat trivially in legitimate output.
     if (!/[\p{L}\p{Extended_Pictographic}]/u.test(unit)) continue
     let count = 0
     let pos = searchSpace.length
@@ -164,6 +166,9 @@ class TextLoopDetector {
   }
 
   #consumeSegment(raw: string): string | null {
+    // Strip structural markdown (headings, bold runs) before normalization:
+    // templated section headers like "## Summary" repeat across segments and
+    // would inflate near-duplicate similarity into false stalls.
     const segment = raw.replace(/^[ \t]*#{1,6}[ \t].*$/gm, "").replace(/^[ \t]*\*{2,3}.+?\*{2,3}[ \t]*$/gm, "")
     const normalized = normalizeSegment(segment)
     if (normalized.length < SEGMENT_MIN_NORM_CHARS) return null

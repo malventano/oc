@@ -198,7 +198,11 @@ export const CompactionPart = Schema.Struct({
   auto: Schema.Boolean,
   overflow: Schema.optional(Schema.Boolean),
   tail_start_id: Schema.optional(MessageID),
- virtual: Schema.optional(Schema.Boolean),
+  // virtual: true marks a virtual compact (no LLM summary turn - just a
+  // tail drop with a synthetic note). Virtual markers and their synthetic
+  // summaries must never reach the model request (see MessageV2.
+  // filterCompacted); real markers carry a real LLM-produced summary.
+  virtual: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "CompactionPart" })
 export type CompactionPart = Types.DeepMutable<Schema.Schema.Type<typeof CompactionPart>>
 

@@ -25,7 +25,9 @@ export function stampUserMessages(msgs: SessionV1.WithParts[]): void {
   }
 }
 
-/** Append a UTC timestamp reminder to a tool output that lacks one. */
+/** Append a UTC timestamp reminder to a tool output that lacks one.
+ * Non-string outputs (e.g. code-mode CallToolResult) are left untouched -
+ * the retired plugin appended an "undefined..." garbage string to them. */
 export function stampToolOutput(output: { output?: string; [key: string]: unknown }): void {
   if (typeof output.output !== "string") return
   if (output.output.includes("<system-reminder>")) return
@@ -41,15 +43,15 @@ export const SQUASH_HINT_MIN_CHARS = 8192
 * the output is squashed, so it never outlives the output it describes.
 */
 export function stampSquashHint(output: { output?: string; [key: string]: unknown }): void {
- if (typeof output.output !== "string") return
- // Skip only an existing squash hint, not other reminders: stampToolOutput
- // runs first and appends the timestamp, so a generic reminder check would
- // make the hint never fire on any tool output (0065 regression, fixed 0068).
- if (output.output.includes("Very large tool output")) return
- const len = output.output.length
- if (len < SQUASH_HINT_MIN_CHARS) return
- const tokens = Math.round(len / 4)
- output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>`
+  if (typeof output.output !== "string") return
+  // Skip only an existing squash hint, not other reminders: stampToolOutput
+  // runs first and appends the timestamp, so a generic reminder check would
+  // make the hint never fire on any tool output (0065 regression, fixed 0068).
+  if (output.output.includes("Very large tool output")) return
+  const len = output.output.length
+  if (len < SQUASH_HINT_MIN_CHARS) return
+  const tokens = Math.round(len / 4)
+  output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>`
 }
 
 export * as TimeContext from "./time-context"

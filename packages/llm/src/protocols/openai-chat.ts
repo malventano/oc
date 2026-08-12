@@ -398,6 +398,8 @@ const mapUsage = (
   const cached = usage.prompt_tokens_details?.cached_tokens
   const reasoning = usage.completion_tokens_details?.reasoning_tokens
   const nonCached = ProviderShared.subtractTokens(usage.prompt_tokens, cached)
+  // ~4 chars/token heuristic for reasoning text (CJK/English mix); only
+  // used when the provider reports 0/undefined reasoning_tokens.
   const fallbackReasoning =
     (reasoning === undefined || reasoning === 0) &&
     reasoningTextLength != null &&
@@ -421,6 +423,9 @@ const step = (state: ParserState, event: OpenAIChatEvent) =>
     const choice = event.choices[0]
     const finishReason = choice?.finish_reason ? mapFinishReason(choice.finish_reason) : state.finishReason
     const delta = choice?.delta
+    // Reasoning delta field names vary by vendor: GLM-family proxies emit
+    // `reasoning`, others `thinking`; try all three so reasoning deltas
+    // survive regardless of the naming.
     const reasoningText = delta?.reasoning_content ?? delta?.reasoning ?? delta?.thinking
     const accumulatedReasoningLength =
       (state.lifecycle.reasoningTextLength ?? 0) + (reasoningText?.length ?? 0)
