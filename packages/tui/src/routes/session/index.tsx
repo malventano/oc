@@ -2515,7 +2515,7 @@ function Edit(props: ToolProps) {
   const title = createMemo(() => {
     const paths = editPaths()
     if (paths.length === 0) return "Edit"
-    if (paths.length <= 3) return `Edit ${paths.map((p) => pathFormatter.format(p)).join(" → ")}`
+    if (paths.length <= 3) return `Edit ${paths.map((p) => pathFormatter.format(p)).join(", ")}`
     return `Edit ${paths.length} files`
   })
 
