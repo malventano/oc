@@ -275,23 +275,26 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof SummarizePayload.Type
     }) {
       yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
-      const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
-      const defaultAgent = yield* agentSvc.defaultAgent()
-      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+     const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+     const defaultAgent = yield* agentSvc.defaultAgent()
+     const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
 
-      yield* compactSvc.create({
-        sessionID: ctx.params.sessionID,
-        agent: currentAgent,
-        model: {
-          providerID: ctx.payload.providerID,
-          modelID: ctx.payload.modelID,
-          variant: ctx.payload.variant,
-        },
-        auto: ctx.payload.auto ?? false,
-      })
-      yield* promptSvc.loop({ sessionID: ctx.params.sessionID })
-      return true
-    })
+     const virtual = yield* compactSvc.virtual({ sessionID: ctx.params.sessionID, messages })
+     if (virtual !== "ineligible") return virtual
+
+     yield* compactSvc.create({
+       sessionID: ctx.params.sessionID,
+       agent: currentAgent,
+       model: {
+         providerID: ctx.payload.providerID,
+         modelID: ctx.payload.modelID,
+         variant: ctx.payload.variant,
+       },
+       auto: ctx.payload.auto ?? false,
+     })
+     yield* promptSvc.loop({ sessionID: ctx.params.sessionID })
+     return "compacted" as const
+   })
 
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
       params: { sessionID: SessionID }
