@@ -172,3 +172,13 @@ export function patchSectionPath(input: string): string | undefined {
   const match = /^\[([^#\r\n]+)(?:#[0-9A-Za-z]{1,16})?\]/m.exec(String(input ?? ""))
   return match?.[1]
 }
+
+/** All `[PATH#TAG]` section headers in a patch, in order (for TUI/CLI titles). */
+export function patchSectionPaths(input: string | null | undefined): string[] {
+ const paths: string[] = []
+ for (const line of String(input ?? "").split(/\r?\n/)) {
+   const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]$/.exec(line.trim())
+   if (match) paths.push(match[1])
+ }
+ return paths
+}

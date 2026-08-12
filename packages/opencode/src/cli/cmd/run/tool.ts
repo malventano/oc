@@ -20,7 +20,7 @@ import type * as Tool from "@/tool/tool"
 import type { ApplyPatchTool } from "@/tool/apply_patch"
 import type { ShellTool as BashTool } from "@/tool/shell"
 import type { EditTool } from "@/tool/edit"
-import { patchSectionPath } from "@/tool/grammar-patch"
+import { patchSectionPath, patchSectionPaths } from "@/tool/grammar-patch"
 import type { GlobTool } from "@/tool/glob"
 import type { GrepTool } from "@/tool/grep"
 import type { InvalidTool } from "@/tool/invalid"
@@ -348,12 +348,14 @@ function runWebfetch(p: ToolProps<typeof WebFetchTool>): ToolInline {
 }
 
 function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
-  return {
-    icon: "←",
-    title: `Edit ${toolPath(patchSectionPath(p.input.input ?? "") ?? "")}`,
-    mode: "block",
-    body: p.metadata.diff,
-  }
+ const paths = list<string>(p.metadata.paths).map((f) => toolPath(f))
+ const title = paths.length > 0 ? paths.join(" → ") : toolPath(patchSectionPath(p.input.input ?? "") ?? "")
+ return {
+   icon: "←",
+   title: `Edit ${title}`,
+   mode: "block",
+   body: p.metadata.diff,
+ }
 }
 
 function runWebSearch(p: ToolProps<typeof WebSearchTool>): ToolInline {
@@ -514,22 +516,23 @@ function snapWrite(p: ToolProps<typeof WriteTool>): ToolSnapshot | undefined {
 }
 
 function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
-  const file = patchSectionPath(p.input.input ?? "") || ""
-  const diff = p.metadata.diff || ""
-  if (!file || !diff.trim()) {
-    return undefined
-  }
+ const paths = list<string>(p.metadata.paths)
+ const files = paths.length > 0 ? paths : patchSectionPaths(p.input.input)
+ const diff = p.metadata.diff || ""
+ if (files.length === 0 || !diff.trim()) {
+   return undefined
+ }
 
-  return {
-    kind: "diff",
-    items: [
-      {
-        title: `# Edited ${toolPath(file)}`,
-        diff,
-        file,
-      },
-    ],
-  }
+ return {
+   kind: "diff",
+   items: [
+     {
+     title: `# Edited ${files.map((f) => toolPath(f)).join(" → ")}`,
+       diff,
+       file: files[0],
+     },
+   ],
+ }
 }
 
 function snapPatch(p: ToolProps<typeof ApplyPatchTool>): ToolSnapshot | undefined {
