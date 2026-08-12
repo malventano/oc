@@ -80,3 +80,33 @@ describe("TimeContext.stampToolOutput", () => {
     expect(output.output).toBeUndefined()
   })
 })
+
+describe("TimeContext.stampSquashHint", () => {
+ test("appends a hint reminder to a very large output", () => {
+   const output = { output: "x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS + 1) }
+   TimeContext.stampSquashHint(output)
+   expect(output.output).toMatch(
+     /^x+\n\n<system-reminder>Very large tool output \(\d+ chars, ~\d+ tokens\)\. If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it\.<\/system-reminder>$/,
+   )
+ })
+
+ test("leaves outputs below the threshold unchanged", () => {
+   const output = { output: "small" }
+   TimeContext.stampSquashHint(output)
+   expect(output.output).toBe("small")
+ })
+
+ test("skips outputs that already contain a reminder", () => {
+   const output = {
+     output: `${"x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS)}\n\n<system-reminder>2026-01-01T00:00:00.000Z</system-reminder>`,
+   }
+   TimeContext.stampSquashHint(output)
+   expect(output.output.match(/<system-reminder>/g)).toHaveLength(1)
+ })
+
+ test("no-op when output is not a string", () => {
+   const output = { output: undefined }
+   TimeContext.stampSquashHint(output)
+   expect(output.output).toBeUndefined()
+ })
+})
