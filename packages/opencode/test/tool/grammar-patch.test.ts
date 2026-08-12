@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { type GrammarOp, type GrammarSection, parsePatch, patchSectionPath } from "../../src/tool/grammar-patch"
+import { type GrammarOp, type GrammarSection, parsePatch, patchSectionPath, patchSectionPaths } from "../../src/tool/grammar-patch"
 
 function parseOk(input: string): GrammarSection[] {
   const parsed = parsePatch(input)
@@ -206,4 +206,25 @@ describe("grammar-patch patchSectionPath", () => {
     expect(patchSectionPath("")).toBeUndefined()
     expect(patchSectionPath("")).toBeUndefined()
   })
+})
+
+describe("grammar-patch patchSectionPaths", () => {
+ test("returns all section headers in order", () => {
+   const paths = patchSectionPaths(
+     ["*** Begin Patch", "[a.txt#A1B2]", "SET 1#AB:", "+ x", "[b.txt#C3D4]", "APPEND:", "+ y", "*** End Patch"].join("\n"),
+   )
+   expect(paths).toEqual(["a.txt", "b.txt"])
+ })
+
+ test("skips op lines and content rows", () => {
+   const paths = patchSectionPaths(
+     ["*** Begin Patch", "[a.txt#A1B2]", "SET 1#AB:", "+ [not-a-section]", "*** End Patch"].join("\n"),
+   )
+   expect(paths).toEqual(["a.txt"])
+ })
+
+ test("handles null/empty input", () => {
+   expect(patchSectionPaths(null)).toEqual([])
+   expect(patchSectionPaths("")).toEqual([])
+ })
 })
