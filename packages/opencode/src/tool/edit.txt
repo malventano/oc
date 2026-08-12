@@ -21,10 +21,10 @@ Operations (colon headers take `+` body rows, the final content):
 - `PREPEND:` - add body rows at the start of the file
 - `CUT A#ID B#ID` - delete lines A..B, capture into the anonymous register
 - `CUT A#ID B#ID @name` - delete lines A..B, capture into register `@name`
-- `PASTE @name AFTER N#ID` - insert register content after line N
-- `PASTE @name BEFORE N#ID` - insert register content before line N
+- `PASTE @name AFTER N#ID` (or `... :` - the trailing colon is optional) - insert register content after line N
+- `PASTE @name BEFORE N#ID` (or `... :` - the trailing colon is optional) - insert register content before line N
 - `DELETE` - delete the file (file-level: no other op in the section)
-- `RENAME NEWPATH` - rename/move the file (file-level)
+- `RENAME NEWPATH` - rename/move the file (file-level); a relative NEWPATH resolves against the source file's own directory, not the project root
 
 Content rows:
 - Every body row is `+TEXT`; `+` alone is a blank line.
@@ -40,7 +40,7 @@ Rules:
 - Touch only lines displayed by the read. Undisplayed/elided lines are UNSEEN - re-read the range first.
 - Ranges are tight: cover only the lines that change. Non-adjacent changes are separate ops.
 - Applied edits renumber the file and change IDs - take the next op's anchors from the edit response or a fresh `read`.
-- Multiple file sections in one patch apply independently (atomically validated). `CUT` + `PASTE @name` flows across sections; a paste's anchor must exist in its OWN section's file - give the paste its own [PATH] section targeting the destination.
+- Multiple file sections in one patch apply independently (atomically validated). `CUT` + `PASTE @name` flows across sections; a paste's anchor must exist in its OWN section's file - give the paste its own [PATH] section targeting the destination. Registers are FORWARD-ONLY: the CUT section must come BEFORE the PASTE that uses it anywhere in the patch.
 - Prefer one call per file: independent changes to different files are separate edit calls (each renders its own block). Use a single multi-file patch only for one cohesive change spanning files, e.g. a `CUT` + `PASTE @name` move between files.
 - Every line must be exactly one op or one `+` body row. A malformed line fails the WHOLE patch with a parse error naming the line - fix it and resend the full patch; do not fall back to any other edit format.
 - NEVER copy lines from Read or edit-diff output into your replacement text - type fresh content. If you do copy, leading `N#ID:` / `+N#ID:` / `>>>` prefixes are stripped automatically.
