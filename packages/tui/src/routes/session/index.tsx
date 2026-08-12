@@ -228,6 +228,20 @@ export function Session() {
     const index = messages().findIndex((message) => message.id === messageID)
     return index === -1 ? messages() : messages().slice(0, index)
   }
+  // Reduce a message's parts back into a prompt: plain text (non-synthetic)
+  // becomes the input, file parts are re-attached. Shared by undo/redo so the
+  // input mirrors the session state at every revert point.
+  const promptInfoFromParts = (parts: Part[]) =>
+    parts.reduce(
+      (agg, part) => {
+        if (part.type === "text") {
+          if (!part.synthetic) agg.input += part.text
+        }
+        if (part.type === "file") agg.parts.push(part)
+        return agg
+      },
+      { input: "", parts: [] as PromptInfo["parts"] },
+    )
   const foregroundTasks = createMemo(() =>
     sync.data.capabilities.experimentalBackgroundSubagents
       ? messages().flatMap((message) =>
@@ -656,19 +670,7 @@ export function Session() {
           .then(() => {
             toBottom()
           })
-        const parts = sync.data.part[message.id]
-        prompt?.set(
-          parts.reduce(
-            (agg, part) => {
-              if (part.type === "text") {
-                if (!part.synthetic) agg.input += part.text
-              }
-              if (part.type === "file") agg.parts.push(part)
-              return agg
-            },
-            { input: "", parts: [] as PromptInfo["parts"] },
-          ),
-        )
+        prompt?.set(promptInfoFromParts(sync.data.part[message.id] ?? []))
         dialog.clear()
       },
     },
@@ -696,6 +698,7 @@ export function Session() {
           sessionID: route.sessionID,
           messageID: message.id,
         })
+        prompt?.set(promptInfoFromParts(sync.data.part[message.id] ?? []))
       },
     },
     {
