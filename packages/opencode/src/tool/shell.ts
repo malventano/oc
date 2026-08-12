@@ -615,9 +615,9 @@ export const ShellTool = Tool.define(
                 throw new Error(
                   "BLOCKED: pkill -f kills the bash tool's own process and hangs the session. " +
                   "Use one of these safe alternatives:\n" +
-                  "1. pkill -x <name> — exact process name match\n" +
-                  "2. kill -9 <pid> — use PID from pgrep\n" +
-                  "3. run \"pkill -f <pattern>\" — isolated in tmux pane"
+                  "1. pkill -x <name> - exact process name match\n" +
+                  "2. kill -9 <pid> - use PID from pgrep\n" +
+                  "3. run \"pkill -f <pattern>\" - isolated in tmux pane"
                 )
               }
               // kill -9 $$ / $PPID kills the shell tool's own process (or its parent) and
@@ -628,8 +628,8 @@ export const ShellTool = Tool.define(
                 throw new Error(
                   "BLOCKED: kill -9 $$/$PPID kills the shell tool's own process and hangs the session. " +
                   "Use one of these safe alternatives:\n" +
-                  "1. kill -9 <pid> — use PID from pgrep\n" +
-                  "2. run \"kill -9 $$\" — isolated in tmux pane"
+                  "1. kill -9 <pid> - use PID from pgrep\n" +
+                  "2. run \"kill -9 $$\" - isolated in tmux pane"
                 )
               }
 

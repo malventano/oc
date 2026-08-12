@@ -9,10 +9,10 @@ REQUIRED vs OPTIONAL args differ per op:
 
 | op | required | optional |
 |----|----------|----------|
-| recent-sessions | — | offset, limit |
+| recent-sessions | - | offset, limit |
 | session-search | pattern | offset, limit |
-| session-info | sessionId | — |
-| subagent-info | parentId | — |
+| session-info | sessionId | - |
+| subagent-info | parentId | - |
 | list-session-messages | sessionId | role, offset, limit, preview_length, full_content, after, before, around_message_id, window |
 | list-session-parts-by-tool | sessionId | toolName, status, offset, limit, preview_length, full_content |
 | session-goal-history | sessionId | offset, limit |
