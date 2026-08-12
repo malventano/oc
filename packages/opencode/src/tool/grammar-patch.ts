@@ -72,7 +72,7 @@ export function parsePatch(input: string | null | undefined): ParseResult {
   let fileLevelDone = false
 
   const fail = (i: number, line: string, msg: string) => {
-    errors.push(`line ${i + 1}: ${msg} — got: ${JSON.stringify(line.slice(0, 80))}`)
+    errors.push(`line ${i + 1}: ${msg} - got: ${JSON.stringify(line.slice(0, 80))}`)
   }
 
   for (let i = 0; i < lines.length; i++) {
