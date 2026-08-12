@@ -32,7 +32,15 @@ import {
 } from "./hashline"
 import { type GrammarOp as GrammarOpT, type GrammarSection as GrammarSectionT, parsePatch } from "./grammar-patch"
 import { remapEditsToCurrent } from "./hashline-recovery"
-import { fileTag, invalidateSnapshot, mergeSeenLines, recordSnapshot, relocateSnapshot, snapshotOf } from "./hashline-store"
+import {
+ fileTag,
+ hashlineHeaderPath,
+ invalidateSnapshot,
+ mergeSeenLines,
+ recordSnapshot,
+ relocateSnapshot,
+ snapshotOf,
+} from "./hashline-store"
 import { hashlineRef, parseHashlineRef } from "./hashline"
 
 const MAX_DIAGNOSTICS_PER_FILE = 20
@@ -174,44 +182,86 @@ export const EditTool = Tool.define(
           const instance = yield* InstanceState.context
           const resolvePath = (p: string) => (path.isAbsolute(p) ? p : path.join(instance.directory, p))
 
-         // Basename fallback: the read/success headers render `[basename#TAG]`
-         // and models copy them into patch headers verbatim. Resolve a bare
-         // basename by walking the worktree; the `#TAG` disambiguates
-         // collisions (it is copied verbatim from the read output).
-         const resolveSourcePath = (section: GrammarSectionT): Effect.Effect<string> =>
-           Effect.gen(function* () {
-             const direct = resolvePath(section.filePath)
-             const info = yield* afs.stat(direct).pipe(Effect.catch(() => Effect.succeed(undefined)))
-             if (info) return direct
-             const bare = !section.filePath.includes("/") && !section.filePath.includes("\\")
-             if (!bare) return direct
-             const matches: string[] = []
-             const walk = (dir: string, depth: number): Effect.Effect<void> => {
-               if (depth > 12 || matches.length >= 32) return Effect.void
-               return Effect.gen(function* () {
-                 const entries = yield* afs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))
-                 for (const entry of entries) {
-                   if (entry.type === "directory") {
-           if (!FOLDERS.has(entry.name)) yield* walk(path.join(dir, entry.name), depth + 1)
-                   } else if (entry.type === "file" && entry.name === section.filePath) {
-                     matches.push(path.join(dir, entry.name))
-                   }
-                 }
-               })
-             }
-             yield* walk(instance.directory, 0)
-             if (matches.length === 0) return direct
-             if (matches.length === 1) return matches[0]
-             if (section.tag) {
-               for (const m of matches) {
-       const text = yield* afs.readFileStringSafe(m).pipe(Effect.catch(() => Effect.succeed(undefined)))
-                 if (text !== undefined && fileTag(text) === section.tag) return m
-               }
-             }
-             throw new Error(
-               `Basename ${JSON.stringify(section.filePath)} is ambiguous (${matches.length} files match): ${matches.join(", ")}. Use the full path in the [PATH] section header.`,
-             )
-           })
+        // Basename fallback: headers render `[PATH#TAG]` (relative to the
+        // instance dir, or absolute for files outside it). Bare basenames
+        // still occur in legacy/model-written headers - resolve them by
+        // walking the worktree; the `#TAG` disambiguates collisions.
+        const resolveSourcePath = (section: GrammarSectionT): Effect.Effect<string> =>
+          Effect.gen(function* () {
+            const direct = resolvePath(section.filePath)
+            const info = yield* afs.stat(direct).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            const bare = !section.filePath.includes("/") && !section.filePath.includes("\\")
+            if (info && !section.tag) return direct
+            let directTag: string | undefined
+            if (info && section.tag) {
+              const text = yield* afs.readFileStringSafe(direct).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              if (text !== undefined) {
+                directTag = fileTag(text)
+                if (directTag === section.tag) return direct
+              }
+            }
+            if (!bare) {
+              // Non-bare paths name a specific location; a tag mismatch here
+              // means stale content (file changed since the read) - the
+              // snapshot/remap and on-the-fly validation paths handle that.
+              return direct
+            }
+            const matches: string[] = []
+            const walk = (dir: string, depth: number): Effect.Effect<void> => {
+              if (depth > 12 || matches.length >= 32) return Effect.void
+              return Effect.gen(function* () {
+                const entries = yield* afs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))
+                for (const entry of entries) {
+                  if (entry.type === "directory") {
+            if (!FOLDERS.has(entry.name)) yield* walk(path.join(dir, entry.name), depth + 1)
+                  } else if (entry.type === "file" && entry.name === section.filePath) {
+                    matches.push(path.join(dir, entry.name))
+                  }
+                }
+              })
+            }
+            yield* walk(instance.directory, 0)
+            if (info && section.tag && directTag !== undefined) {
+              // Bare basename + tag mismatch on the direct hit: the header
+              // probably names a DIFFERENT file with the same basename (e.g.
+              // a read of a file outside the project). Walk for the file
+              // that actually carries the header tag.
+              for (const m of matches) {
+                const text = yield* afs.readFileStringSafe(m).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                if (text !== undefined && fileTag(text) === section.tag) return m
+              }
+              // The agent's own read of this exact path (snapshot present)
+              // still means stale content, not a wrong file - the remap
+              // machinery handles that.
+              if (snapshotOf(direct)) return direct
+              throw new Error(
+                `Section header [${section.filePath}#${section.tag}] does not match ${direct} (tag #${directTag}), ` +
+                  `and no file named ${section.filePath} under ${instance.directory} carries tag #${section.tag}. ` +
+                  `The read that produced this header targeted a different path - copy the [PATH#TAG] header verbatim from a fresh read of that file.`,
+              )
+            }
+            if (matches.length === 0) return direct
+            if (matches.length === 1) {
+              if (!section.tag) return matches[0]
+              const text = yield* afs.readFileStringSafe(matches[0]).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              if (text !== undefined && fileTag(text) === section.tag) return matches[0]
+              if (snapshotOf(matches[0])) return matches[0]
+              throw new Error(
+                `Section header [${section.filePath}#${section.tag}] resolves by name to ${matches[0]}, ` +
+                  `but that file's tag is #${text === undefined ? "(unreadable)" : fileTag(text)} - it changed since the read that produced this header. ` +
+                  `Re-read it for fresh anchors.`,
+              )
+            }
+            if (section.tag) {
+              for (const m of matches) {
+                const text = yield* afs.readFileStringSafe(m).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                if (text !== undefined && fileTag(text) === section.tag) return m
+              }
+            }
+            throw new Error(
+              `Basename ${JSON.stringify(section.filePath)} is ambiguous (${matches.length} files match): ${matches.join(", ")}. Use the full path in the [PATH] section header.`,
+            )
+          })
 
           const registers = new Map<string, string[]>()
           let anonymousRegister: string[] | undefined
@@ -536,8 +586,8 @@ export const EditTool = Tool.define(
            output = `Edit applied successfully. (${parts.join(", ")}.)`
           } else {
             const header = file.freshTag
-              ? `[${path.basename(file.sourcePath)}#${file.freshTag}]`
-              : `[${path.basename(file.sourcePath)}#${fileTag(file.after || file.before)}]`
+             ? `[${hashlineHeaderPath(instance.directory, file.sourcePath)}#${file.freshTag}]`
+             : `[${hashlineHeaderPath(instance.directory, file.sourcePath)}#${fileTag(file.after || file.before)}]`
             output = header
             if (anyChanged) output += `\n${body}\n\nEdit applied successfully.`
             else output += `\nNo changes applied.`

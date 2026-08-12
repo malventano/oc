@@ -606,3 +606,24 @@ describe("tool.read binary detection", () => {
     }),
   )
 })
+
+describe("tool.read hashline section headers", () => {
+ it.live("renders the path relative to the instance directory for in-project files", () =>
+   Effect.gen(function* () {
+     const dir = yield* tmpdirScoped()
+     yield* put(path.join(dir, "nested", "file.txt"), "one\ntwo\n")
+     const result = yield* exec(dir, { filePath: path.join(dir, "nested", "file.txt") })
+     expect(result.output).toMatch(/\[nested[\\/]file\.txt#[0-9A-F]{4}\]/)
+   }),
+ )
+
+ it.live("renders the absolute path for files outside the instance directory", () =>
+   Effect.gen(function* () {
+     const outer = yield* tmpdirScoped()
+     const dir = yield* tmpdirScoped()
+     yield* put(path.join(outer, "global.txt"), "outside\n")
+     const result = yield* exec(dir, { filePath: path.join(outer, "global.txt") })
+     expect(result.output).toContain(`[${path.join(outer, "global.txt")}#`)
+   }),
+ )
+})

@@ -10,7 +10,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { hashlineRef } from "./hashline"
-import { readForSnapshot, recordSnapshot } from "./hashline-store"
+import { hashlineHeaderPath, readForSnapshot, recordSnapshot } from "./hashline-store"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -344,7 +344,7 @@ export const ReadTool = Tool.define<
       if (snapshotText !== undefined) {
         const seen = Array.from({ length: file.raw.length }, (_, i) => i + file.offset)
         const tag = recordSnapshot(filepath, snapshotText, seen)
-        output += `[${path.basename(filepath)}#${tag}]\n`
+       output += `[${hashlineHeaderPath(instance.directory, filepath)}#${tag}]\n`
       }
       output += file.raw.map((line, i) => `${hashlineRef(i + file.offset, file.full[i] ?? line)}:${line}`).join("\n")
 

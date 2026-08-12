@@ -5,7 +5,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { EditTool } from "../../src/tool/edit"
 import { hashlineRef } from "../../src/tool/hashline"
-import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { disposeAllInstances, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Format } from "../../src/format"
@@ -1207,6 +1207,48 @@ describe("basename fallback resolution", () => {
        input: ["*** Begin Patch", "[ghost.txt#A1B2]", "SET 1#AB:", "+ x", "*** End Patch"].join("\n"),
      })
     expect(err.message).toContain("can only be created with append/prepend")
+   }),
+ )
+})
+
+describe("section header path rendering", () => {
+ it.instance("renders in-project paths relative to the instance directory in success output", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const filepath = path.join(test.directory, "nested", "file.txt")
+     yield* putSnap(filepath, "one\n")
+     const result = yield* run({
+       input: ["*** Begin Patch", `[${filepath}#A1B2]`, "APPEND:", "+ two", "*** End Patch"].join("\n"),
+     })
+     expect(result.output).toContain(`[${path.join("nested", "file.txt")}#`)
+   }),
+ )
+
+ it.instance("renders the absolute path in success output for files outside the instance directory", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const outer = yield* tmpdirScoped()
+     const filepath = path.join(outer, "global.txt")
+     yield* putSnap(filepath, "one\n")
+     const result = yield* run({
+       input: ["*** Begin Patch", `[${filepath}#A1B2]`, "APPEND:", "+ two", "*** End Patch"].join("\n"),
+     })
+     expect(result.output).toContain(`[${filepath}#`)
+   }),
+ )
+
+ it.instance("rejects a bare basename header that resolves to a different file with another tag", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     // Same basename as the file the header really names, but never read
+     // (no snapshot) and carrying a different tag: this is the
+     // global-AGENTS.md-vs-project-stub class of collision.
+     yield* put(path.join(test.directory, "AGENTS.md"), "project stub\n")
+     const err = yield* fail({
+       input: ["*** Begin Patch", "[AGENTS.md#FFFF]", "APPEND:", "+ x", "*** End Patch"].join("\n"),
+     })
+     expect(err.message).toContain("does not match")
+     expect(err.message).toContain("copy the [PATH#TAG] header verbatim")
    }),
  )
 })
