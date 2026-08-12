@@ -23,6 +23,7 @@ export function Toast() {
         <box
           position="absolute"
           justifyContent="center"
+          zIndex={4000}
           alignItems="flex-start"
           top={2}
           right={2}
