@@ -104,13 +104,25 @@ describe("grammar-patch parsePatch", () => {
    expect(files[1]).toEqual({ filePath: "c.txt", tag: "C3D4", edits: [], delete: true })
   })
 
-  test("strips one separator space and keeps extra whitespace", () => {
-    const files = parseOk(
-      ["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+ x", "+  x", "+x", "+", "+   y", "*** End Patch"].join("\n"),
-    )
-    const append = files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
-    expect(append.text).toEqual(["x", " x", "x", "", "  y"])
-  })
+ test("strips one required separator space and keeps extra whitespace", () => {
+   const files = parseOk(
+     ["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+ x", "+  x", "+", "+   y", "*** End Patch"].join("\n"),
+   )
+   const append = files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
+   expect(append.text).toEqual(["x", " x", "", "  y"])
+ })
+
+ test("rejects `+x` content rows (separator space is required)", () => {
+   const result = parsePatch(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+x", "*** End Patch"].join("\n"))
+   expect(result.ok).toBe(false)
+   if (!result.ok) expect(result.errors[0]).toContain("separator space")
+ })
+
+ test("blank line is `+` alone", () => {
+   const files = parseOk(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+", "*** End Patch"].join("\n"))
+   const append = files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
+   expect(append.text).toEqual([""])
+ })
 
   test("parses multiple file sections in one patch", () => {
     const files = parseOk(
