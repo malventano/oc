@@ -646,6 +646,20 @@ TimeContext.stampUserMessages(msgs)
       // tail_start_id is undefined when the whole conversation was retained
       // (keep.start === 0 in select): the retained region then starts at the
       // first message. Otherwise it starts at the tail marker.
+      // A no-tail marker claims the whole conversation was retained (select's
+      // keep.start === 0: everything fits the preserve budget). That is only
+      // plausible when the pre-marker content actually fits the budget; a real
+      // compaction on a big session whose select() ran over the truncated
+      // window can also come out tailless (the keep.start === 0 misfire on a
+      // short window). Counting from message 0 then "reduces" the session's
+      // oldest turns with a bogus ~700-turn note. Refuse when the pre-marker
+      // content could never have been retained in full.
+      if (!part.tail_start_id) {
+        const model = yield* provider.getModel(user.model.providerID, user.model.modelID).pipe(Effect.orDie)
+        const cfg = yield* config.get()
+        const size = yield* estimate({ messages: input.messages.slice(0, markerIdx), model })
+        if (size > preserveRecentBudget({ cfg, model })) return "virtual_empty" as const
+      }
       const tailIdx = part.tail_start_id
         ? input.messages.findIndex((m) => m.info.id === part.tail_start_id)
         : 0
@@ -756,15 +770,34 @@ TimeContext.stampUserMessages(msgs)
       const history = input.messages.filter((m) => m.info.id < input.parentID)
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
-      const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
-        cfg,
-        model,
-      })
-      if (selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+      const selectInput = history.filter((_, index) => !hidden.has(index))
+      const selected = yield* select({ messages: selectInput, cfg, model })
+      // select()'s keep.start === 0 -> "tail_start_id undefined" means "the
+      // whole input fits the preserve budget" and is only valid for
+      // whole-conversation inputs. finalize's input is the filterCompacted
+      // WINDOW (truncated at the newest completed marker's tail), so a short
+      // window that fits the budget produces a tailless marker too, and
+      // virtual() would then count the ENTIRE session as retained (dropping
+      // the oldest turns with a huge note). When the input was windowed (a
+      // prior completed pair carries a tail) and the window fits the budget,
+      // anchor the retained tail at the window's oldest turn instead.
+      let tailStart = selected.tail_start_id
+      if (!tailStart && prior.length > 0) {
+        const newest = prior.reduce((a, b) => (a.userIndex > b.userIndex ? a : b))
+        const newestTail = history[newest.userIndex]?.parts.find(
+          (p): p is SessionV1.CompactionPart => p.type === "compaction",
+        )?.tail_start_id
+        if (newestTail) {
+          const windowSize = yield* estimate({ messages: selectInput, model })
+          if (windowSize <= preserveRecentBudget({ cfg, model })) {
+            tailStart = turns(selectInput)[0]?.id
+          }
+        }
+      }
+      if (tailStart && compactionPart.tail_start_id !== tailStart) {
         yield* session.updatePart({
           ...compactionPart,
-          tail_start_id: selected.tail_start_id,
+          tail_start_id: tailStart,
         })
       }
 
