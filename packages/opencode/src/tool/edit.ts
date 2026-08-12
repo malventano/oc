@@ -750,7 +750,8 @@ export function findIndentWarnings(after: string, before?: string): string[] {
   // When the pre-edit content is available, only consider lines the edit
   // actually ADDED or CHANGED - never nudge about pre-existing lines the
   // patch did not touch.
-  const beforeLines = before ? new Set(before.split("\n")) : undefined
+  const beforeLinesArr = before ? before.split("\n") : undefined
+  const beforeLines = beforeLinesArr ? new Set(beforeLinesArr) : undefined
   const warnings: string[] = []
   const isCommentOrInterior = (l: string) => /^\s*(\/\/|\/\*|\*)/.test(l)
   for (let i = 0; i < lines.length; i++) {
@@ -758,6 +759,24 @@ export function findIndentWarnings(after: string, before?: string): string[] {
     if (line.trim() === "") continue
     if (beforeLines?.has(line)) continue // pre-existing line, not ours
     const lineIndent = line.match(/^\s*/)![0].length
+    const kind = /^\s*(\/\/|\/\*)/.test(line) ? "comment" : "code line"
+    // Original-line check: with equal line counts the position maps 1:1, so
+    // a REPLACE landing one space short of the line it replaced is caught
+    // even when neither neighbor sits at the expected indent (the neighbors
+    // straddle it). The replaced line's own indent is the strongest
+    // reference; skip the adjacent scan when it fires.
+    if (beforeLinesArr && beforeLinesArr.length === lines.length) {
+      const orig = beforeLinesArr[i]!
+      if (orig.trim() !== "") {
+        const origIndent = orig.match(/^\s*/)![0].length
+        if (origIndent === lineIndent + 1 && origIndent > 0) {
+          warnings.push(
+            `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, original line at ${origIndent} - likely one space short (the content row needs one MORE space after the '+' separator).`,
+          )
+          continue
+        }
+      }
+    }
     // Adjacent real code in EITHER direction (skip blanks and other
     // comments): the fold can sit against the line below (usual) or above
     // (a BEFORE-insert landing one short, or a tail-of-block line).
@@ -770,7 +789,6 @@ export function findIndentWarnings(after: string, before?: string): string[] {
     if (k >= 0) adjacentIndents.push(lines[k]!.match(/^\s*/)![0].length)
     const hit = adjacentIndents.find((ind) => ind === lineIndent + 1 && ind > 0)
     if (hit !== undefined) {
-      const kind = /^\s*(\/\/|\/\*)/.test(line) ? "comment" : "code line"
       warnings.push(
         `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${hit} - likely one space short (the content row needs one MORE space after the '+' separator).`,
       )
