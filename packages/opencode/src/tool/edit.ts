@@ -237,7 +237,11 @@ export const EditTool = Tool.define(
           const planned: Planned[] = []
           for (const section of sections) {
            const sourcePath = yield* resolveSourcePath(section)
-            const targetPath = section.rename ? resolvePath(section.rename) : sourcePath
+           const targetPath = section.rename
+             ? path.isAbsolute(section.rename)
+               ? section.rename
+               : path.join(path.dirname(sourcePath), section.rename)
+             : sourcePath
             const edits = HashlineEditInputZ.array().parse(section.edits)
 
             yield* assertExternalDirectoryEffect(ctx, sourcePath)
@@ -285,7 +289,7 @@ export const EditTool = Tool.define(
                   )
                 }
                 if (!hashlineOnlyCreates(edits)) {
-                  throw new Error("Missing file can only be created with append/prepend hashline edits")
+                 throw new Error(`Missing file (resolved to ${sourcePath}) can only be created with append/prepend hashline edits`)
                 }
               }
 
@@ -511,7 +515,12 @@ export const EditTool = Tool.define(
           const body = buildOutputBody(planned)
           let output = ""
           if (anyDeleted) {
-            output = `Edit applied successfully. (Deleted ${planned.length} file${planned.length > 1 ? "s" : ""}.)`
+           const deleted = planned.filter((p) => p.deleted).length
+           const renamed = planned.filter((p) => p.section.rename).length
+           const parts: string[] = []
+           if (deleted > 0) parts.push(`deleted ${deleted} file${deleted > 1 ? "s" : ""}`)
+           if (renamed > 0) parts.push(`renamed ${renamed} file${renamed > 1 ? "s" : ""}`)
+           output = `Edit applied successfully. (${parts.join(", ")}.)`
           } else {
             const header = file.freshTag
               ? `[${path.basename(file.sourcePath)}#${file.freshTag}]`
@@ -597,10 +606,10 @@ function expandRegisters(
       const content = edit.register ? newRegisters.get(edit.register) : newAnonymous
       if (content === undefined) {
         throw new Error(
-          edit.register
-            ? `paste.register @${edit.register} has no matching cut in this payload (registers are payload-scoped)`
-            : "paste requires a prior cut in this payload (or use a named register)",
-        )
+         edit.register
+           ? `paste.register @${edit.register} has no matching cut BEFORE this paste in the payload (registers are forward-only: CUT sections must precede the PASTE that uses them)`
+           : "paste requires a prior cut BEFORE it in the payload (registers are forward-only; or use a named register)",
+       )
       }
       const after = edit.insert_after_line
       const before = edit.insert_before_line
