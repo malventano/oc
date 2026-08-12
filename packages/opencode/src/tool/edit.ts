@@ -652,9 +652,10 @@ export const EditTool = Tool.define(
 
           const anyDeleted = planned.some((p) => p.deleted)
           const anyChanged = planned.some((p) => p.changed)
+          const anyRename = planned.some((p) => p.section.rename)
           const body = buildOutputBody(planned)
           let output = ""
-          if (anyDeleted) {
+          if (anyDeleted || anyRename) {
             const deleted = planned.filter((p) => p.deleted).length
             const renamed = planned.filter((p) => p.section.rename).length
             const parts: string[] = []
@@ -665,16 +666,31 @@ export const EditTool = Tool.define(
             const header = file.freshTag
               ? `[${hashlineHeaderPath(instance.directory, file.sourcePath)}#${file.freshTag}]`
               : `[${hashlineHeaderPath(instance.directory, file.sourcePath)}#${fileTag(file.after || file.before)}]`
-            output = header
-            if (anyChanged) output += `\n${body}\n\nEdit applied successfully.`
-            else output += `\nNo changes applied.`
+            if (anyChanged) {
+              output = `${header}\n${body}\n\nEdit applied successfully.`
+            } else if (planned.every((p) => p.section.delete)) {
+              // Delete of a missing file: the goal state (file absent) is
+              // already achieved - report success, not an error.
+              output = `${header}\nNo changes applied: file does not exist (nothing to delete).`
+            } else {
+              // No content changed: the edit was a no-op. This is an error
+              // back to the agent (not a success), because a no-op usually
+              // means the intended change was already present or the anchor
+              // hit the wrong region - silently reporting success would let
+              // the agent believe it modified the file when it did not.
+              throw new Error(
+                `${header}\nNo changes applied: the edit produced no content change (before == after). ` +
+                  `The intended change was likely already present, or the anchors targeted the wrong region. ` +
+                  `Re-read the file for fresh anchors and retry with the actual change.`,
+              )
+            }
           }
-          // Post-apply validator: flag the one-short comment-indent fold so
-          // the model can fix it on the next call (the applied edit is valid;
-          // this is a hint, not a rejection).
+          // Post-apply validator: flag the one-short indent fold (comments
+          // AND code) so the model can fix it on the next call (the applied
+          // edit is valid; this is a hint, not a rejection).
           const warnings = displayPlans.flatMap((p) => (p.changed && !p.deleted ? findIndentWarnings(p.after, p.before) : []))
           if (warnings.length > 0) {
-            output += `\n\n<system-reminder>Edit applied, but the indentation validator flags ${warnings.length} comment line${warnings.length > 1 ? "s" : ""} that appear${warnings.length > 1 ? "" : "s"} one space short (the '+' separator was likely folded into the content):\n- ${warnings.join("\n- ")}\nIf the offset was not intentional, you may wish to re-issue a small edit to adjust it.</system-reminder>`
+            output += `\n\n<system-reminder>Edit applied, but the indentation validator flags ${warnings.length} line${warnings.length > 1 ? "s" : ""} that appear${warnings.length > 1 ? "" : "s"} one space short (the '+' separator was likely folded into the content):\n- ${warnings.join("\n- ")}\nIf the offset was not intentional, you may wish to re-issue a small edit to adjust it.</system-reminder>`
           }
           const normalizedFilePath = FSUtil.normalizePath(firstChanged.targetPath)
           const block = LSP.Diagnostic.report(firstChanged.targetPath, diagnostics[normalizedFilePath] ?? [])
@@ -700,7 +716,7 @@ function parseSections(params: Schema.Schema.Type<typeof Parameters>) {
 
 function noopPlan(sourcePath: string, targetPath: string) {
   return {
-    section: { filePath: sourcePath, edits: [] as EditOp[] },
+    section: { filePath: sourcePath, edits: [] as EditOp[], delete: true },
     sourcePath,
     targetPath,
     exists: false,
@@ -719,55 +735,44 @@ function noopPlan(sourcePath: string, targetPath: string) {
 }
 
 /**
-* Post-apply indentation validator: scan the final file content for comment
-* lines whose indent is exactly one LESS than the next code line's indent -
-* the signature of the separator-fold error (the model wrote K spaces where
-* K+1 were needed, the parser stripped the separator, content landed K-1).
-* The applied edit is CORRECT as written; this only warns the model so it
-* can fix the indent on the next call. Conservative by design: only the
-* one-short signature is flagged, never dangling block-end comments or
-* intentionally misaligned markers.
-*/
+ * Post-apply indentation validator: scan the final file content for lines
+ * (comments AND code) whose indent is exactly one LESS than an adjacent real
+ * code line's indent - the signature of the separator-fold error (the model
+ * wrote K spaces where K+1 were needed, the parser stripped the separator,
+ * content landed K-1). The applied edit is CORRECT as written; this only
+ * warns the model so it can fix the indent on the next call. Conservative by
+ * design: only the one-short signature is flagged, never dangling block-end
+ * comments or intentionally misaligned markers. Blank lines are skipped when
+ * finding the adjacent code line (a lone linefeed is not a real neighbor).
+ */
 export function findIndentWarnings(after: string, before?: string): string[] {
   const lines = after.split("\n")
-  // When the pre-edit content is available, only consider comment lines the
-  // edit actually ADDED or CHANGED - never nudge about pre-existing
-  // comments the patch did not touch.
+  // When the pre-edit content is available, only consider lines the edit
+  // actually ADDED or CHANGED - never nudge about pre-existing lines the
+  // patch did not touch.
   const beforeLines = before ? new Set(before.split("\n")) : undefined
   const warnings: string[] = []
+  const isCommentOrInterior = (l: string) => /^\s*(\/\/|\/\*|\*)/.test(l)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
-    // Any comment opener: `//` or `/*`. Block-comment interior lines align
-    // with their opener (` * ` prefix), so only the FIRST line is checked.
-    if (!/^\s*(\/\/|\/\*)/.test(line)) continue
-    if (beforeLines?.has(line)) continue // pre-existing comment, not ours
-    const commentIndent = line.match(/^\s*/)![0].length
-    // Adjacent code in EITHER direction (skip blanks and other comments):
-    // the fold can sit against the line below (usual) or above (comment at
-    // the tail of a block, or a BEFORE-insert landing one short).
+    if (line.trim() === "") continue
+    if (beforeLines?.has(line)) continue // pre-existing line, not ours
+    const lineIndent = line.match(/^\s*/)![0].length
+    // Adjacent real code in EITHER direction (skip blanks and other
+    // comments): the fold can sit against the line below (usual) or above
+    // (a BEFORE-insert landing one short, or a tail-of-block line).
     const adjacentIndents: number[] = []
     let j = i + 1
-    while (
-      j < lines.length &&
-      (lines[j]!.trim() === "" ||
-        /^\s*(\/\/|\/\*|\*)/.test(lines[j]!) ||
-        /^\s*\*\//.test(lines[j]!))
-    )
-      j++
+    while (j < lines.length && (lines[j]!.trim() === "" || isCommentOrInterior(lines[j]!))) j++
     if (j < lines.length) adjacentIndents.push(lines[j]!.match(/^\s*/)![0].length)
     let k = i - 1
-    while (
-      k >= 0 &&
-      (lines[k]!.trim() === "" ||
-        /^\s*(\/\/|\/\*|\*)/.test(lines[k]!) ||
-        /^\s*\*\//.test(lines[k]!))
-    )
-      k--
+    while (k >= 0 && (lines[k]!.trim() === "" || isCommentOrInterior(lines[k]!))) k--
     if (k >= 0) adjacentIndents.push(lines[k]!.match(/^\s*/)![0].length)
-    const hit = adjacentIndents.find((ind) => ind === commentIndent + 1 && ind > 0)
+    const hit = adjacentIndents.find((ind) => ind === lineIndent + 1 && ind > 0)
     if (hit !== undefined) {
+      const kind = /^\s*(\/\/|\/\*)/.test(line) ? "comment" : "code line"
       warnings.push(
-        `line ${i + 1}: comment indented ${commentIndent} space${commentIndent === 1 ? "" : "s"}, adjacent code at ${hit} - likely one space short (the content row needs one MORE space after the '+' separator).`,
+        `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${hit} - likely one space short (the content row needs one MORE space after the '+' separator).`,
       )
     }
   }
