@@ -1,11 +1,17 @@
 // Session-scoped file snapshot store backing hashline staleness detection,
 // seen-line enforcement, and drift recovery. Modeled on oh-my-pi's
-// InMemorySnapshotStore (MIT): content-hash tags per path, LRU retention,
+// InMemorySnapshotStore (MIT): content-hash tags per path, FIFO retention,
 // whole-file content retained for anchor remapping.
 //
 // The store is process-global (not per-session): paths are absolute and tags
 // are content-derived, so cross-session sharing is harmless and the session
 // DB plumbing omp needs is unnecessary here.
+//
+// Map.set on an existing key preserves insertion order, so the size guard
+// below evicts the FIRST-recorded path, not the least-recently-USED one.
+// Acceptable: paths are re-recorded on every read (recording refreshes
+// nothing today, but content-tagged keys make FIFO order benign - evicted
+// paths simply re-snapshot on the next read).
 
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Effect } from "effect"

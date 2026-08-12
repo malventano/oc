@@ -250,6 +250,8 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
             }
 
             let where = sql`WHERE m.session_id = ${params.sessionId} AND json_extract(p.data, '$.type') = 'text'${roleSql}`
+            // The DB stores message times as epoch SECONDS; the API takes ISO
+            // strings. Convert to ms, then to seconds for the comparison.
             if (params.after) where = sql`${where} AND m.time_created > ${Math.floor(new Date(params.after).getTime() / 1000)}`
             if (params.before) where = sql`${where} AND m.time_created < ${Math.floor(new Date(params.before).getTime() / 1000)}`
             const rows = yield* db

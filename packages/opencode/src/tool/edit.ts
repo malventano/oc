@@ -74,6 +74,9 @@ function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
 }
 
+// Strip the common leading indent of the unified diff body so the content
+// is byte-identical to file content: annotateDiff hashes the lines to build
+// LINE#ID refs, so any indent residue would yield wrong anchors.
 export function trimDiff(diff: string): string {
   const lines = diff.split("\n")
   const contentLines = lines.filter(
@@ -178,6 +181,10 @@ export const EditTool = Tool.define(
           const autocorrect = conf.experimental?.hashline_autocorrect !== false || Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
           const aggressiveAutocorrect = Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
           const enforceSeenLines = conf.experimental?.hashline_seen_lines !== false
+          // aggressiveAutocorrect (echo-stripping + rewrap restore) is env-
+          // gated, not config-gated: it rewrites the model's payload and
+          // must stay opt-in per-launch; basic autocorrect is the safe,
+          // configurable default.
 
           const instance = yield* InstanceState.context
           const resolvePath = (p: string) => (path.isAbsolute(p) ? p : path.join(instance.directory, p))
@@ -209,6 +216,8 @@ export const EditTool = Tool.define(
             const matches: string[] = []
             const walk = (dir: string, depth: number): Effect.Effect<void> => {
               if (depth > 12 || matches.length >= 32) return Effect.void
+              // Walk caps: 12 levels and 32 matches bound worst-case cost -
+              // beyond them, ambiguity is unresolved and the caller errors.
               return Effect.gen(function* () {
                 const entries = yield* afs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))
                 for (const entry of entries) {
@@ -455,7 +464,8 @@ export const EditTool = Tool.define(
                   normalizeLineEndings(after),
                 ),
               )
-              const freshTag = noop ? fileTag(after) : fileTag(after)
+              // noop implies before === after, so one tag covers both branches.
+              const freshTag = fileTag(after)
               const annotations = [...boundaryAnnotations(appliedEdits, parsed.lines), ...next.notes]
 
               return yield* Effect.succeed({
@@ -659,6 +669,13 @@ export const EditTool = Tool.define(
             if (anyChanged) output += `\n${body}\n\nEdit applied successfully.`
             else output += `\nNo changes applied.`
           }
+          // Post-apply validator: flag the one-short comment-indent fold so
+          // the model can fix it on the next call (the applied edit is valid;
+          // this is a hint, not a rejection).
+          const warnings = displayPlans.flatMap((p) => (p.changed && !p.deleted ? findIndentWarnings(p.after, p.before) : []))
+          if (warnings.length > 0) {
+            output += `\n\n<system-reminder>Edit applied, but the indentation validator flags ${warnings.length} comment line${warnings.length > 1 ? "s" : ""} that appear one space short (the '+' separator was likely folded into the content):\n- ${warnings.join("\n- ")}\nIf the offset was not intentional, you may wish to re-issue a small edit to adjust it.</system-reminder>`
+          }
           const normalizedFilePath = FSUtil.normalizePath(firstChanged.targetPath)
           const block = LSP.Diagnostic.report(firstChanged.targetPath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
@@ -699,6 +716,62 @@ function noopPlan(sourcePath: string, targetPath: string) {
     changed: false,
     lineCounts: { old: 0, new: 0 },
   }
+}
+
+/**
+* Post-apply indentation validator: scan the final file content for comment
+* lines whose indent is exactly one LESS than the next code line's indent -
+* the signature of the separator-fold error (the model wrote K spaces where
+* K+1 were needed, the parser stripped the separator, content landed K-1).
+* The applied edit is CORRECT as written; this only warns the model so it
+* can fix the indent on the next call. Conservative by design: only the
+* one-short signature is flagged, never dangling block-end comments or
+* intentionally misaligned markers.
+*/
+export function findIndentWarnings(after: string, before?: string): string[] {
+  const lines = after.split("\n")
+  // When the pre-edit content is available, only consider comment lines the
+  // edit actually ADDED or CHANGED - never nudge about pre-existing
+  // comments the patch did not touch.
+  const beforeLines = before ? new Set(before.split("\n")) : undefined
+  const warnings: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    // Any comment opener: `//` or `/*`. Block-comment interior lines align
+    // with their opener (` * ` prefix), so only the FIRST line is checked.
+    if (!/^\s*(\/\/|\/\*)/.test(line)) continue
+    if (beforeLines?.has(line)) continue // pre-existing comment, not ours
+    const commentIndent = line.match(/^\s*/)![0].length
+    // Adjacent code in EITHER direction (skip blanks and other comments):
+    // the fold can sit against the line below (usual) or above (comment at
+    // the tail of a block, or a BEFORE-insert landing one short).
+    const adjacentIndents: number[] = []
+    let j = i + 1
+    while (
+      j < lines.length &&
+      (lines[j]!.trim() === "" ||
+        /^\s*(\/\/|\/\*|\*)/.test(lines[j]!) ||
+        /^\s*\*\//.test(lines[j]!))
+    )
+      j++
+    if (j < lines.length) adjacentIndents.push(lines[j]!.match(/^\s*/)![0].length)
+    let k = i - 1
+    while (
+      k >= 0 &&
+      (lines[k]!.trim() === "" ||
+        /^\s*(\/\/|\/\*|\*)/.test(lines[k]!) ||
+        /^\s*\*\//.test(lines[k]!))
+    )
+      k--
+    if (k >= 0) adjacentIndents.push(lines[k]!.match(/^\s*/)![0].length)
+    const hit = adjacentIndents.find((ind) => ind === commentIndent + 1 && ind > 0)
+    if (hit !== undefined) {
+      warnings.push(
+        `line ${i + 1}: comment indented ${commentIndent} space${commentIndent === 1 ? "" : "s"}, adjacent code at ${hit} - likely one space short (the content row needs one MORE space after the '+' separator).`,
+      )
+    }
+  }
+  return warnings
 }
 
 /**

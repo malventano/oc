@@ -43,6 +43,8 @@ const MAX_PRESERVE_RECENT_TOKENS = 15_000
 // these lines steer the model toward emitting the summary directly instead.
 const INJECT_NOTES = [
   "Do not call any tools. Output only the summary.",
+  // ~4000 keeps the summary small enough that the retained verbatim tail
+  // plus head fit the preserved budget (default 25% of usable window).
   "Keep the summary under ~4000 tokens.",
   "Use minimal reasoning; output the summary directly.",
   "The most recent turns will be retained verbatim; do not summarize them.",
@@ -59,10 +61,10 @@ type Tail = {
 }
 
 type CompletedCompaction = {
- userIndex: number
- assistantIndex: number
- summary: string | undefined
- virtual: boolean
+  userIndex: number
+  assistantIndex: number
+  summary: string | undefined
+  virtual: boolean
 }
 
 const truncate = (value: string) =>
@@ -112,28 +114,30 @@ function summaryText(message: SessionV1.WithParts) {
 }
 
 function completedCompactions(messages: SessionV1.WithParts[]) {
- const users = new Map<MessageID, number>()
- for (let i = 0; i < messages.length; i++) {
-   const msg = messages[i]
-   if (msg.info.role !== "user") continue
-   if (!msg.parts.some((part) => part.type === "compaction")) continue
-   users.set(msg.info.id, i)
- }
+  const users = new Map<MessageID, number>()
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+    if (msg.info.role !== "user") continue
+    if (!msg.parts.some((part) => part.type === "compaction")) continue
+    users.set(msg.info.id, i)
+  }
 
- return messages.flatMap((msg, assistantIndex): CompletedCompaction[] => {
-   if (msg.info.role !== "assistant") return []
-   if (!msg.info.summary || !msg.info.finish || msg.info.error) return []
-   const userIndex = users.get(msg.info.parentID)
-   if (userIndex === undefined) return []
-   const marker = messages[userIndex]
-   const virtual = marker?.parts.some(
-     (part): part is SessionV1.CompactionPart => part.type === "compaction" && part.virtual === true,
-   )
-   return [{ userIndex, assistantIndex, summary: summaryText(msg), virtual: virtual ?? false }]
- })
+  return messages.flatMap((msg, assistantIndex): CompletedCompaction[] => {
+    if (msg.info.role !== "assistant") return []
+    if (!msg.info.summary || !msg.info.finish || msg.info.error) return []
+    const userIndex = users.get(msg.info.parentID)
+    if (userIndex === undefined) return []
+    const marker = messages[userIndex]
+    const virtual = marker?.parts.some(
+      (part): part is SessionV1.CompactionPart => part.type === "compaction" && part.virtual === true,
+    )
+    return [{ userIndex, assistantIndex, summary: summaryText(msg), virtual: virtual ?? false }]
+  })
 }
 
 function preserveRecentBudget(input: { cfg: ConfigV1.Info; model: Provider.Model }) {
+  // Default: preserve ~25% of the usable window verbatim - the retained
+  // tail must fit alongside the summary and head inside the model window.
   return input.cfg.compaction?.preserve_recent_tokens ?? Math.floor(usable(input) * 0.25)
 }
 
@@ -200,13 +204,13 @@ export interface Interface {
     auto: boolean
     overflow?: boolean
   }) => Effect.Effect<void>
- // "Virtual" compaction: drops the oldest retained pre-compaction turn
- // instead of running a new summary turn. Only eligible when the last
- // finished assistant is the summary of the previous compaction (nothing
- // happened since). Returns the outcome for the caller to surface.
- readonly virtual: (input: {
-   sessionID: SessionID
-   messages: SessionV1.WithParts[]
+  // "Virtual" compaction: drops the oldest retained pre-compaction turn
+  // instead of running a new summary turn. Only eligible when the last
+  // finished assistant is the summary of the previous compaction (nothing
+  // happened since). Returns the outcome for the caller to surface.
+  readonly virtual: (input: {
+    sessionID: SessionID
+    messages: SessionV1.WithParts[]
   }) => Effect.Effect<"ineligible" | "virtual_empty" | "virtual_reduced" | "in_progress">
   readonly prompt: (input: { sessionID: SessionID; messages: SessionV1.WithParts[] }) => Effect.Effect<string>
   readonly finalize: (input: {
@@ -294,6 +298,9 @@ const layer = Layer.effect(
         break
       }
 
+      // Tail starting at message 0 = EVERYTHING fits the preserve budget, so
+      // nothing is worth retaining verbatim - send the whole conversation into
+      // the summary instead of keeping a zero-length tail.
       if (!keep || keep.start === 0) return { head: input.messages, tail_start_id: undefined }
       return {
         head: input.messages.slice(0, keep.start),
@@ -393,10 +400,17 @@ const layer = Layer.effect(
         ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
         : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
       const cfg = yield* config.get()
+      // Drop the trailing marker message when it is the parent AND last: the
+      // marker is a synthetic control message just created by create() with no
+      // real content and must not be serialized into the summary conversation.
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
-     const previousSummary = prior.findLast((item) => !item.virtual)?.summary ?? prior.at(-1)?.summary
+      // Virtual compactions' notes are NOT summaries: skip them when picking
+      // the previous summary, else a real compaction would summarize into a
+      // summary-of-notes. Fall back to the newest prior entry only when every
+      // prior compaction was virtual.
+      const previousSummary = prior.findLast((item) => !item.virtual)?.summary ?? prior.at(-1)?.summary
       const selected = yield* select({
         messages: history.filter((_, index) => !hidden.has(index)),
         cfg,
@@ -590,11 +604,11 @@ TimeContext.stampUserMessages(msgs)
       return result
     })
 
-   const virtual = Effect.fn("SessionCompaction.virtual")(function* (input: {
-     sessionID: SessionID
-     messages: SessionV1.WithParts[]
-   }) {
-     const { user, finished } = MessageV2.latest(input.messages)
+    const virtual = Effect.fn("SessionCompaction.virtual")(function* (input: {
+      sessionID: SessionID
+      messages: SessionV1.WithParts[]
+    }) {
+      const { user, finished } = MessageV2.latest(input.messages)
     const marker = user ? input.messages.find((m) => m.info.id === user.id) : undefined
     const part = marker?.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")
     // A compaction marker without a finished summary means an LLM compaction
@@ -615,77 +629,88 @@ TimeContext.stampUserMessages(msgs)
     const markerIdx = input.messages.findIndex((m) => m.info.id === user.id)
     if (!part || markerIdx < 0) return "virtual_empty" as const
 
-     // tail_start_id is undefined when the whole conversation was retained
-     // (keep.start === 0 in select): the retained region then starts at the
-     // first message. Otherwise it starts at the tail marker.
-     const tailIdx = part.tail_start_id
-       ? input.messages.findIndex((m) => m.info.id === part.tail_start_id)
-       : 0
-     if (tailIdx < 0 || tailIdx >= markerIdx) return "virtual_empty" as const
+      // No-tail encodings differ by consumer: select() returns tail_start_id
+      // undefined with head = ALL messages (everything fits - summarize the
+      // whole conversation), filterCompacted breaks on a marker with no tail,
+      // and virtual() treats undefined as "retained region starts at message 0".
+      // The last is authoritative here: the whole conversation was retained, so
+      // there is no pre-marker content a virtual compact could drop.
+      // tail_start_id is undefined when the whole conversation was retained
+      // (keep.start === 0 in select): the retained region then starts at the
+      // first message. Otherwise it starts at the tail marker.
+      const tailIdx = part.tail_start_id
+        ? input.messages.findIndex((m) => m.info.id === part.tail_start_id)
+        : 0
+      if (tailIdx < 0 || tailIdx >= markerIdx) return "virtual_empty" as const
 
-     const retained = turns(input.messages.slice(tailIdx, markerIdx))
-     if (retained.length === 0) return "virtual_empty" as const
+      const retained = turns(input.messages.slice(tailIdx, markerIdx))
+      if (retained.length === 0) return "virtual_empty" as const
 
-     const count = retained.length
-     const nextTail = count >= 2 ? retained[1]!.id : user.id
+      const count = retained.length
+      // Drop the oldest retained turn; the next tail becomes the second turn,
+      // or the marker itself when only one turn remains (making the NEXT
+      // virtual compact a no-op - nothing left to drop).
+      const nextTail = count >= 2 ? retained[1]!.id : user.id
 
-     const ctx = yield* InstanceState.context
-     const markerMsg = yield* session.updateMessage({
-       id: MessageID.ascending(),
-       role: "user",
-       sessionID: input.sessionID,
-       agent: user.agent,
-       model: user.model,
-       time: { created: Date.now() },
-     })
-     yield* session.updatePart({
-       id: PartID.ascending(),
-       messageID: markerMsg.id,
-       sessionID: input.sessionID,
-       type: "compaction",
-       auto: false,
-       tail_start_id: nextTail,
+      const ctx = yield* InstanceState.context
+      const markerMsg = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: input.sessionID,
+        agent: user.agent,
+        model: user.model,
+        time: { created: Date.now() },
+      })
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: markerMsg.id,
+        sessionID: input.sessionID,
+        type: "compaction",
+        auto: false,
+        tail_start_id: nextTail,
       virtual: true,
-     })
+      })
 
-     const note = `Pre-compaction tail reduced: ${count} → ${count - 1}. Undo (/undo) to restore the previous state.`
-     const summaryMsg: SessionV1.Assistant = {
-       id: MessageID.ascending(),
-       role: "assistant",
-       sessionID: input.sessionID,
-       mode: "compaction",
-       agent: "compaction",
-       variant: user.model.variant,
-       summary: true,
-       finish: "end_turn",
-       path: { cwd: ctx.directory, root: ctx.worktree },
-       cost: 0,
-       tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-       modelID: user.model.modelID,
-       providerID: user.model.providerID,
-       parentID: markerMsg.id,
+      const note = `Pre-compaction tail reduced: ${count} → ${count - 1}. Undo (/undo) to restore the previous state.`
+      const summaryMsg: SessionV1.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        sessionID: input.sessionID,
+        mode: "compaction",
+        agent: "compaction",
+        variant: user.model.variant,
+        summary: true,
+        finish: "end_turn",
+        path: { cwd: ctx.directory, root: ctx.worktree },
+        cost: 0,
+        tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: user.model.modelID,
+        providerID: user.model.providerID,
+        parentID: markerMsg.id,
       time: { created: Date.now(), completed: Date.now() },
-     }
-     yield* session.updateMessage(summaryMsg)
-     yield* session.updatePart({
-       id: PartID.ascending(),
-       messageID: summaryMsg.id,
-       sessionID: input.sessionID,
-       type: "text",
+      }
+      yield* session.updateMessage(summaryMsg)
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: summaryMsg.id,
+        sessionID: input.sessionID,
+        type: "text",
       text: note,
       time: { start: Date.now(), end: Date.now() },
-     })
+      })
 
-     yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
-     return "virtual_reduced" as const
-   })
+      yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
+      return "virtual_reduced" as const
+    })
 
     const prompt = Effect.fn("SessionCompaction.prompt")(function* (input: {
       sessionID: SessionID
       messages: SessionV1.WithParts[]
     }) {
       const prior = completedCompactions(input.messages)
-     const previousSummary = prior.findLast((item) => !item.virtual)?.summary ?? prior.at(-1)?.summary
+      // Same exclusion as process(): virtual notes are not summaries, else a
+      // real compaction summarizes a summary-of-notes.
+      const previousSummary = prior.findLast((item) => !item.virtual)?.summary ?? prior.at(-1)?.summary
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
         { sessionID: input.sessionID },
@@ -814,7 +839,7 @@ TimeContext.stampUserMessages(msgs)
       prune,
       process: processCompaction,
       create,
-     virtual,
+      virtual,
       prompt,
       finalize,
     })

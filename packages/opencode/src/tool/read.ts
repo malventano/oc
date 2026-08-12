@@ -346,6 +346,8 @@ export const ReadTool = Tool.define<
         const tag = recordSnapshot(filepath, snapshotText, seen)
         output += `[${hashlineHeaderPath(instance.directory, filepath)}#${tag}]\n`
       }
+      // Anchor hashes the FULL untruncated line so truncated reads still yield
+      // valid anchors (the display line may be capped; the hash is not).
       output += file.raw.map((line, i) => `${hashlineRef(i + file.offset, file.full[i] ?? line)}:${line}`).join("\n")
 
       const last = file.offset + file.raw.length - 1
