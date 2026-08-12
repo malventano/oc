@@ -42,7 +42,10 @@ export const SQUASH_HINT_MIN_CHARS = 8192
 */
 export function stampSquashHint(output: { output?: string; [key: string]: unknown }): void {
  if (typeof output.output !== "string") return
- if (output.output.includes("<system-reminder>")) return
+ // Skip only an existing squash hint, not other reminders: stampToolOutput
+ // runs first and appends the timestamp, so a generic reminder check would
+ // make the hint never fire on any tool output (0065 regression, fixed 0068).
+ if (output.output.includes("Very large tool output")) return
  const len = output.output.length
  if (len < SQUASH_HINT_MIN_CHARS) return
  const tokens = Math.round(len / 4)
