@@ -210,6 +210,18 @@ export function Session() {
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+ // Marker message ids whose compaction part is `virtual` (created by the
+ // virtual-compact path). Their synthetic summaries render as compact blocks
+ // instead of full assistant messages, mirroring the undo block.
+ const virtualCompactionMarkers = createMemo(() => {
+   const set = new Set<string>()
+   for (const message of messages()) {
+     if (message.role !== "user") continue
+     const parts = sync.data.part[message.id] ?? []
+     if (parts.some((p) => p.type === "compaction" && p.virtual === true)) set.add(message.id)
+   }
+   return set
+ })
   const messagesBeforeRevert = () => {
     const messageID = session()?.revert?.messageID
     if (!messageID) return messages()
@@ -576,13 +588,29 @@ export function Session() {
           })
           return
         }
-        void sdk.client.session.summarize({
-          sessionID: route.sessionID,
-          modelID: selectedModel.modelID,
-          providerID: selectedModel.providerID,
-          variant: local.model.variant.current(),
-        })
-        dialog.clear()
+       void sdk.client.session
+         .summarize({
+           sessionID: route.sessionID,
+           modelID: selectedModel.modelID,
+           providerID: selectedModel.providerID,
+           variant: local.model.variant.current(),
+         })
+         .then((outcome) => {
+         if (outcome.data === "virtual_empty") {
+          toast.show({
+            variant: "warning",
+            message: "Pre-compaction tail is empty. Nothing to reduce.",
+            duration: 3000,
+          })
+        } else if (outcome.data === "in_progress") {
+          toast.show({
+            variant: "info",
+            message: "Compaction already in progress.",
+            duration: 3000,
+          })
+        }
+       })
+       dialog.clear()
       },
     },
     {
@@ -1283,6 +1311,18 @@ export function Session() {
                           pending={pending()}
                         />
                       </Match>
+                     <Match
+                       when={
+                         message.role === "assistant" &&
+                         message.parentID !== undefined &&
+                         virtualCompactionMarkers().has(message.parentID)
+                       }
+                     >
+                       <VirtualCompactionBlock
+                         parts={sync.data.part[message.id] ?? []}
+                         message={message as AssistantMessage}
+                       />
+                     </Match>
                       <Match when={message.role === "assistant"}>
                         <AssistantMessage
                           last={lastAssistant()?.id === message.id}
@@ -1466,6 +1506,35 @@ function UserMessage(props: {
       </Show>
     </>
   )
+}
+
+// Synthetic summary of a "virtual" compaction (no LLM turn): a compact
+// bordered block like the undo/revert block, carrying the note text.
+function VirtualCompactionBlock(props: { message: AssistantMessage; parts: Part[] }) {
+ const { theme } = useTheme()
+ const note = createMemo(() =>
+   props.parts
+     .filter((p): p is TextPart => p.type === "text")
+     .map((p) => p.text)
+     .filter(Boolean)
+     .join("\n\n"),
+ )
+ return (
+   <Show when={note()}>
+     <box
+       ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+       marginTop={1}
+       flexShrink={0}
+       border={["left"]}
+       customBorderChars={SplitBorder.customBorderChars}
+       borderColor={theme.backgroundPanel}
+     >
+       <box paddingTop={1} paddingBottom={1} paddingLeft={2} backgroundColor={theme.backgroundPanel}>
+         <text fg={theme.textMuted}>{note()}</text>
+       </box>
+     </box>
+   </Show>
+ )
 }
 
 function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
