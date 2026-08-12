@@ -611,6 +611,9 @@ export const ShellTool = Tool.define(
               // pkill -f matches the bash -c wrapper's own command line and kills the
               // tool's process, hanging the session. Ported from the tool-refine plugin
               // (patch 0036); the plugin's vllm-start guard stays env-specific.
+              // Deliberately unanchored (matches `echo "pkill -f x"` too):
+              // byte-equivalent port of the plugin hook; unlike kill -9
+              // below, quoted-text false positives are accepted.
               if (/pkill\s+.*-f/.test(params.command)) {
                 throw new Error(
                   "BLOCKED: pkill -f kills the bash tool's own process and hangs the session. " +

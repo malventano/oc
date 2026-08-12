@@ -82,32 +82,32 @@ export function SubagentFooter() {
         backgroundColor={theme.backgroundPanel}
       >
         <box flexDirection="row" justifyContent="space-between" gap={1} minWidth={0} overflow="hidden">
-         <box flexDirection="row" gap={1} flexGrow={1} minWidth={0} overflow="hidden">
-           <text flexShrink={0} fg={theme.text} wrapMode="none">
+          <box flexDirection="row" gap={1} flexGrow={1} minWidth={0} overflow="hidden">
+            <text flexShrink={0} fg={theme.text} wrapMode="none">
               <b>{subagentInfo().label}</b>
             </text>
             <Show when={subagentInfo().total > 0}>
-             <text flexShrink={0} style={{ fg: theme.textMuted }} wrapMode="none">
+              <text flexShrink={0} style={{ fg: theme.textMuted }} wrapMode="none">
                 ({subagentInfo().index} of {subagentInfo().total})
               </text>
             </Show>
-           <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
-           <box flexShrink={1} minWidth={0}>
-             <text fg={theme.textMuted} wrapMode="none" truncate>
-               {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
-               <Show when={session()?.title}>{(t) => <span> · {t()}</span>}</Show>
-             </text>
-           </box>
+            <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
+            <box flexShrink={1} minWidth={0}>
+              <text fg={theme.textMuted} wrapMode="none" truncate>
+                {abbreviateHome(location()?.directory ?? paths.cwd, paths.home)}
+                <Show when={session()?.title}>{(t) => <span> · {t()}</span>}</Show>
+              </text>
+            </box>
           </box>
-         <box flexDirection="row" gap={1} flexShrink={0}>
-           <Show when={usage()}>
-             {(item) => (
-               <text fg={theme.textMuted} wrapMode="none">
-                 {[`${getStreamBatchWindow()}ms`, item().context, item().cost].filter(Boolean).join(" · ")}
-               </text>
-             )}
-           </Show>
-           <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
+          <box flexDirection="row" gap={1} flexShrink={0}>
+            <Show when={usage()}>
+              {(item) => (
+                <text fg={theme.textMuted} wrapMode="none">
+                  {[`${getStreamBatchWindow()}ms`, item().context, item().cost].filter(Boolean).join(" · ")}
+                </text>
+              )}
+            </Show>
+            <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
             <box
               onMouseOver={() => setHover("parent")}
               onMouseOut={() => setHover(null)}

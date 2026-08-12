@@ -13,6 +13,9 @@ type Run = { type: "equal" | "removed" | "added"; oldStart: number; newStart: nu
 export function diffLineRuns(oldLines: string[], newLines: string[]): Run[] {
   const n = oldLines.length
   const m = newLines.length
+  // LCS table guard: n*m cells is quadratic in time and memory. Beyond 50M
+  // cells the diff degenerates to all-removed + all-added runs, which the
+  // anchor remap below fails closed on (no equal runs = no anchors to remap).
   if (n * m > 50000000) {
     return [
       ...(n > 0 ? [{ type: "removed" as const, oldStart: 0, newStart: 0, count: n }] : []),
@@ -184,6 +187,9 @@ export function remapEditsToCurrent(
     out.push(next)
   }
 
+  // delta === 0 with a uniform zero shift means the anchors are stale (content
+  // changed in place, so offsets cannot fix it) - fail closed. delta === null
+  // means mixed/non-uniform shifts, also unrecoverable.
   if (!hadAnchored || delta === null || delta === 0) return null
   return out
 }

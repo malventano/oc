@@ -521,103 +521,109 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
 })
 
 export function filterCompacted(msgs: Iterable<WithParts>) {
- const all = [...msgs]
- const result = [] as WithParts[]
- const completed = new Set<string>()
- let retain: MessageID | undefined
- for (const msg of all) {
-   result.push(msg)
-   if (retain) {
-     if (msg.info.id === retain) break
-     continue
-   }
-   if (msg.info.role === "user" && completed.has(msg.info.id)) {
-     const part = msg.parts.find((item): item is CompactionPart => item.type === "compaction")
-     if (!part) continue
-     if (!part.tail_start_id) break
-     retain = part.tail_start_id
-     if (msg.info.id === retain) break
-     continue
-   }
-   if (msg.info.role === "user" && completed.has(msg.info.id) && msg.parts.some((part) => part.type === "compaction"))
-     break
-   if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
-     completed.add(msg.info.parentID)
- }
- result.reverse()
+  const all = [...msgs]
+  const result = [] as WithParts[]
+  const completed = new Set<string>()
+  let retain: MessageID | undefined
+  for (const msg of all) {
+    result.push(msg)
+    if (retain) {
+      if (msg.info.id === retain) break
+      continue
+    }
+    if (msg.info.role === "user" && completed.has(msg.info.id)) {
+      const part = msg.parts.find((item): item is CompactionPart => item.type === "compaction")
+      if (!part) continue
+      if (!part.tail_start_id) break
+      retain = part.tail_start_id
+      if (msg.info.id === retain) break
+      continue
+    }
+    if (msg.info.role === "user" && completed.has(msg.info.id) && msg.parts.some((part) => part.type === "compaction"))
+      break
+    if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
+      completed.add(msg.info.parentID)
+  }
+  result.reverse()
 
- const compactionIndex = result.findLastIndex(
-   (msg) =>
-     msg.info.role === "user" &&
-     msg.parts.some((item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined),
- )
- const compaction = result[compactionIndex]
- const part = compaction?.parts.find(
-   (item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined,
- )
- const summaryIndex = compaction
-   ? result.findIndex(
-       (msg, index) =>
-         index > compactionIndex &&
-         msg.info.role === "assistant" &&
-         msg.info.summary &&
-         msg.info.parentID === compaction.info.id,
-     )
-   : -1
- const tailIndex = part?.tail_start_id ? result.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
- const ordered = (() => {
-   if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
-     return [
-       ...result.slice(compactionIndex, summaryIndex + 1),
-       ...result.slice(tailIndex, compactionIndex),
-       ...result.slice(summaryIndex + 1),
-     ]
-   }
-   return result
- })()
+  const compactionIndex = result.findLastIndex(
+    (msg) =>
+      msg.info.role === "user" &&
+      msg.parts.some((item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined),
+  )
+  const compaction = result[compactionIndex]
+  const part = compaction?.parts.find(
+    (item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined,
+  )
+  const summaryIndex = compaction
+    ? result.findIndex(
+        (msg, index) =>
+          index > compactionIndex &&
+          msg.info.role === "assistant" &&
+          msg.info.summary &&
+          msg.info.parentID === compaction.info.id,
+      )
+    : -1
+  const tailIndex = part?.tail_start_id ? result.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
+  const ordered = (() => {
+    if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
+      return [
+        ...result.slice(compactionIndex, summaryIndex + 1),
+        ...result.slice(tailIndex, compactionIndex),
+        ...result.slice(summaryIndex + 1),
+      ]
+    }
+    return result
+  })()
 
- // Virtual compaction markers and their synthetic summaries are TUI
- // artifacts: they must never reach the model request. The retain cut above
- // targets the newest marker's tail; when that tail is newer than the last
- // REAL compaction pair (a virtual compact subtracting another marker), the
- // pair is cut too, so it is re-inserted at the front of the result.
- const virtualIds = new Set<string>()
- for (const msg of all) {
-   if (msg.info.role !== "user") continue
-   if (msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual === true)) virtualIds.add(msg.info.id)
- }
- const isVirtualArtifact = (m: WithParts) =>
-   virtualIds.has(m.info.id) || (m.info.role === "assistant" && virtualIds.has(m.info.parentID ?? ""))
+  // Virtual compaction markers and their synthetic summaries are TUI
+  // artifacts: they must never reach the model request. The retain cut above
+  // targets the newest marker's tail; when that tail is newer than the last
+  // REAL compaction pair (a virtual compact subtracting another marker), the
+  // pair is cut too, so it is re-inserted at the front of the result.
+  const virtualIds = new Set<string>()
+  for (const msg of all) {
+    if (msg.info.role !== "user") continue
+    if (msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual === true)) virtualIds.add(msg.info.id)
+  }
+  const isVirtualArtifact = (m: WithParts) =>
+    virtualIds.has(m.info.id) || (m.info.role === "assistant" && virtualIds.has(m.info.parentID ?? ""))
 
- let realMarker: WithParts | undefined
- let realSummary: WithParts | undefined
- const chronological = [...all].reverse()
- for (let i = 0; i < chronological.length; i++) {
-   const msg = chronological[i]!
-   if (msg.info.role !== "user") continue
-   if (
-    !msg.parts.some(
-      (p): p is CompactionPart => p.type === "compaction" && p.virtual !== true,
-    )
-  ) {
-     continue
-   }
-   realMarker = msg
-   realSummary = undefined
-   for (let j = i + 1; j < chronological.length; j++) {
-     const s = chronological[j]!
-     if (s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id) {
-       realSummary = s
-       break
-     }
-   }
- }
+  // Find the NEWEST real (non-virtual) compaction marker: chronological is
+  // oldest-first, so the first real marker found is the newest, and its
+  // summary (created after the marker) sits at a larger index. Only the
+  // newest pair can be cut by the retain logic above, so older pairs need
+  // no re-insertion. A newest marker may lack a summary (compaction still
+  // running) - the re-insert below then falls back to the bare marker.
+  let realMarker: WithParts | undefined
+  let realSummary: WithParts | undefined
+  const chronological = [...all].reverse()
+  for (let i = 0; i < chronological.length; i++) {
+    const msg = chronological[i]!
+    if (msg.info.role !== "user") continue
+    if (
+      !msg.parts.some(
+        (p): p is CompactionPart => p.type === "compaction" && p.virtual !== true,
+      )
+    ) {
+      continue
+    }
+    realMarker = msg
+    for (let j = i + 1; j < chronological.length; j++) {
+      const s = chronological[j]!
+      if (s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id) {
+        realSummary = s
+        break
+      }
+    }
+    break
+  }
 
- const out = ordered.filter((m) => !isVirtualArtifact(m))
-if (realMarker && !out.some((m) => m.info.id === realMarker!.info.id)) {
+  const out = ordered.filter((m) => !isVirtualArtifact(m))
+  if (realMarker && !out.some((m) => m.info.id === realMarker!.info.id)) {
   out.unshift(...(realSummary ? [realMarker, realSummary] : [realMarker]))
-}
- return out
+  }
+  return out
 }
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {

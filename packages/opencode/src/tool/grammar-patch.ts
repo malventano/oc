@@ -24,6 +24,9 @@ export type GrammarSection = {
 
 export type ParseResult = { ok: true; files: GrammarSection[] } | { ok: false; errors: string[] }
 
+// Grammar-side charsets are deliberately WIDER than the engine's (16-letter
+// alphabet / 4-hex tags): the grammar accepts, parseHashlineRef and the
+// anchor validators enforce strictness with precise errors.
 const ID_CHARS = "[0-9A-Z]{2}"
 const ANCHOR = `\\d+#${ID_CHARS}`
 const REG = "@[A-Za-z0-9_-]+"
