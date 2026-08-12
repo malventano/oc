@@ -15,10 +15,11 @@ export type GrammarOp =
   | { type: "paste"; register: string; insert_after_line?: string; insert_before_line?: string }
 
 export type GrammarSection = {
-  filePath: string
-  edits: GrammarOp[]
-  delete?: boolean
-  rename?: string
+ filePath: string
+ tag?: string
+ edits: GrammarOp[]
+ delete?: boolean
+ rename?: string
 }
 
 export type ParseResult = { ok: true; files: GrammarSection[] } | { ok: false; errors: string[] }
@@ -104,7 +105,7 @@ export function parsePatch(input: string | null | undefined): ParseResult {
 
     const sec = /^\[([^#\r\n]+)(?:#([0-9A-Za-z]{1,16}))?\]$/.exec(trimmed)
     if (sec) {
-      cur = { filePath: sec[1], edits: [] }
+     cur = { filePath: sec[1], edits: [], tag: sec[2] }
       files.push(cur)
       body = null
       fileLevelDone = false

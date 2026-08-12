@@ -17,7 +17,7 @@ import * as Tool from "../../src/tool/tool"
 import { testEffect } from "../lib/effect"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { Config } from "../../src/config/config"
-import { clearSnapshots, recordSnapshot } from "../../src/tool/hashline-store"
+import { clearSnapshots, fileTag, recordSnapshot } from "../../src/tool/hashline-store"
 
 const ctx = {
   sessionID: SessionID.make("ses_test-edit-session"),
@@ -1049,4 +1049,58 @@ describe("0055 escape-payload hardening", () => {
       expect(yield* load(filepath)).toBe(rows.join("\n") + "\n")
     }),
   )
+})
+
+describe("basename fallback resolution", () => {
+ it.instance("resolves a bare basename to the unique file in the tree", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const filepath = path.join(test.directory, "nested", "dir", "file.txt")
+     yield* putSnap(filepath, "one\n")
+     const result = yield* run({
+       input: ["*** Begin Patch", "[file.txt#A1B2]", `SET ${hashlineRef(1, "one")}:`, "+ two", "*** End Patch"].join("\n"),
+     })
+     expect(result.output).toContain("Edit applied successfully")
+     expect(yield* load(filepath)).toBe("two\n")
+   }),
+ )
+
+ it.instance("resolves a bare basename to the tag-matching file when ambiguous", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     const alpha = path.join(test.directory, "alpha", "shared.txt")
+     const beta = path.join(test.directory, "beta", "shared.txt")
+     yield* putSnap(alpha, "alpha-content\n")
+     yield* putSnap(beta, "beta-content\n")
+     const headerTag = fileTag("alpha-content\n")
+     const result = yield* run({
+       input: ["*** Begin Patch", `[shared.txt#${headerTag}]`, "APPEND:", "+ done", "*** End Patch"].join("\n"),
+     })
+     expect(result.output).toContain("Edit applied successfully")
+     expect(yield* load(alpha)).toBe("alpha-content\ndone\n")
+     expect(yield* load(beta)).toBe("beta-content\n")
+   }),
+ )
+
+ it.instance("rejects an ambiguous basename without a disambiguating tag", () =>
+   Effect.gen(function* () {
+     const test = yield* TestInstance
+     yield* putSnap(path.join(test.directory, "alpha", "shared.txt"), "alpha\n")
+     yield* putSnap(path.join(test.directory, "beta", "shared.txt"), "beta\n")
+     const err = yield* fail({
+       input: ["*** Begin Patch", "[shared.txt#A1B2]", "APPEND:", "+ done", "*** End Patch"].join("\n"),
+     })
+     expect(err.message).toContain("is ambiguous")
+     expect(err.message).toContain("shared.txt")
+   }),
+ )
+
+ it.instance("keeps the missing-file guard for basenames with no match", () =>
+   Effect.gen(function* () {
+     const err = yield* fail({
+       input: ["*** Begin Patch", "[ghost.txt#A1B2]", "SET 1#AB:", "+ x", "*** End Patch"].join("\n"),
+     })
+     expect(err.message).toContain("Missing file can only be created with append/prepend")
+   }),
+ )
 })
