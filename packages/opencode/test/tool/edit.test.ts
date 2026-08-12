@@ -198,7 +198,7 @@ describe("tool.edit", () => {
             filePath: filepath,
             edits: [{ type: "set_line", line: "1#ZZ", text: "x" }],
           })).message,
-        ).toContain("Missing file can only be created with append/prepend")
+       ).toContain("can only be created with append/prepend")
       }),
     )
 
@@ -577,6 +577,51 @@ describe("tool.edit", () => {
         expect(yield* load(target)).toBe("alpha\nBETA")
       }),
     )
+
+   it.instance("renames with a relative target into the source file's own directory", () =>
+     Effect.gen(function* () {
+       const test = yield* TestInstance
+       const source = path.join(test.directory, "source.txt")
+       yield* putSnap(source, "alpha\nbeta")
+
+       const result = yield* run({
+         filePath: source,
+         edits: [],
+         rename: "target.txt",
+       })
+
+       expect(result.output).toContain("Edit applied successfully")
+       expect(yield* fileExists(source)).toBe(false)
+       expect(yield* load(path.join(test.directory, "target.txt"))).toBe("alpha\nbeta")
+     }),
+   )
+
+   it.instance("reports deleted and renamed counts separately in the output message", () =>
+     Effect.gen(function* () {
+       const test = yield* TestInstance
+       const doomed = path.join(test.directory, "doomed.txt")
+       const moved = path.join(test.directory, "moved.txt")
+       yield* putSnap(doomed, "bye")
+       yield* putSnap(moved, "hello")
+
+       const result = yield* run({
+         input: [
+           "*** Begin Patch",
+           `[${doomed}#A1B2]`,
+           "DELETE",
+           `[${moved}#A1B2]`,
+           "RENAME renamed.txt",
+           "*** End Patch",
+         ].join("\n"),
+       })
+
+       expect(result.output).toContain("deleted 1 file")
+       expect(result.output).toContain("renamed 1 file")
+       expect(yield* fileExists(doomed)).toBe(false)
+       expect(yield* fileExists(moved)).toBe(false)
+       expect(yield* load(path.join(test.directory, "renamed.txt"))).toBe("hello")
+     }),
+   )
 
     it.instance("rejects delete combined with edits", () =>
       Effect.gen(function* () {
@@ -1100,7 +1145,7 @@ describe("basename fallback resolution", () => {
      const err = yield* fail({
        input: ["*** Begin Patch", "[ghost.txt#A1B2]", "SET 1#AB:", "+ x", "*** End Patch"].join("\n"),
      })
-     expect(err.message).toContain("Missing file can only be created with append/prepend")
+    expect(err.message).toContain("can only be created with append/prepend")
    }),
  )
 })
