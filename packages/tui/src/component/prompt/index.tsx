@@ -950,6 +950,18 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+ // Mirrors the session.interrupt guard: ESC only interrupts and sends the
+ // draft when all of these hold, so the hint must not show otherwise.
+ function escInterruptsAndSends() {
+   return (
+     status().type !== "idle" &&
+     store.prompt.input.trim() !== "" &&
+     !auto()?.visible &&
+     input.focused &&
+     props.sessionID &&
+     store.mode === "normal"
+   )
+ }
   let submitting = false
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
@@ -1495,11 +1507,6 @@ export function Prompt(props: PromptProps) {
                               </span>
                             </text>
                           </Show>
-                          <Show when={status().type !== "idle" && store.prompt.input.trim() !== ""}>
-                            <text flexShrink={0} wrapMode="none" fg={fadeColor(theme.textMuted, modelMetaAlpha())}>
-                      | enter: queue · esc: interrupt+send
-                            </text>
-                          </Show>
                         </box>
                       </Show>
                     </>
@@ -1616,11 +1623,21 @@ export function Prompt(props: PromptProps) {
                   </box>
                 </box>
                 <text flexShrink={0} fg={store.interrupt > 0 ? theme.primary : theme.text} wrapMode="none" truncate>
-                  esc{" "}
-                  <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                    {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                  </span>
-                </text>
+                 <Show
+                  when={escInterruptsAndSends()}
+                   fallback={
+                     <>
+                       esc{" "}
+                       <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
+                         {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                       </span>
+                     </>
+                   }
+                 >
+                   esc <span style={{ fg: theme.textMuted }}>interrupt+send</span>{" "}·{" "}enter{" "}
+                   <span style={{ fg: theme.textMuted }}>queue</span>
+                 </Show>
+               </text>
                 <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
                 <box flexShrink={1} minWidth={0} flexDirection="row" gap={1}>
                   <text fg={theme.textMuted} wrapMode="none" truncate>
