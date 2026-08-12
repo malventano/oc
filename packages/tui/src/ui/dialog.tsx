@@ -3,7 +3,7 @@ import { batch, createContext, createEffect, onCleanup, Show, useContext, type J
 import { useTheme } from "../context/theme"
 import { MouseButton, Renderable, RGBA } from "@opentui/core"
 import { createStore } from "solid-js/store"
-import { useToast } from "./toast"
+import { Toast, useToast } from "./toast"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { useBindings, useOpencodeModeStack } from "../keymap"
 import { useClipboard } from "../context/clipboard"
@@ -218,6 +218,7 @@ export function DialogProvider(props: ParentProps) {
           </Dialog>
         </Show>
       </box>
+      <Toast />
     </ctx.Provider>
   )
 }
