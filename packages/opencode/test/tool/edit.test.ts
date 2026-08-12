@@ -515,6 +515,66 @@ describe("tool.edit", () => {
         expect(result.metadata.filediff.additions).toBeGreaterThan(0)
       }),
     )
+
+   it.instance("emits per-file files metadata for multi-file patches", () =>
+     Effect.gen(function* () {
+       const test = yield* TestInstance
+       const first = path.join(test.directory, "first.txt")
+       const second = path.join(test.directory, "second.txt")
+       yield* putSnap(first, "alpha\nbeta")
+       yield* putSnap(second, "gamma")
+
+       const result = yield* run({
+      input: [
+        "*** Begin Patch",
+        `[${first}#A1B2]`,
+        `SET ${hashlineRef(2, "beta")}:`,
+        "+ BETA",
+        `[${second}#A1B2]`,
+        "APPEND:",
+        "+ delta",
+        "*** End Patch",
+      ].join("\n"),
+    })
+       expect(result.metadata.files).toBeDefined()
+       const files = result.metadata.files as Array<Record<string, unknown>>
+       expect(files.length).toBe(2)
+       expect(files[0]).toMatchObject({ type: "edit", filePath: first })
+       expect(files[1]).toMatchObject({ type: "edit", filePath: second })
+      expect(files[0].patch).toContain("+BETA")
+      expect(files[1].patch).toContain("+delta")
+     }),
+   )
+
+   it.instance("emits delete and move types in files metadata", () =>
+     Effect.gen(function* () {
+       const test = yield* TestInstance
+       const doomed = path.join(test.directory, "doomed.txt")
+       const moved = path.join(test.directory, "moved.txt")
+       yield* putSnap(doomed, "bye")
+       yield* putSnap(moved, "hello")
+
+       const result = yield* run({
+         input: [
+           "*** Begin Patch",
+           `[${doomed}#A1B2]`,
+           "DELETE",
+           `[${moved}#A1B2]`,
+           "RENAME renamed.txt",
+           "*** End Patch",
+         ].join("\n"),
+       })
+
+       const files = result.metadata.files as Array<Record<string, unknown>>
+       expect(files.length).toBe(2)
+       expect(files[0]).toMatchObject({ type: "delete", filePath: doomed })
+       expect(files[1]).toMatchObject({
+         type: "move",
+         filePath: moved,
+         movePath: path.join(test.directory, "renamed.txt"),
+       })
+     }),
+   )
   })
 
   describe("delete and rename", () => {
