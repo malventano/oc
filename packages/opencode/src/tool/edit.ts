@@ -505,9 +505,10 @@ export const EditTool = Tool.define(
              filePath: p.sourcePath,
             relativePath: path.relative(instance.directory, p.targetPath).replaceAll("\\", "/"),
              type: p.deleted ? "delete" : p.section.rename ? "move" : "edit",
+            changed: !p.noop && p.before !== p.after,
              patch: p.diff,
-             additions: p.lineCounts.new - p.lineCounts.old,
-             deletions: p.lineCounts.old - p.lineCounts.new,
+            additions: Math.max(0, p.lineCounts.new - p.lineCounts.old),
+            deletions: Math.max(0, p.lineCounts.old - p.lineCounts.new),
              movePath: p.section.rename ? p.targetPath : undefined,
            }))
            .filter((f) => f.type === "delete" || f.patch.length > 0)
