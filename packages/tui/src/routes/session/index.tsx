@@ -2097,6 +2097,7 @@ function BlockTool(props: {
   onClick?: () => void
   part?: ToolPart
   spinner?: boolean
+ gap?: number
 }) {
   const { theme } = useTheme()
   const renderer = useRenderer()
@@ -2110,7 +2111,7 @@ function BlockTool(props: {
       paddingBottom={1}
       paddingLeft={2}
       marginTop={1}
-      gap={1}
+     gap={props.gap ?? 1}
       backgroundColor={hover() ? theme.backgroundMenu : theme.backgroundPanel}
       customBorderChars={SplitBorder.customBorderChars}
       borderColor={theme.background}
@@ -2548,8 +2549,8 @@ function Edit(props: ToolProps) {
      <Match when={fileDiffs().length > 0}>
        <For each={fileDiffs()}>
          {(file) => (
-           <BlockTool title={fileTitle(file)} part={props.part}>
-           <Show when={file.patch.length > 0} fallback={file.type === "move" ? <text fg={theme.textMuted}>renamed, no content changes</text> : file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
+          <BlockTool title={fileTitle(file)} part={props.part} gap={file.additions + file.deletions > 0 ? 1 : 0}>
+           <Show when={file.additions + file.deletions > 0} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
                <box paddingLeft={1}>
                  <diff
                    diff={file.patch}
@@ -2899,9 +2900,10 @@ export function parseApplyPatchFiles(value: unknown) {
     const relativePath = stringValue(file.relativePath)
     const filePath = stringValue(file.filePath)
     const patch = stringValue(file.patch)
-    const deletions = numberValue(file.deletions)
-    if (!type || !relativePath || !filePath || patch === undefined || deletions === undefined) return []
-    return [{ type, relativePath, filePath, patch, deletions, movePath: stringValue(file.movePath) }]
+   const additions = numberValue(file.additions) ?? 0
+   const deletions = numberValue(file.deletions) ?? 0
+   if (!type || !relativePath || !filePath || patch === undefined) return []
+   return [{ type, relativePath, filePath, patch, additions, deletions, movePath: stringValue(file.movePath) }]
   })
 }
 
