@@ -1507,10 +1507,10 @@ TimeContext.stampUserMessages(msgs)
                 // Surface the auto-compaction as a red TUI toast (upper right),
                 // mirroring the overflow-compaction toast.
                 yield* events.publish(TuiEvent.ToastShow, {
-                 title: "Auto-compacting",
-                 message: "Stall guard fired 3 times this turn - auto-compacting the conversation to reset context.",
-                 variant: "error",
-                 duration: 8000,
+                  title: "Auto-compacting",
+                  message: "Stall guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                  variant: "error",
+                  duration: 8000,
                 }).pipe(Effect.ignore)
                 loopFires = 0
                 stallFires = 0
