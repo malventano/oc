@@ -667,6 +667,31 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   if (realMarker && !out.some((m) => m.info.id === realMarker!.info.id)) {
   out.unshift(...(realSummary ? [realMarker, realSummary] : [realMarker]))
   }
+
+  // Frozen-system epochs: a delta part announces drift against the snapshot
+  // of the epoch that created it. A compaction resets the epoch (new
+  // snapshot on the next user message), so deltas from superseded epochs are
+  // stale - the fresh snapshot already carries the change - and must not
+  // reach the model. Render-time filter only: the parts stay in the DB, so
+  // undoing past a compaction removes the pair, the boundary reverts, and
+  // the deltas resurface naturally. Boundary: the chronologically newest
+  // REAL summary (virtual markers and their synthetic summaries are TUI
+  // artifacts, excluded here too); deltas on user messages at-or-before it
+  // belong to superseded epochs.
+  let newestSummaryIndex = -1
+  for (let i = 0; i < chronological.length; i++) {
+    const m = chronological[i]!
+    if (m.info.role !== "assistant" || m.info.summary !== true) continue
+    if (virtualIds.has(m.info.parentID ?? "")) continue
+    newestSummaryIndex = i
+  }
+  if (newestSummaryIndex >= 0) {
+    const preBoundary = new Set(chronological.slice(0, newestSummaryIndex + 1).map((m) => m.info.id))
+    for (const msg of out) {
+      if (msg.info.role !== "user" || !preBoundary.has(msg.info.id)) continue
+      msg.parts = msg.parts.filter((p) => !(p.type === "text" && p.synthetic && p.metadata?.epochDelta))
+    }
+  }
   return out
 }
 
@@ -696,7 +721,7 @@ export function latest(msgs: WithParts[]) {
   return { user, assistant, finished, tasks }
 }
 
-function isAfter(info: Info, other?: Info) {
+export function isAfter(info: Info, other?: Info) {
   if (!other) return true
   if (info.time.created !== other.time.created) return info.time.created > other.time.created
   return info.id > other.id
