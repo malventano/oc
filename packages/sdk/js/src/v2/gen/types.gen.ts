@@ -1228,6 +1228,7 @@ export type GlobalEvent = {
             | UnknownError
             | MessageOutputLengthError
             | MessageAbortedError
+            | StallGuardError
             | StructuredOutputError
             | ContextOverflowError
             | ContentFilterError
@@ -2040,6 +2041,7 @@ export type Config = {
     policies?: Array<ConfigV2ExperimentalPolicy>
     hashline_autocorrect?: boolean
     hashline_seen_lines?: boolean
+    hashline_indent_hint?: boolean
   }
 }
 
@@ -2561,6 +2563,12 @@ export type NotFoundError = {
   }
 }
 
+export type SessionBusyError = {
+  _tag: "SessionBusyError"
+  sessionID: string
+  message: string
+}
+
 export type TextPartInput = {
   id?: string
   type: "text"
@@ -2607,12 +2615,6 @@ export type SubtaskPartInput = {
     modelID: string
   }
   command?: string
-}
-
-export type SessionBusyError = {
-  _tag: "SessionBusyError"
-  sessionID: string
-  message: string
 }
 
 export type EventTuiPromptAppend = {
@@ -5372,6 +5374,7 @@ export type SessionError = {
       | UnknownError
       | MessageOutputLengthError
       | MessageAbortedError
+      | StallGuardError
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
@@ -6697,6 +6700,7 @@ export type EventSessionError = {
       | UnknownError
       | MessageOutputLengthError
       | MessageAbortedError
+      | StallGuardError
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
@@ -9957,6 +9961,10 @@ export type SessionForkErrors = {
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * SessionBusyError
+   */
+  409: SessionBusyError
 }
 
 export type SessionForkError = SessionForkErrors[keyof SessionForkErrors]
@@ -9978,7 +9986,7 @@ export type SessionAbortData = {
   query?: {
     directory?: string
     workspace?: string
-    resume?: boolean
+    resume?: "true" | "false"
   }
   url: "/session/{sessionID}/abort"
 }

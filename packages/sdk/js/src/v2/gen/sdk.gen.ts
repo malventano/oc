@@ -3915,7 +3915,7 @@ export class Session2 extends HeyApiClient {
       sessionID: string
       directory?: string
       workspace?: string
-      resume?: boolean
+      resume?: "true" | "false"
     },
     options?: Options<never, ThrowOnError>,
   ) {

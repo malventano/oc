@@ -9,6 +9,7 @@ import { useDialog, type DialogContext } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import type { PromptInfo } from "../../component/prompt/history"
 import { stripPromptPartIDs as strip } from "../../prompt/part"
+import { useTheme } from "../../context/theme"
 
 export function DialogForkFromTimeline(props: { sessionID: string; onMove: (messageID?: string) => void }) {
   const sync = useSync()
@@ -17,6 +18,12 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
   const route = useRoute()
   const toast = useToast()
   const [pending, setPending] = createSignal(false)
+  const { theme } = useTheme()
+  // The whole dialog forks the same source session; a mid-turn fork would
+  // snapshot a partial trailing assistant message (truncated text, no
+  // step-finish). Lock every option while the source is busy or retrying -
+  // unlocks itself when the turn completes.
+  const busy = createMemo(() => (sync.data.session_status?.[props.sessionID]?.type ?? "idle") !== "idle")
 
   onMount(() => {
     dialog.setSize("large")
@@ -97,5 +104,17 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
     return [fullSession, ...result.reverse()]
   })
 
-  return <DialogSelect onMove={(option) => props.onMove(option.value)} title={pending() ? "Forking..." : "Fork session"} options={options()} />
+  return (
+    <DialogSelect
+      onMove={(option) => props.onMove(option.value)}
+      title={pending() ? "Forking..." : "Fork session"}
+      locked={pending() || busy()}
+      footer={
+        busy() ? (
+          <text fg={theme.warning}>Source session is busy - fork unlocks when the turn finishes</text>
+        ) : undefined
+      }
+      options={options()}
+    />
+  )
 }
