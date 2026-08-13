@@ -1682,6 +1682,42 @@ describe("indentation validator (changed-lines map)", () => {
     const changed = new Map<number, string>([[3, "  const b = 2"]])
     expect(findIndentWarnings(after, before, changed)).toEqual([])
   })
+  test("no warning for a markdown code-fence interior (diff block)", () => {
+    const before = "```diff\n context\n+added\n```\n"
+    const after = "```diff\n context updated\n+added\n```\n"
+    const changed = new Map<number, string>([[2, " context"]])
+    expect(findIndentWarnings(after, before, changed, { filePath: "x.md" })).toEqual([])
+  })
+
+  test("markdown still flags a real fold outside code fences", () => {
+    const before = "- item\n- item2\n"
+    const after = "- item\n - nested\n- item2\n"
+    const changed = new Map<number, string>([[2, "- item2"]])
+    const warnings = findIndentWarnings(after, before, changed, { filePath: "x.md" })
+    expect(warnings.some((w) => w.includes("one space OVER"))).toBe(true)
+  })
+
+  test("no warning for a template-literal interior (diff fixture)", () => {
+    const before = "const p = `*** Begin Patch\n@@\n context\n*** End Patch`\n"
+    const after = "const p = `*** Begin Patch\n@@\n context updated\n*** End Patch`\n"
+    const changed = new Map<number, string>([[3, " context"]])
+    expect(findIndentWarnings(after, before, changed, { filePath: "x.ts" })).toEqual([])
+  })
+
+  test("no fence exemption outside markdown files", () => {
+    const before = "```diff\n context\n```\n"
+    const after = "```diff\n context updated\n```\n"
+    const changed = new Map<number, string>([[2, " context"]])
+    const warnings = findIndentWarnings(after, before, changed, { filePath: "x.txt" })
+    expect(warnings.some((w) => w.includes("one space OVER"))).toBe(true)
+  })
+  test("unbalanced fences disable the markdown exemption (stray ```)", () => {
+    const before = "```ts\n code\n```\n```\ntext\n"
+    const after = "```ts\n code\n```\n```\n text\n"
+    const changed = new Map<number, string>([[5, "text"]])
+    const warnings = findIndentWarnings(after, before, changed, { filePath: "x.md" })
+    expect(warnings.some((w) => w.includes("one space OVER"))).toBe(true)
+  })
 
   it.instance("auto-corrects a uniformly shifted block end-to-end when the patch also inserts (hint-normalize)", () =>
     Effect.gen(function* () {
