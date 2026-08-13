@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, mock } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer } from "effect"
+import { Effect, Exit, Fiber, Layer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
+import { SessionRunState } from "../../src/session/run-state"
+import { pollWithTimeout } from "../lib/effect"
 
-const it = testEffect(Layer.mergeAll(LayerNode.compile(SessionNs.node), httpApiLayer))
+const it = testEffect(Layer.mergeAll(LayerNode.compile(SessionNs.node), LayerNode.compile(SessionRunState.node), httpApiLayer))
 
 afterEach(async () => {
   mock.restore()
@@ -68,6 +70,38 @@ describe("session action routes", () => {
 
         yield* SessionNs.Service.use((svc) => svc.remove(fork.id).pipe(Effect.ignore))
         yield* SessionNs.Service.use((svc) => svc.remove(session.id).pipe(Effect.ignore))
+      }),
+    { git: true },
+  )
+  it.instance(
+    "fork route rejects busy sessions with 409",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const session = yield* Effect.acquireRelease(SessionNs.use.create({}), (created) =>
+          SessionNs.use.remove(created.id).pipe(Effect.ignore),
+        )
+        const runState = yield* SessionRunState.Service
+        // Keep a fake turn running so the source session is busy.
+        const fiber = yield* runState
+          .ensureRunning(session.id, Effect.never, Effect.never)
+          .pipe(Effect.forkScoped)
+        yield* pollWithTimeout(
+          Effect.gen(function* () {
+            const busy = Exit.isFailure(yield* runState.assertNotBusy(session.id).pipe(Effect.exit))
+            return busy ? (true as const) : undefined
+          }),
+          "session never became busy",
+        )
+
+        const forked = yield* requestInDirectory(`/session/${session.id}/fork`, test.directory, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        })
+        expect(forked.status).toBe(409)
+
+        yield* Fiber.interrupt(fiber)
       }),
     { git: true },
   )
