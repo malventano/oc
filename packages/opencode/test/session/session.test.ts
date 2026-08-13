@@ -270,6 +270,69 @@ describe("Session", () => {
     }),
   )
 
+  it.instance("bulk-copies messages and parts atomically and aggregates step-finish usage", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(session.create({ title: "usage-fork" }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      const user = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "user" as const,
+        sessionID: created.id,
+        agent: "default",
+        model: { providerID: "test", modelID: "test" },
+        time: { created: 1 },
+      } as SessionV1.User)
+      const assistant = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant" as const,
+        sessionID: created.id,
+        mode: "default",
+        agent: "default",
+        path: { cwd: "/tmp", root: "/tmp" },
+        cost: 0,
+        tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: "test",
+        providerID: "test",
+        parentID: user.id,
+        time: { created: 2 },
+      } as SessionV1.Assistant)
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: created.id,
+        type: "text",
+        text: "hello",
+      } as SessionV1.Part)
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: created.id,
+        type: "step-finish",
+        reason: "stop",
+        cost: 1.25,
+        tokens: { total: 100, input: 60, output: 40, reasoning: 5, cache: { read: 10, write: 20 } },
+      } as SessionV1.Part)
+
+      const fork = yield* Effect.acquireRelease(session.fork({ sessionID: created.id }), (info) =>
+        session.remove(info.id).pipe(Effect.ignore),
+      )
+      const messages = yield* session.messages({ sessionID: fork.id })
+      expect(messages).toHaveLength(2)
+      expect(messages.flatMap((m) => m.parts)).toHaveLength(2)
+
+      const info = yield* session.get(fork.id)
+      expect(info.tokens).toEqual({
+        input: 60,
+        output: 40,
+        reasoning: 5,
+        cache: { read: 10, write: 20 },
+      })
+      expect(info.cost).toBe(1.25)
+    }),
+  )
   it.instance("omits metadata when not provided", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
