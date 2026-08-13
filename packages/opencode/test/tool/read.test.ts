@@ -403,8 +403,8 @@ describe("tool.read truncation", () => {
       yield* put(path.join(dir, "offset.txt"), lines)
 
       const result = yield* exec(dir, { filePath: path.join(dir, "offset.txt"), offset: 10, limit: 5 })
-      expect(result.output).toMatch(/10#[A-Z]{2}:line10/)
-      expect(result.output).toMatch(/14#[A-Z]{2}:line14/)
+      expect(result.output).toMatch(/10#[A-Z]{2}\[\d+\]:line10/)
+      expect(result.output).toMatch(/14#[A-Z]{2}\[\d+\]:line14/)
       expect(result.output).not.toMatch(/9#[A-Z]{2}:line10/)
       expect(result.output).not.toMatch(/15#[A-Z]{2}:line15/)
       expect(result.output).toContain("line10")
