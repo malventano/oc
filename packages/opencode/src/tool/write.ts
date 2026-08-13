@@ -14,6 +14,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { annotateDiff, trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
+import * as NFS from "fs/promises"
 import { readForSnapshot, recordSnapshot } from "./hashline-store"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
@@ -72,7 +73,12 @@ export const WriteTool = Tool.define(
             const count = snapshotText === "" ? 0 : snapshotText.endsWith("\n") ? snapshotText.split("\n").length - 1 : snapshotText.split("\n").length
             recordSnapshot(filepath, snapshotText, Array.from({ length: count }, (_, i) => i + 1))
           }
-
+          // Post-write stat backing fileDelta staleness detection: session
+          // self-edits are never re-reminded; external changes after the
+          // write diff against this stat.
+          const postStat = yield* Effect.tryPromise(() => NFS.stat(filepath)).pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+          )
           let output = "Wrote file successfully."
           const annotated = annotateDiff(diff)
           if (annotated) {
@@ -110,6 +116,7 @@ export const WriteTool = Tool.define(
             title: path.relative(instance.worktree, filepath),
             metadata: {
               diagnostics,
+              stat: postStat ? { mtimeMs: postStat.mtimeMs, size: postStat.size } : undefined,
               filepath,
               exists: exists,
             },

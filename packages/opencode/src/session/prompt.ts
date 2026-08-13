@@ -9,6 +9,7 @@ import { Skill } from "@/skill"
 import { TimeContext } from "./time-context"
 import { Epoch } from "./epoch"
 import { SkillDelta } from "./skill-delta"
+import { FileDelta } from "./file-delta"
 
 import { LoopGuard } from "./loop-guard"
 import { StallGuard } from "./stall-guard"
@@ -1421,6 +1422,16 @@ TimeContext.stampUserMessages(msgs)
              step,
              compactingPrompt: !!compactingPrompt,
              changed: skillChanges,
+           }).pipe(
+             Effect.provideService(Session.Service, sessions),
+           )
+           yield* FileDelta.apply({
+             msgs,
+             sessionID,
+             user: lastUserMsg!,
+             userSystem: lastUser.system,
+             step,
+             compactingPrompt: !!compactingPrompt,
            }).pipe(
              Effect.provideService(Session.Service, sessions),
            )
