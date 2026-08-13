@@ -527,24 +527,24 @@ describe("tool.edit", () => {
         yield* putSnap(second, "gamma")
 
         const result = yield* run({
-      input: [
-        "*** Begin Patch",
-        `[${first}#A1B2]`,
-        `SET ${hashlineRef(2, "beta")}:`,
-        "+ BETA",
-        `[${second}#A1B2]`,
-        "APPEND:",
-        "+ delta",
-        "*** End Patch",
-      ].join("\n"),
-    })
+          input: [
+            "*** Begin Patch",
+            `[${first}#A1B2]`,
+            `SET ${hashlineRef(2, "beta")}:`,
+            "+ BETA",
+            `[${second}#A1B2]`,
+            "APPEND:",
+            "+ delta",
+            "*** End Patch",
+          ].join("\n"),
+        })
         expect(result.metadata.files).toBeDefined()
         const files = result.metadata.files as Array<Record<string, unknown>>
         expect(files.length).toBe(2)
-      expect(files[0]).toMatchObject({ type: "edit", filePath: first, changed: true })
-      expect(files[1]).toMatchObject({ type: "edit", filePath: second, changed: true })
-      expect(files[0].patch).toContain("+BETA")
-      expect(files[1].patch).toContain("+delta")
+        expect(files[0]).toMatchObject({ type: "edit", filePath: first, changed: true })
+        expect(files[1]).toMatchObject({ type: "edit", filePath: second, changed: true })
+        expect(files[0].patch).toContain("+BETA")
+        expect(files[1].patch).toContain("+delta")
       }),
     )
 
@@ -569,13 +569,13 @@ describe("tool.edit", () => {
 
         const files = result.metadata.files as Array<Record<string, unknown>>
         expect(files.length).toBe(2)
-      expect(files[0]).toMatchObject({ type: "delete", filePath: doomed, changed: true })
+        expect(files[0]).toMatchObject({ type: "delete", filePath: doomed, changed: true })
         expect(files[1]).toMatchObject({
-        type: "move",
-        filePath: moved,
-        changed: false,
-        movePath: path.join(test.directory, "renamed.txt"),
-      })
+          type: "move",
+          filePath: moved,
+          changed: false,
+          movePath: path.join(test.directory, "renamed.txt"),
+        })
       }),
     )
   })
@@ -1172,7 +1172,7 @@ describe("grammar parser + legacy hints", () => {
       expect(result.output).not.toContain("indentation validator")
     }),
   )
- 
+
   it.instance("does not warn on correctly indented comments", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
@@ -1198,10 +1198,10 @@ describe("grammar parser + legacy hints", () => {
       })
       expect(yield* load(filepath)).toContain("  /* one space short")
       expect(result.output).not.toContain("indentation validator")
-      
+
     }),
   )
-  
+
   it.instance("does not warn on a correctly indented block comment", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
@@ -1231,7 +1231,7 @@ describe("grammar parser + legacy hints", () => {
       expect(result.output).not.toContain("indentation validator")
     }),
   )
-  
+
   it.instance("does not warn about pre-existing comments the edit did not touch", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
@@ -1256,8 +1256,8 @@ describe("grammar parser + legacy hints", () => {
       })
       expect(yield* load(filepath)).toContain("  const beta = 2")
       expect(result.output).not.toContain("indentation validator")
-      
-      
+
+
     }),
   )
 
@@ -1296,7 +1296,7 @@ describe("grammar parser + legacy hints", () => {
       })
       expect(yield* load(filepath)).toContain("          const beta = 22")
       expect(result.output).not.toContain("indentation validator")
-      
+
     }),
   )
 
@@ -1332,7 +1332,7 @@ describe("grammar parser + legacy hints", () => {
       })
       expect(yield* load(filepath)).toContain("  // three spaces, one over")
       expect(result.output).not.toContain("indentation validator")
-      
+
     }),
   )
 
@@ -1371,8 +1371,8 @@ describe("grammar parser + legacy hints", () => {
       })
       expect(yield* load(filepath)).toContain("          const beta = 22")
       expect(result.output).not.toContain("indentation validator")
-      
-      
+
+
     }),
   )
 
@@ -1463,7 +1463,7 @@ describe("grammar parser + legacy hints", () => {
       expect(result.output).not.toContain("indentation validator")
     }),
   )
-  
+
   it.instance("auto-strips echoed first line end-to-end and notes it", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
@@ -1799,5 +1799,25 @@ describe("normalizeIndentToHint (hint-normalize)", () => {
     expect(edits).toHaveLength(2)
     expect(edits[0]).toMatchObject({ type: "cut" })
     expect(edits[1]).toMatchObject({ type: "paste" })
+  })
+  test("does not trim a uniform docblock body after a `/**` opener (decorative * rows)", () => {
+    const lines = ["/**", " * existing doc", " */"]
+    const edits: HashlineEditInput[] = [{ type: "insert_after", line: hashlineRef(1, lines[0]), text: [" * continued", " * more"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual([" * continued", " * more"])
+  })
+
+  test("does not trim an all-star block at hint+1 after a block-opener (min-rule)", () => {
+    const lines = ["function f() {", "  a()", "}"]
+    const edits: HashlineEditInput[] = [{ type: "insert_after", line: hashlineRef(1, lines[0]), text: ["   * note"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["   * note"])
+  })
+
+  test("pads a mixed-depth block inserted BEFORE a block closer (min-rule)", () => {
+    const lines = ["describe(\"x\", () => {", "  test(\"a\", () => {", "  })", "})"]
+    const edits: HashlineEditInput[] = [{ type: "insert_before", line: hashlineRef(4, lines[3]), text: [" test(\"b\", () => {", "   expect(true).toBe(true)", " })"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  test(\"b\", () => {", "    expect(true).toBe(true)", "  })"])
   })
 })

@@ -497,10 +497,10 @@ export function applyHashlineEdits(input: {
   const refs: Array<{ raw: string; line: number; id: string }> = []
   const replaceOps: Array<Extract<HashlineEdit, { type: "replace" }>> = []
   const ops: Splice[] = []
-// After-index -> original line text for lines a SET/REPLACE overwrote.
-// Keys index into the FINAL result (post-application); later splices at
-// lower indices shift earlier entries, tracked below.
-const changedLines = new Map<number, string>()
+  // After-index -> original line text for lines a SET/REPLACE overwrote.
+  // Keys index into the FINAL result (post-application); later splices at
+  // lower indices shift earlier entries, tracked below.
+  const changedLines = new Map<number, string>()
   const autocorrect = input.autocorrect ?? Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
   const aggressiveAutocorrect = input.aggressiveAutocorrect ?? Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
   const parseText = (text: TextValue) => {
@@ -742,8 +742,6 @@ const changedLines = new Map<number, string>()
         if (orig !== undefined) changedLines.set(op.start + k, orig)
       }
     }
-
-
     // This splice shifts every later line at index >= op.start by
     // (text.length - del); earlier entries keyed at or past the splice
     // point must move to their final positions. Entries inside the
