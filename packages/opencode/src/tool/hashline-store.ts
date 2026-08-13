@@ -24,6 +24,11 @@ export interface Snapshot {
   tag: string
   content: string
   seenLines: Set<number>
+  // Pre-change state (patch 0113): the content recorded BEFORE the last
+  // change, kept so stale-anchor substitution can verify the model's
+  // anchors against the version it actually saw (own-edit chains update
+  // the snapshot to == disk, which the remap path cannot recover from).
+  previous?: { tag: string; content: string }
 }
 
 const snapshots = new Map<string, Snapshot>()
@@ -37,10 +42,14 @@ export function recordSnapshot(path: string, content: string, seenLines?: Set<nu
   const key = FSUtil.resolve(path)
   const existing = snapshots.get(key)
   const merged = new Set(seenLines ?? [])
+  const previous =
+    existing && existing.content !== content
+      ? { tag: existing.tag, content: existing.content }
+      : existing?.previous
   if (existing && existing.tag === tag && existing.content === content) {
     for (const line of existing.seenLines) merged.add(line)
   }
-  snapshots.set(key, { tag, content, seenLines: merged })
+  snapshots.set(key, { tag, content, seenLines: merged, previous })
   if (snapshots.size > MAX_PATHS) {
     const oldest = snapshots.keys().next().value as string | undefined
     if (oldest !== undefined) snapshots.delete(oldest)

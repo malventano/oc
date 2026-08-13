@@ -112,10 +112,20 @@ describe("grammar-patch parsePatch", () => {
     expect(append.text).toEqual(["x", " x", "", "  y"])
   })
 
-  test("rejects `+x` content rows (separator space is required)", () => {
+  test("accepts `+x` content rows as `+ x` (0113 separator-fold acceptance, with a parse note)", () => {
     const result = parsePatch(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "+x", "*** End Patch"].join("\n"))
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const append = result.files[0].edits[0] as Extract<GrammarOp, { type: "append" }>
+      expect(append.text).toEqual(["x"])
+      expect(result.files[0].parseNotes?.some((n) => n.includes("accepted as `+ x`"))).toBe(true)
+    }
+  })
+
+  test("rejects `-` deletion rows (ranges delete implicitly, 0113)", () => {
+    const result = parsePatch(["*** Begin Patch", "[a.txt#A1B2]", "APPEND:", "- old line", "*** End Patch"].join("\n"))
     expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.errors[0]).toContain("separator space")
+    if (!result.ok) expect(result.errors[0]).toContain("no `-` deletion rows")
   })
 
   test("blank line is `+` alone", () => {

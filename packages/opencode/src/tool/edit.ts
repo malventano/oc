@@ -31,7 +31,7 @@ import {
   serializeHashlineContent,
 } from "./hashline"
 import { type GrammarOp as GrammarOpT, type GrammarSection as GrammarSectionT, parsePatch } from "./grammar-patch"
-import { remapEditsToCurrent } from "./hashline-recovery"
+import { diffLineRuns, remapEditsToCurrent, remappedAnchorsValidate, substituteSameLineAnchors } from "./hashline-recovery"
 import {
   fileTag,
   hashlineHeaderPath,
@@ -182,6 +182,7 @@ export const EditTool = Tool.define(
           const aggressiveAutocorrect = Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
           const enforceSeenLines = conf.experimental?.hashline_seen_lines !== false
           const indentHint = conf.experimental?.hashline_indent_hint !== false
+          const indentAutofix = conf.experimental?.hashline_indent_autofix !== false
           // aggressiveAutocorrect (echo-stripping + rewrap restore) is env-
           // gated, not config-gated: it rewrites the model's payload and
           // must stay opt-in per-launch; basic autocorrect is the safe,
@@ -386,6 +387,9 @@ export const EditTool = Tool.define(
 
               let appliedEdits = expandedEdits
               let recoveryWarning = ""
+              if (section.parseNotes?.length) {
+                recoveryWarning = `\n\n${section.parseNotes.join("\n")}`
+              }
 
               if (exists) {
                 const snapshot = snapshotOf(sourcePath)
@@ -418,6 +422,47 @@ export const EditTool = Tool.define(
                     appliedEdits = remapped
                     recoveryWarning =
                       "\n\nWarning: file changed since your read; anchors were remapped through unchanged lines. Re-read for fresh anchors if you continue editing."
+                  }
+                }
+                // 0113 stale-anchor recovery: the model's anchors can refer
+                // to a state that is neither the current snapshot nor disk
+                // (its own prior edit, or a parallel session's change).
+                // Tier 1: line-shift remap from the PREVIOUS snapshot -
+                // preserves content-position intent when lines MOVED (the
+                // anchored line now lives elsewhere; same-line substitution
+                // would hit whatever happens to sit there now). Accepted
+                // only when every remapped anchor validates against live
+                // content - fresh anchors from a post-shift read fail the
+                // gate and fall through untouched.
+                // Tier 2: same-line fresh-ID substitution (in-place content
+                // changes at the same line number).
+                // Anchors matching NO candidate (fabricated/guessed) keep
+                // the mismatch error below; substituted/remapped IDs are
+                // re-validated by applyHashlineEdits against live content
+                // before any splice.
+                if (snapshot) {
+                  const prevLines = snapshot.previous ? splitTextLines(snapshot.previous.content) : undefined
+                  let recovered = false
+                  if (prevLines) {
+                    const remapped = remapEditsToCurrent(appliedEdits, prevLines, parsed.lines)
+                    if (remapped && remappedAnchorsValidate(remapped, parsed.lines)) {
+                      appliedEdits = remapped
+                      recoveryWarning +=
+                        "\n\nWarning: anchors were remapped onto the current file (lines shifted since your read)."
+                      recovered = true
+                    }
+                  }
+                  if (!recovered) {
+                    const sub = substituteSameLineAnchors(appliedEdits, [
+                      parsed.lines,
+                      splitTextLines(snapshot.content),
+                      prevLines,
+                    ])
+                    if (sub && sub.substituted.length > 0) {
+                      appliedEdits = sub.edits
+                      recoveryWarning +=
+                        `\n\nWarning: stale anchor${sub.substituted.length > 1 ? "s" : ""} substituted against current content (file changed since your read): ${sub.substituted.join(", ")}`
+                    }
                   }
                 }
                 // No snapshot (e.g. after a restart): validate anchors against
@@ -455,6 +500,17 @@ export const EditTool = Tool.define(
                   if (hints.length > 0) throw new Error(`${message}${hints.join("")}`)
                 }
                 throw error
+              }
+              // 0113 indent auto-fix: correct ±1 folds on lines the edit
+              // actually changed (the separator-fold signature) at plan time
+              // so the applied content, diff, and snapshot all carry the
+              // corrected indent and the post-apply validator stays silent.
+              if (indentAutofix) {
+                const fixed = fixIndentFolds([...next.lines], before, next.changedLines, { filePath: sourcePath })
+                if (fixed.fixed.length > 0) {
+                  next.lines = fixed.lines
+                  recoveryWarning += `\n\nIndent corrected (applied): ${fixed.fixed.join(", ")}`
+                }
               }
               const output = serializeHashlineContent({
                 lines: next.lines,
@@ -772,10 +828,11 @@ export function findIndentWarnings(after: string, before?: string, changedLines?
   // Set-collision: the fixed comment lines byte-matched the identical
   // loop-guard block and were wrongly skipped). Index equality is exact
   // for equal line counts (REPLACE/SET) and covers the common
-  // insert-below/above cases; a preserved line shifted by an insert is
-  // conservatively treated as edited - a warning on a shifted
-  // pre-existing fold is harmless.
-  const beforeLinesArr = before ? before.split("\n") : undefined
+  //  insert-below/above cases; a preserved line shifted by an insert is
+  //  byte-equal to its changedLines entry - skipped below (0113), since a
+  //  warning on a shifted pre-existing fold sent the model on multi-turn
+  //  fix chases for content it never broke (vllm-start 582 proof).
+  const beforeLinesArr = before ? splitTextLines(before) : undefined
   const beforeLen = beforeLinesArr?.length ?? 0
   const warnings: string[] = []
   // Content-context exemptions: lines that live INSIDE a literal context
@@ -820,6 +877,7 @@ export function findIndentWarnings(after: string, before?: string, changedLines?
   // checks must never see them (a `*` at 3 next to code at 2 is the
   // correct style, not an over-fold). Openers (`/*`) stay checked.
   const isInterior = (l: string) => /^\s*\*/.test(l)
+  const shiftMap = shiftedIndexMap(beforeLinesArr ?? [], lines)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
     if (line.trim() === "") continue
@@ -828,6 +886,27 @@ export function findIndentWarnings(after: string, before?: string, changedLines?
     if (beforeLinesArr && i < beforeLen && beforeLinesArr[i] === line) continue // pre-existing line, not ours
     const lineIndent = line.match(/^\s*/)![0].length
     const kind = /^\s*(\/\/|\/\*)/.test(line) ? "comment" : "code line"
+    const orig =
+      changedLines?.get(i) ??
+      (beforeLinesArr && shiftMap.has(i + 1) ? beforeLinesArr[shiftMap.get(i + 1)! - 1] : undefined) ??
+      (beforeLinesArr && beforeLinesArr.length === lines.length ? beforeLinesArr[i] : undefined)
+    if (orig !== undefined && orig === line) continue // shifted pre-existing, untouched by the edit
+    // Adjacent real code in EITHER direction (skip blanks and other
+    // comments): the fold can sit against the line below (usual) or above
+    // (a BEFORE-insert landing one short, or a tail-of-block line).
+    const adjacentIndents: number[] = []
+    let j = i + 1
+    while (j < lines.length && (lines[j]!.trim() === "" || isCommentOrInterior(lines[j]!))) j++
+    if (j < lines.length) adjacentIndents.push(lines[j]!.match(/^\s*/)![0].length)
+    let k = i - 1
+    while (k >= 0 && (lines[k]!.trim() === "" || isCommentOrInterior(lines[k]!))) k--
+    if (k >= 0) adjacentIndents.push(lines[k]!.match(/^\s*/)![0].length)
+    // Body-aligned suppression (0113): when the line's indent matches a real
+    // code neighbor, it aligns with the block convention - a ±1 difference
+    // from the ORIGINAL is then a deliberate re-indent (e.g. the model
+    // fixing a misindented line), not a fold. Only warn on orig when the
+    // line floats outside every neighbor indent (the fold signature).
+    const bodyAligned = adjacentIndents.includes(lineIndent)
     // Original-line check: prefer the op-derived changed-lines map
     // (after-index -> replaced original), which stays valid when the patch
     // changed the line count - the index-based fallback (equal counts only)
@@ -837,10 +916,7 @@ export function findIndentWarnings(after: string, before?: string, changedLines?
     // sits at the expected indent (the neighbors straddle it). The replaced
     // line's own indent is the strongest reference; skip the adjacent scan
     // when it fires.
-    const orig =
-      changedLines?.get(i) ??
-      (beforeLinesArr && beforeLinesArr.length === lines.length ? beforeLinesArr[i] : undefined)
-    if (orig !== undefined && orig.trim() !== "") {
+    if (!bodyAligned && orig !== undefined && orig.trim() !== "") {
       const origIndent = orig.match(/^\s*/)![0].length
       if (origIndent === lineIndent + 1 && origIndent > 0) {
         warnings.push(
@@ -855,31 +931,29 @@ export function findIndentWarnings(after: string, before?: string, changedLines?
         continue
       }
     }
-    // Adjacent real code in EITHER direction (skip blanks and other
-    // comments): the fold can sit against the line below (usual) or above
-    // (a BEFORE-insert landing one short, or a tail-of-block line).
-    const adjacentIndents: number[] = []
-    let j = i + 1
-    while (j < lines.length && (lines[j]!.trim() === "" || isCommentOrInterior(lines[j]!))) j++
-    if (j < lines.length) adjacentIndents.push(lines[j]!.match(/^\s*/)![0].length)
-    let k = i - 1
-    while (k >= 0 && (lines[k]!.trim() === "" || isCommentOrInterior(lines[k]!))) k--
-    if (k >= 0) adjacentIndents.push(lines[k]!.match(/^\s*/)![0].length)
-    const hit = adjacentIndents.find((ind) => ind === lineIndent + 1 && ind > 0)
-    if (hit !== undefined) {
-      warnings.push(
-        `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${hit} - likely one space short (the content row needs one MORE space after the '+' separator).`,
-      )
-      continue
-    }
-    // Symmetric one-OVER check (0090 class: the fix loop overcorrected the
-    // -1 fold to +1). Fires on the boundary lines of a uniformly
-    // over-indented block (interior lines have no non-uniform neighbor).
-    const over = adjacentIndents.find((ind) => ind === lineIndent - 1)
-    if (over !== undefined) {
-      warnings.push(
-        `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${over} - likely one space OVER (the previous fix added one space too many; content should align at ${over}).`,
-      )
+    // 0113: the adjacent ±1 checks are also suppressed when the body aligns
+    // with a real-code neighbor - the deeper neighbor is then the anomaly
+    // (e.g. a pre-existing misaligned line below), not the body. Without
+    // this, a correctly-aligned line next to a misindented pre-existing
+    // line gets flagged "one space short" and the model "fixes" the wrong
+    // line (t41 live proof: line 5 at 2, neighbor at 3, flagged).
+    if (!bodyAligned) {
+      const hit = adjacentIndents.find((ind) => ind === lineIndent + 1 && ind > 0)
+      if (hit !== undefined) {
+        warnings.push(
+          `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${hit} - likely one space short (the content row needs one MORE space after the '+' separator).`,
+        )
+        continue
+      }
+      // Symmetric one-OVER check (0090 class: the fix loop overcorrected the
+      // -1 fold to +1). Fires on the boundary lines of a uniformly
+      // over-indented block (interior lines have no non-uniform neighbor).
+      const over = adjacentIndents.find((ind) => ind === lineIndent - 1)
+      if (over !== undefined) {
+        warnings.push(
+          `line ${i + 1}: ${kind} indented ${lineIndent} space${lineIndent === 1 ? "" : "s"}, adjacent code at ${over} - likely one space OVER (the previous fix added one space too many; content should align at ${over}).`,
+        )
+      }
     }
   }
   return warnings
@@ -987,7 +1061,31 @@ export function normalizeIndentToHint(edits: HashlineEditInputZ[], lines: string
     const anchorNo = anchorRef.split("#")[0]
     const anchorLine = lines[Number(anchorNo) - 1] ?? ""
     if (anchorLine === "") continue
-    const aLead = (anchorLine.match(/^ */) ?? [""])[0].length
+    let aLead = (anchorLine.match(/^ */) ?? [""])[0].length
+    // 0113 anchor-convention fallback: when the anchor line itself is ±1 off
+    // its real-code neighbors (a pre-existing fold), its own indent is an
+    // untrustworthy hint - a correction edit targeting that line would be
+    // padded BACK to the wrong indent (observed live during 0113
+    // implementation: fixing 5 -> 4 spaces got re-padded to 5 and rejected
+    // by the duplicate-anchor guard). Use the neighbor convention instead.
+    const aNeighbors: number[] = []
+    {
+      let j = Number(anchorNo)
+      while (j < lines.length && (lines[j]!.trim() === "" || /^\s*(\/\/|\/\*|\*)/.test(lines[j]!))) j++
+      if (j < lines.length) aNeighbors.push((lines[j]!.match(/^ */) ?? [""])[0].length)
+      let k = Number(anchorNo) - 2
+      while (k >= 0 && (lines[k]!.trim() === "" || /^\s*(\/\/|\/\*|\*)/.test(lines[k]!))) k--
+      if (k >= 0) aNeighbors.push((lines[k]!.match(/^ */) ?? [""])[0].length)
+    }
+    const anchorAligned = aNeighbors.includes(aLead)
+    if (!anchorAligned && aNeighbors.length > 0) {
+      const convention = aNeighbors[0]
+      if (convention === aLead + 1 || convention === aLead - 1) {
+        // only substitute when the neighbor convention is unambiguous (both
+        // sides agree, or the single available side is ±1)
+        if (aNeighbors.every((n) => n === convention)) aLead = convention
+      }
+    }
     const opener = op.type === "insert_after" && anchorLine.trimEnd().endsWith("{")
     const closer = op.type === "insert_before" && /}[,;)\]\.]*$/.test(anchorLine.trimEnd())
     const rows = Array.isArray(op.text) ? op.text : [op.text]
@@ -999,9 +1097,11 @@ export function normalizeIndentToHint(edits: HashlineEditInputZ[], lines: string
     let delta = 0
     const minLead = Math.min(...leads)
     if (opener || closer) {
-      if (minLead === hint - 1) delta = 1
-      else if (minLead === hint + 1 && !nonBlank.every((i) => /^\s*\*/.test(rows[i]))) delta = -1
-      else if (minLead === hint - 2) delta = 2
+      // 0113: pad ANY uniform block sitting below the structural body indent
+      // (the block at 0 where the context is at 4 class), capped to avoid
+      // absurd rewrites; one-over (hint + 1) trims, star rows stay exempt.
+      if (minLead === hint + 1 && !nonBlank.every((i) => /^\s*\*/.test(rows[i]))) delta = -1
+      else if (minLead < hint && hint - minLead <= 8) delta = hint - minLead
     } else {
       const uniform = leads.every((l) => l === leads[0])
       if (uniform && leads[0] === hint - 1) delta = 1
@@ -1101,6 +1201,27 @@ function splitTextLines(text: string): string[] {
   return lines
 }
 
+/**
+* 0113 diff-based before->after index map (after-index 1-based -> before-index
+* 1-based over equal runs). The changedLines map only covers SET/REPLACE
+* replacements; lines SHIFTED by an insert/delete have no entry there, so the
+* validator/fixer could not tell them from the edit's own content (the
+* phantom-flag class on trailing-newline files, fixed via splitTextLines, had
+* a sibling: pre-existing folds next to an insert). With this map, a shifted
+* line resolves to its original text, hits the byte-equal skip, and is left
+* alone. Degenerates to an empty map beyond the LCS guard (50M cells) -
+* identical to the pre-0113 behavior in that case.
+*/
+function shiftedIndexMap(beforeLines: string[], afterLines: string[]): Map<number, number> {
+  const runs = diffLineRuns(beforeLines, afterLines)
+  const map = new Map<number, number>()
+  for (const run of runs) {
+    if (run.type !== "equal") continue
+    for (let k = 0; k < run.count; k++) map.set(run.newStart + k + 1, run.oldStart + k + 1)
+  }
+  return map
+}
+
 function allSeenLines(text: string): number[] {
   const count = splitTextLines(text).length
   return Array.from({ length: count }, (_, i) => i + 1)
@@ -1152,4 +1273,103 @@ function unseenLinesMessage(
     linesOut.push(`  ... and ${unseen.length - reveal.length} more lines`)
   }
   return linesOut.join("\n")
+}
+
+/**
+* 0113 engine-side indent fold correction (plan time, before the diff is
+* computed). Mirrors findIndentWarnings' classification but REWRITES the
+* flagged lines instead of warning: a line the edit actually changed whose
+* indent is exactly ±1 from its original (or from the adjacent real code) is
+* the separator-fold signature - correct it to the reference indent. Only
+* lines the edit touched are considered (changedLines map / equal-count
+* index + byte-equal skip), so pre-existing content is never rewritten.
+* Returns the fixed lines plus a compact per-line report ("N (K -> M)").
+* Keep the classification in sync with findIndentWarnings.
+*/
+export function fixIndentFolds(
+  afterLines: string[],
+  before: string | undefined,
+  changedLines: Map<number, string> | undefined,
+  opts?: { filePath?: string },
+): { lines: string[]; fixed: string[] } {
+  const lines = [...afterLines]
+  const beforeLinesArr = before ? splitTextLines(before) : undefined
+  const beforeLen = beforeLinesArr?.length ?? 0
+  const fixed: string[] = []
+  // Content-context exemptions: identical to findIndentWarnings (fences for
+  // md/markdown, template-literal interiors for ts/js).
+  const exempt = new Set<number>()
+  const ext = opts?.filePath?.split(".").pop() ?? ""
+  if (["md", "markdown"].includes(ext)) {
+    let inFence = false
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*(```|~~~)/.test(lines[i]!)) { inFence = !inFence; exempt.add(i) }
+      else if (inFence) exempt.add(i)
+    }
+    if (inFence) exempt.clear()
+  } else if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(ext)) {
+    let inTemplate = false
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!
+      let odd = false
+      for (let j = 0; j < line.length; j++) {
+        if (line[j] === "\\") { j++; continue }
+        if (line[j] === "`") odd = !odd
+      }
+      if (inTemplate && !odd) exempt.add(i)
+      if (odd) inTemplate = !inTemplate
+    }
+  }
+  const isCommentOrInterior = (l: string) => /^\s*(\/\/|\/\*|\*)/.test(l)
+  const isInterior = (l: string) => /^\s*\*/.test(l)
+  const shiftMap = shiftedIndexMap(beforeLinesArr ?? [], lines)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    if (line.trim() === "") continue
+    if (isInterior(line)) continue
+    if (exempt.has(i)) continue
+    if (beforeLinesArr && i < beforeLen && beforeLinesArr[i] === line) continue
+    const lineIndent = line.match(/^\s*/)![0].length
+    const orig =
+      changedLines?.get(i) ??
+      (beforeLinesArr && shiftMap.has(i + 1) ? beforeLinesArr[shiftMap.get(i + 1)! - 1] : undefined) ??
+      (beforeLinesArr && beforeLinesArr.length === lines.length ? beforeLinesArr[i] : undefined)
+    if (orig !== undefined && orig === line) continue // shifted pre-existing, untouched
+    const adjacentIndents: number[] = []
+    let j = i + 1
+    while (j < lines.length && (lines[j]!.trim() === "" || isCommentOrInterior(lines[j]!))) j++
+    if (j < lines.length) adjacentIndents.push(lines[j]!.match(/^\s*/)![0].length)
+    let k = i - 1
+    while (k >= 0 && (lines[k]!.trim() === "" || isCommentOrInterior(lines[k]!))) k--
+    if (k >= 0) adjacentIndents.push(lines[k]!.match(/^\s*/)![0].length)
+    // Body-aligned guard: only auto-fix when the line floats outside every
+    // real-code neighbor's indent (the fold signature). A body that matches
+    // a neighbor is a deliberate re-indent (e.g. fixing a misindented line)
+    // and must NOT be rewritten - the auto-fix would undo the model's own
+    // correction and restart the fix loop.
+    const bodyAligned = adjacentIndents.includes(lineIndent)
+    const origIndent =
+      orig !== undefined && orig.trim() !== "" ? orig.match(/^\s*/)![0].length : undefined
+    let target: number | undefined
+    if (origIndent !== undefined) {
+      if (!bodyAligned && Math.abs(origIndent - lineIndent) === 1 && origIndent > 0) {
+        // Body floats outside every neighbor indent and is ±1 from the
+        // original - the separator-fold signature. Correct to the original.
+        target = origIndent
+      } else if (origIndent === lineIndent && !bodyAligned) {
+        // Content-only change that kept a misaligned indent (the original
+        // was already ±1 off the block convention): the adjacent real code
+        // is the reference.
+        const hit = adjacentIndents.find((ind) => ind === lineIndent + 1 && ind > 0)
+        const over = adjacentIndents.find((ind) => ind === lineIndent - 1)
+        const adj = hit ?? over
+        if (adj !== undefined) target = adj
+      }
+    }
+    if (target !== undefined && target !== lineIndent) {
+      lines[i] = `${" ".repeat(target)}${line.slice(lineIndent)}`
+      fixed.push(`${i + 1} (${lineIndent} -> ${target})`)
+    }
+  }
+  return { lines, fixed }
 }

@@ -836,7 +836,7 @@ describe("tool.edit", () => {
       }),
     )
 
-    it.instance("rejects when the anchored line itself changed (ambiguous drift)", () =>
+    it.instance("substitutes the fresh anchor when the file changed in place (0113)", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "drift.txt")
@@ -845,13 +845,12 @@ describe("tool.edit", () => {
 
         yield* put(filepath, "alpha\nBETA-CHANGED\ngamma")
 
-        const message = (yield* fail({
+        const result = yield* run({
           filePath: filepath,
           edits: [{ type: "set_line", line: hashlineRef(2, "beta"), text: "beta2" }],
-        })).message
-
-        expect(message).toContain("anchor mismatch")
-        expect(yield* load(filepath)).toBe("alpha\nBETA-CHANGED\ngamma")
+        })
+        expect(result.output).toContain("stale anchor substituted")
+        expect(yield* load(filepath)).toBe("alpha\nbeta2\ngamma")
       }),
     )
 
@@ -1668,12 +1667,26 @@ describe("indentation validator (changed-lines map)", () => {
     expect(warnings.some((w) => w.includes("one space OVER"))).toBe(true)
   })
 
-  test("flags the one-short fold via the map", () => {
-    const before = "if (x) {\n  const a = 1\n  const b = 2\n}\n"
-    const after = "if (x) {\n  const a = 1\n  // insert\n  const b = 2\n}\n"
-    const changed = new Map<number, string>([[3, "   const b = 2"]])
+  test("flags the one-short fold via the map when the body floats outside every neighbor indent", () => {
+    const before = "if (x) {\n    const a = 1\n   const b = 2\n}\n"
+    // The replacement landed one space short of the map's original (3) and
+    // NO neighbor sits at the body's indent (2) - the neighbors straddle at
+    // 4 and 0, so the orig reference is the only signal.
+    const after = "if (x) {\n    const a = 1\n  const b = 2\n}\n"
+    const changed = new Map<number, string>([[2, "   const b = 2"]])
     const warnings = findIndentWarnings(after, before, changed)
     expect(warnings.some((w) => w.includes("one space short"))).toBe(true)
+  })
+
+  test("no warning when the fold lands on the block convention (body aligns with a sibling, 0113)", () => {
+    const before = "if (x) {\n  const a = 1\n   const b = 2\n}\n"
+    // The map says the original sat at 3, but the body at 2 matches the
+    // sibling at 2 - a deliberate re-indent (or a fold that landed on the
+    // convention); either way the result aligns with the block, so warning
+    // would send the model to re-break the alignment.
+    const after = "if (x) {\n  const a = 1\n  const b = 2\n}\n"
+    const changed = new Map<number, string>([[2, "   const b = 2"]])
+    expect(findIndentWarnings(after, before, changed)).toEqual([])
   })
 
   test("no warnings for a correctly indented replacement plus an insert", () => {
