@@ -8,7 +8,7 @@ Usage:
 - Use the grep tool to find specific content in large files or files with long lines.
 - If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.
 - Contents are returned with a line prefix.
-- Default format: `LINE#ID:<content>` (example: `1#AB:foo`). Use these anchors for hashline edits.
+- Default format: `LINE#ID[N]:<content>` (example: `1#AB[0]:foo`) where `[N]` is the line's INDENT HINT - the leading-space count to use for content inserted after this line (block-opener lines ending with `{` hint one level deeper than the brace, i.e. the body indent). Use these anchors for hashline edits.
 - Anchors stay valid for same-turn edits: unchanged lines keep their `LINE#ID` regardless of edits elsewhere in the file - one read can serve multiple back-to-back edits.
 - For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories.
 - Any line longer than 2000 characters is truncated.

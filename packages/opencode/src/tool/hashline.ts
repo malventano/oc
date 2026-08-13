@@ -169,7 +169,7 @@ function toLines(text: TextValue) {
   return split
 }
 
-const HASHLINE_PREFIX_RE = /^\s*(?:>>>|>>)?\s*[+-]?\s*\d+#[ZPMQVRWSNKTXJBYH]{2}:/
+const HASHLINE_PREFIX_RE = /^\s*(?:>>>|>>)?\s*[+-]?\s*\d+#[ZPMQVRWSNKTXJBYH]{2}(?:\[\d+\])?:/
 // Optional diff markers ([+-]) before the anchor: the model echoes the
 // annotated `+N#ID:` diff output back as payload, so accept that form.
 const WRAPPER_PREFIX_RE = /^\s*(?:>>>|>>)\s?/
