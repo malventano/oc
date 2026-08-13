@@ -266,7 +266,7 @@ export function RunEntryContent(props: {
           <text width="100%" wrapMode="word" fg={theme().block.muted}>
             # Questions
           </text>
-             <box width="100%" flexDirection="column" gap={1} paddingRight={2}>
+          <box width="100%" flexDirection="column" gap={1} paddingRight={2}>
             {question_snapshot()!.items.map((item) => (
               <box width="100%" flexDirection="column" gap={0}>
                 <text width="100%" wrapMode="word" fg={theme().block.muted}>
