@@ -7,6 +7,8 @@ import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 import { SessionRunState } from "../../src/session/run-state"
 import { pollWithTimeout } from "../lib/effect"
+import { MessageID, PartID } from "../../src/session/schema"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 
 const it = testEffect(Layer.mergeAll(LayerNode.compile(SessionNs.node), LayerNode.compile(SessionRunState.node), httpApiLayer))
 
@@ -102,6 +104,60 @@ describe("session action routes", () => {
         expect(forked.status).toBe(409)
 
         yield* Fiber.interrupt(fiber)
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "fork targets return only user messages with their parts",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const session = yield* Effect.acquireRelease(SessionNs.use.create({ title: "fork-targets" }), (created) =>
+          SessionNs.use.remove(created.id).pipe(Effect.ignore),
+        )
+        const user = yield* SessionNs.Service.use((svc) =>
+          svc.updateMessage({
+            id: MessageID.ascending(),
+            role: "user" as const,
+            sessionID: session.id,
+            agent: "default",
+            model: { providerID: "test", modelID: "test" },
+            time: { created: 1 },
+          } as SessionV1.User),
+        )
+        yield* SessionNs.Service.use((svc) =>
+          svc.updateMessage({
+            id: MessageID.ascending(),
+            role: "assistant" as const,
+            sessionID: session.id,
+            mode: "default",
+            agent: "default",
+            path: { cwd: "/tmp", root: "/tmp" },
+            cost: 0,
+            tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            modelID: "test",
+            providerID: "test",
+            parentID: user.id,
+            time: { created: 2 },
+          } as SessionV1.Assistant),
+        )
+        yield* SessionNs.Service.use((svc) =>
+          svc.updatePart({
+            id: PartID.ascending(),
+            messageID: user.id,
+            sessionID: session.id,
+            type: "text",
+            text: "fork me",
+          } as SessionV1.Part),
+        )
+
+        const res = yield* requestInDirectory(`/session/${session.id}/fork-targets`, test.directory)
+        expect(res.status).toBe(200)
+        const targets = (yield* res.json) as { info: { id: string; role: string }; parts: { type: string }[] }[]
+        expect(targets).toHaveLength(1)
+        expect(targets[0]?.info.id).toBe(user.id)
+        expect(targets[0]?.parts.some((p) => p.type === "text")).toBe(true)
       }),
     { git: true },
   )

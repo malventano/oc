@@ -1,7 +1,7 @@
 import { createMemo, createSignal, onMount } from "solid-js"
 import { useSync } from "../../context/sync"
 import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select"
-import type { TextPart } from "@opencode-ai/sdk/v2"
+import type { Message, Part, TextPart } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { useSDK } from "../../context/sdk"
 import { useRoute } from "../../context/route"
@@ -24,13 +24,26 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
   // step-finish). Lock every option while the source is busy or retrying -
   // unlocks itself when the turn completes.
   const busy = createMemo(() => (sync.data.session_status?.[props.sessionID]?.type ?? "idle") !== "idle")
+  // Full user-message list for the fork targets. The sync store caps at the
+  // last 100 messages (render budget), so fetch the complete list from the
+  // server on open; fall back to the store while loading.
+  const [targets, setTargets] = createSignal<{ info: Message; parts: Part[] }[]>()
 
   onMount(() => {
     dialog.setSize("large")
+    void sdk.client.session.forkTargets({ sessionID: props.sessionID }).then((result) => {
+      if (!result.error && result.data) setTargets(result.data as { info: Message; parts: Part[] }[])
+    })
   })
 
   const options = createMemo((): DialogSelectOption<string | undefined>[] => {
-    const messages = sync.data.message[props.sessionID] ?? []
+    const fetched = targets()
+    const messages: { info: Message; parts: Part[] }[] = fetched
+      ? fetched
+      : (sync.data.message[props.sessionID] ?? []).map((info) => ({
+          info,
+          parts: sync.data.part[info.id] ?? [],
+        }))
     const fullSession = {
       title: "Full session",
       value: undefined,
@@ -56,29 +69,29 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
     } satisfies DialogSelectOption<string | undefined>
     const result = [] as DialogSelectOption<string | undefined>[]
     for (const message of messages) {
-      if (message.role !== "user") continue
-      const part = (sync.data.part[message.id] ?? []).find(
+      if (message.info.role !== "user") continue
+      const part = message.parts.find(
         (x) => x.type === "text" && !x.synthetic && !x.ignored,
       ) as TextPart
       if (!part) continue
       result.push({
         title: part.text.replace(/\n/g, " "),
-        value: message.id,
-        footer: Locale.time(message.time.created),
+        value: message.info.id,
+        footer: Locale.time(message.info.time.created),
         onSelect: async (dialog) => {
           if (pending()) return
           setPending(true)
           try {
             const forked = await sdk.client.session.fork({
               sessionID: props.sessionID,
-              messageID: message.id,
+              messageID: message.info.id,
             })
             if (forked.error) {
               const err = forked.error as { message?: string; data?: { message?: string } }
               toast.show({ variant: "error", message: `Fork failed: ${err.message ?? err.data?.message ?? "unknown error"}` })
               return
             }
-            const parts = sync.data.part[message.id] ?? []
+            const parts = message.parts
             const prompt = parts.reduce(
               (agg, part) => {
                 if (part.type === "text") {

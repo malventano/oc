@@ -85,6 +85,7 @@ export const SessionPaths = {
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
   message: `${root}/:sessionID/message/:messageID`,
+  forkTargets: `${root}/:sessionID/fork-targets`,
   create: root,
   remove: `${root}/:sessionID`,
   update: `${root}/:sessionID`,
@@ -187,6 +188,18 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.messages",
             summary: "Get session messages",
             description: "Retrieve all messages in a session, including user prompts and AI responses.",
+          }),
+        ),
+        HttpApiEndpoint.get("forkTargets", SessionPaths.forkTargets, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(SessionV1.WithParts), "List of fork targets"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.forkTargets",
+            summary: "List fork targets",
+            description: "Retrieve the user messages of a session (chronological, with parts) for the fork dialog - skips the assistant/tool message history.",
           }),
         ),
         HttpApiEndpoint.get("message", SessionPaths.message, {
