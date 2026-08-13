@@ -59,7 +59,11 @@ const fill = Effect.fn("Test.fill")(function* (
   return ids
 })
 
-const addUser = Effect.fn("Test.addUser")(function* (sessionID: SessionID, text?: string) {
+const addUser = Effect.fn("Test.addUser")(function* (
+  sessionID: SessionID,
+  input?: string | { text?: string; agent?: string },
+) {
+  const opts = typeof input === "string" ? { text: input } : input
   const session = yield* SessionNs.Service
   const id = MessageID.ascending()
   yield* session.updateMessage({
@@ -67,18 +71,18 @@ const addUser = Effect.fn("Test.addUser")(function* (sessionID: SessionID, text?
     sessionID,
     role: "user",
     time: { created: Date.now() },
-    agent: "test",
+    agent: opts?.agent ?? "test",
     model: { providerID: "test", modelID: "test" },
     tools: {},
     mode: "",
   } as unknown as SessionV1.Info)
-  if (text) {
+  if (opts?.text) {
     yield* session.updatePart({
       id: PartID.ascending(),
       sessionID,
       messageID: id,
       type: "text",
-      text,
+      text: opts.text,
     })
   }
   return id
@@ -1051,6 +1055,43 @@ describe("MessageV2 consistency", () => {
         const all = stream.toReversed()
 
         expect(filtered.map((m) => m.info.id)).toEqual(all.map((m) => m.info.id))
+      }),
+    ),
+  )
+})
+describe("MessageV2.lastUserAgent", () => {
+  it.instance("returns the last user message's agent past trailing assistants", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        yield* addUser(sessionID)
+        const lastID = yield* addUser(sessionID, { agent: "build" })
+        // A single turn running more assistant messages than the TUI's
+        // message window: every newer message is an assistant row.
+        for (let i = 0; i < 105; i++) yield* addAssistant(sessionID, lastID)
+
+        const result = yield* MessageV2.lastUserAgent({ sessionID })
+        expect(Option.getOrUndefined(result)).toBe("build")
+      }),
+    ),
+  )
+
+  it.instance("picks the newest user message's agent", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        yield* addUser(sessionID, { agent: "build" })
+        yield* addUser(sessionID, { agent: "plan" })
+
+        const result = yield* MessageV2.lastUserAgent({ sessionID })
+        expect(Option.getOrUndefined(result)).toBe("plan")
+      }),
+    ),
+  )
+
+  it.instance("returns none for a session without user messages", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        const result = yield* MessageV2.lastUserAgent({ sessionID })
+        expect(Option.isNone(result)).toBe(true)
       }),
     ),
   )

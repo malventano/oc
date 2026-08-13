@@ -196,6 +196,7 @@ export type Session = {
   }
   title: string
   agent?: string
+  lastUserAgent?: string
   model?: {
     id: string
     providerID: string
