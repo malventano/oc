@@ -152,6 +152,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
     })
 
+    const forkTargets = Effect.fn("SessionHttpApi.forkTargets")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* MessageV2.forkTargets({ sessionID: ctx.params.sessionID })
+    })
+
     const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {
       return yield* shareSvc.create(ctx.payload)
     })
@@ -449,6 +456,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)
+      .handle("forkTargets", forkTargets)
       .handleRaw("create", createRaw)
       .handle("remove", remove)
       .handle("update", update)
