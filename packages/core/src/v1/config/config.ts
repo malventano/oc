@@ -197,6 +197,10 @@ export const Info = Schema.Struct({
         description:
           "Auto-correct a uniform ±1 indent fold against the read output's indent hints (default true; set false to disable)",
       }),
+      hashline_indent_autofix: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Auto-correct ±1 indent folds on lines the edit actually changed (default true; set false to keep only the validator warning)",
+      }),
     }),
   ),
 }).annotate({ identifier: "Config" })

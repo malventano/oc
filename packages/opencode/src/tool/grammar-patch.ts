@@ -20,6 +20,9 @@ export type GrammarSection = {
   edits: GrammarOp[]
   delete?: boolean
   rename?: string
+  // 0113: parser-level acceptance notes (e.g. `+x` separator-fold rows that
+  // were accepted as `+ x`) surfaced to the model in the edit output.
+  parseNotes?: string[]
 }
 
 export type ParseResult = { ok: true; files: GrammarSection[] } | { ok: false; errors: string[] }
@@ -67,7 +70,19 @@ const OPS: Array<{ re: RegExp; build: (m: RegExpExecArray) => GrammarOp | "fileL
 ]
 
 export function parsePatch(input: string | null | undefined): ParseResult {
-  const lines = String(input ?? "").split(/\r?\n/)
+  // 0113: dedent the whole patch first - models formatting the JSON tool
+  // argument with indentation leak the leading whitespace into every line;
+  // markers survive (trimmed) but ops and content rows would fail. Strip the
+  // common leading whitespace of non-empty lines (relative indent preserved).
+  const rawLines = String(input ?? "").split(/\r?\n/)
+  const nonEmpty = rawLines.filter((l) => l.trim() !== "")
+  let common = Infinity
+  for (const l of nonEmpty) {
+    const m = l.match(/^ */)![0].length
+    if (m < common) common = m
+  }
+  const dedented = common > 0 && common < Infinity ? rawLines.map((l) => l.slice(common)) : rawLines
+  const lines = dedented
   const errors: string[] = []
   let files: GrammarSection[] | null = null
   let cur: GrammarSection | null = null
@@ -137,11 +152,28 @@ export function parsePatch(input: string | null | undefined): ParseResult {
         continue
       }
       if (!rest.startsWith(" ")) {
-        fail(i, line, "content row must be `+` then a space then content (`+x` without the separator space is invalid, EVEN at column 0: `+ }` not `+}`, `+ # h` not `+# h`, `+ **b**` not `+**b**`; `+  x` means content ` x`)")
-        return { ok: false, errors }
+        // 0113: `+x` (no separator space) is accepted as `+ x`. Unambiguous:
+        // content starting with a space NEEDS the separator (`+  x`), so a
+        // row with text directly after `+` can only mean content without a
+        // leading space. The strict-separator decision (0081) governs the
+        // `+ x` vs `+  x` ambiguity - this fold is orthogonal to it.
+        body.push(rest)
+        if (cur) {
+          cur.parseNotes ??= []
+          cur.parseNotes.push(`line ${i + 1}: content row \`+x\` without the separator space was accepted as \`+ x\` (content "${rest.slice(0, 40)}")`)
+        }
+        continue
       }
       body.push(rest.slice(1))
       continue
+    }
+    if (line.startsWith("-")) {
+      fail(
+        i,
+        line,
+        "the patch grammar has no `-` deletion rows - REPLACE/SET ranges delete the old lines implicitly; the body is ONLY the new content (`+` rows)",
+      )
+      return { ok: false, errors }
     }
     if (line.startsWith(" ")) {
       fail(i, line, "content row must start with `+` (found leading whitespace)")
@@ -174,7 +206,16 @@ export function parsePatch(input: string | null | undefined): ParseResult {
       break
     }
     if (!matched) {
-      fail(i, line, "not a recognized op, directive, or `+` content row")
+      const missingId = /^(SET|REPLACE|AFTER|BEFORE|BETWEEN) (\d+)#:?$/.exec(line)
+      if (missingId) {
+        fail(
+          i,
+          line,
+          `${missingId[1]} anchor ${missingId[2]}# is missing its 2-char content hash ID - copy the full LINE#ID (e.g. ${missingId[2]}#AB) from the read output; anchors never appear as a bare line number`,
+        )
+      } else {
+        fail(i, line, "not a recognized op, directive, or `+` content row")
+      }
       return { ok: false, errors }
     }
   }
