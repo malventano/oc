@@ -2,6 +2,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Effect } from "effect"
 import { PartID, SessionID } from "./schema"
 import { Session } from "./session"
+import { isAfter } from "./message-v2"
 
 /**
  * Frozen-system epochs: snapshot the wire system message at the epoch's first
@@ -66,9 +67,19 @@ export function isRealUser(user: SessionV1.WithParts): boolean {
   return !user.parts.every((p) => "synthetic" in p && p.synthetic)
 }
 
-/** Id of the last summary:true assistant in the rendered chain, or null. */
+/** Id of the newest summary:true assistant in the chain (created-time scan), or null. */
 export function findLastSummaryId(msgs: SessionV1.WithParts[]): string | null {
-  return msgs.findLast((m) => m.info.role === "assistant" && m.info.summary === true)?.info.id ?? null
+  // Chronological scan (created time, id tie-break): the rendered chain
+  // interleaves the newest compaction pair at the front, so array position
+  // is not time order - a multi-compaction tail can place an OLDER summary
+  // after the newest one, which would wake the wrong (stale) epoch record.
+  let newest: SessionV1.WithParts | undefined
+  for (const m of msgs) {
+    if (m.info.role === "assistant" && m.info.summary === true) {
+      if (!newest || isAfter(m.info, newest.info)) newest = m
+    }
+  }
+  return newest?.info.id ?? null
 }
 
 /** Bounded line diff (LCS) of two texts; returns up to maxLines -/+ lines. */

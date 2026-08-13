@@ -106,15 +106,33 @@ describe("epoch helpers", () => {
     expect(isRealUser(real)).toBe(true)
   })
 
-  test("findLastSummaryId: null without summary, last id with one", () => {
-    const noSummary = [{ info: { role: "assistant" as const, id: "msg_a" } as SessionV1.Assistant, parts: [] }]
+  test("findLastSummaryId: null without summary, newest id with one", () => {
+    const noSummary = [
+      { info: { role: "assistant" as const, id: "msg_a", time: { created: 100 } } as SessionV1.Assistant, parts: [] },
+    ]
     expect(findLastSummaryId(noSummary)).toBeNull()
     const withSummary = [
-      { info: { role: "assistant" as const, id: "msg_a", summary: true } as SessionV1.Assistant, parts: [] },
-      { info: { role: "assistant" as const, id: "msg_b", summary: true } as SessionV1.Assistant, parts: [] },
-      { info: { role: "assistant" as const, id: "msg_c" } as SessionV1.Assistant, parts: [] },
+      { info: { role: "assistant" as const, id: "msg_a", summary: true, time: { created: 100 } } as SessionV1.Assistant, parts: [] },
+      { info: { role: "assistant" as const, id: "msg_b", summary: true, time: { created: 200 } } as SessionV1.Assistant, parts: [] },
+      { info: { role: "assistant" as const, id: "msg_c", time: { created: 300 } } as SessionV1.Assistant, parts: [] },
     ]
     expect(findLastSummaryId(withSummary)).toBe("msg_b")
+  })
+
+  test("findLastSummaryId: newest by created time wins regardless of array order", () => {
+    const oldSummary = {
+      info: { role: "assistant" as const, id: "s_old", summary: true, time: { created: 100 } } as SessionV1.Assistant,
+      parts: [],
+    }
+    const newSummary = {
+      info: { role: "assistant" as const, id: "s_new", summary: true, time: { created: 200 } } as SessionV1.Assistant,
+      parts: [],
+    }
+    // Rendered-chain shape: [compaction pair at the front, ...tail with an
+    // OLDER summary..., continue-user] - array-last is NOT the newest.
+    const tail = { info: { role: "user" as const, id: "u", time: { created: 150 } } as SessionV1.User, parts: [] }
+    expect(findLastSummaryId([newSummary, tail, oldSummary])).toBe("s_new")
+    expect(findLastSummaryId([oldSummary, tail, newSummary])).toBe("s_new")
   })
 
   test("lineDiff: identical text yields no lines", () => {
