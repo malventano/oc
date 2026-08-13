@@ -909,23 +909,31 @@ function expandRegisters(
 }
 
 /**
-* Engine-side indent-fold correction (hint-normalize). The read output
-* annotates each line with its indent hint `[N]` (block-openers hint the
-* body indent, others their own). The model tends to write the hint as the
-* TOTAL spaces after `+` (separator fold: content lands one short) or to
-* use the anchor's own depth for opener lines (two short). This corrects
-* each text op's rows against its anchor line's hint:
-* - insert_after an opener (`{` line): content can never legitimately sit
-*   shallower than the body indent -> MIN-rule: shift the whole block by
-*   the delta of its minimum row (fold -1 pad, own-depth -2 pad, one-over
-*   +1 trim). Mixed-depth blocks (O) shift as a unit.
-* - all other anchors (BEFORE/SET/REPLACE content is a SIBLING of the
-*   anchor line - own indent even when the line ends with `{`): only
-*   uniform single-depth blocks are corrected (mixed copy blocks like
-*   I_spacing_sweep are untouched).
-* Runs BEFORE register expansion so paste content (captured verbatim from
-* a CUT) is never rewritten - cut/paste ops carry no text and are skipped.
-*/
+ * Engine-side indent-fold correction (hint-normalize). The read output
+ * annotates each line with its indent hint `[N]` (block-openers hint the
+ * body indent, others their own). The model tends to write the hint as the
+ * TOTAL spaces after `+` (separator fold: content lands one short) or to
+ * use the anchor's own depth for opener lines (two short). This corrects
+ * each text op's rows against its anchor line's hint:
+ * - insert_after an opener (`{` line): content can never legitimately sit
+ *   shallower than the body indent -> MIN-rule: shift the whole block by
+ *   the delta of its minimum row (fold -1 pad, own-depth -2 pad, one-over
+ *   +1 trim). Mixed-depth blocks (O) shift as a unit.
+ * - insert_before a closer (`}` line) mirrors the opener: the inserted
+ *   block belongs to the closed block's body, so the same MIN-rule
+ *   applies with hint = closer indent + 2 (mixed blocks like a whole
+ *   test inserted before the closing `})` of a describe shift as a
+ *   unit instead of escaping the fold correction).
+ * - all other anchors (BEFORE/SET/REPLACE content is a SIBLING of the
+ *   anchor line - own indent even when the line ends with `{`): only
+ *   uniform single-depth blocks are corrected (mixed copy blocks like
+ *   I_spacing_sweep are untouched).
+ * - `*`-prefixed rows (docblock/block-comment bodies) sit at hint + 1 BY
+ *   DESIGN (JSDoc opener at K, body at K+1), so the one-over trim never
+ *   fires on an all-star block - they are decorative, not folds.
+ * Runs BEFORE register expansion so paste content (captured verbatim from
+ * a CUT) is never rewritten - cut/paste ops carry no text and are skipped.
+ */
 export function normalizeIndentToHint(edits: HashlineEditInputZ[], lines: string[]) {
   for (const op of edits) {
     if (!("text" in op) || op.text.length === 0) continue
@@ -944,22 +952,23 @@ export function normalizeIndentToHint(edits: HashlineEditInputZ[], lines: string
     if (anchorLine === "") continue
     const aLead = (anchorLine.match(/^ */) ?? [""])[0].length
     const opener = op.type === "insert_after" && anchorLine.trimEnd().endsWith("{")
-    const hint = opener ? aLead + 2 : aLead
+    const closer = op.type === "insert_before" && /}[,;)\]\.]*$/.test(anchorLine.trimEnd())
     const rows = Array.isArray(op.text) ? op.text : [op.text]
+    const hint = opener || closer ? aLead + 2 : aLead
     const lead = (r: string) => (r.match(/^ */) ?? [""])[0].length
     const nonBlank = rows.map((r, i) => (r === "" ? -1 : i)).filter((i) => i >= 0)
     if (nonBlank.length === 0) continue
     const leads = nonBlank.map((i) => lead(rows[i]))
     let delta = 0
-    if (opener) {
-      const minLead = Math.min(...leads)
+    const minLead = Math.min(...leads)
+    if (opener || closer) {
       if (minLead === hint - 1) delta = 1
-      else if (minLead === hint + 1) delta = -1
+      else if (minLead === hint + 1 && !nonBlank.every((i) => /^\s*\*/.test(rows[i]))) delta = -1
       else if (minLead === hint - 2) delta = 2
     } else {
       const uniform = leads.every((l) => l === leads[0])
       if (uniform && leads[0] === hint - 1) delta = 1
-      else if (uniform && leads[0] === hint + 1) delta = -1
+      else if (uniform && leads[0] === hint + 1 && !nonBlank.every((i) => /^\s*\*/.test(rows[i]))) delta = -1
     }
     if (delta !== 0) {
       const fixed = rows.map((r, i) =>
