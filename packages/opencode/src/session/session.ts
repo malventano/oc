@@ -235,6 +235,9 @@ export const Info = Schema.Struct({
   share: optional(Share),
   title: Schema.String,
   agent: optional(Schema.String),
+  // Agent of the session's last user message (computed, not stored): the
+  // resume-mode lookup for clients restoring the plan/build state on open.
+  lastUserAgent: optional(Schema.String),
   model: optional(Model),
   version: Schema.String,
   metadata: optional(Metadata),
