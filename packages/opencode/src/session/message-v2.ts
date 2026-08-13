@@ -28,6 +28,7 @@ import { eq } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
+import { sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
@@ -468,6 +469,25 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
     more,
     cursor: more && tail ? cursor.encode({ id: tail.id, time: tail.time_created }) : undefined,
   }
+})
+
+// Fork-dialog targets: user messages only (chronological), with their parts.
+// The TUI sync store keeps only the last 100 messages of a session, so the
+// fork dialog cannot list full history from the store - this query skips the
+// assistant/tool message rows entirely (the bulk of a large session) and
+// returns just what the dialog renders: user prompts + their parts.
+export const forkTargets = Effect.fn("MessageV2.forkTargets")(function* (input: { sessionID: SessionID }) {
+  const { db } = yield* Database.Service
+  const rows = yield* db
+    .select()
+    .from(MessageTable)
+    .where(
+      and(eq(MessageTable.session_id, input.sessionID), sql`json_extract(${MessageTable.data}, '$.role') = 'user'`),
+    )
+    .orderBy(MessageTable.time_created, MessageTable.id)
+    .all()
+    .pipe(Effect.orDie)
+  return yield* hydrate(db, rows)
 })
 
 export function stream(sessionID: SessionID) {
