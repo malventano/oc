@@ -335,23 +335,26 @@ export function Prompt(props: PromptProps) {
     ),
   )
 
-  // Initialize agent/model/variant from last user message when session changes
+  // Initialize agent from the session's last user prompt when the session changes.
+  // lastUserAgent is served by session.get (single indexed DB read, uncapped) - a
+  // message-window cap would miss sessions whose final turn ran more assistant
+  // messages than the window (all newer than the user message that parented them).
   let syncedSessionID: string | undefined
   createEffect(() => {
     const sessionID = props.sessionID
-    const msg = lastUserMessage()
+    const agent = sessionID ? sync.session.get(sessionID)?.lastUserAgent : undefined
     const agentList = local.agent.list()
 
     if (sessionID !== syncedSessionID) {
-      if (!sessionID || !msg) return
+      if (!sessionID || !agent) return
 
       // Latch only after a successful restore: the agent list may not be loaded
-      // yet when the messages arrive, and with an empty list isPrimaryAgent is
-      // false so the restore is skipped — the agent would stay at the config
+      // yet when the session row arrives, and with an empty list isPrimaryAgent is
+      // false so the restore is skipped - the agent would stay at the config
       // default (first agent, e.g. "plan") instead of the session's last agent.
       // Tracking the list here re-runs this effect once the agents resolve.
-      const isPrimaryAgent = agentList.some((x) => x.name === msg.agent)
-      if (!msg.agent || !isPrimaryAgent) return
+      const isPrimaryAgent = agentList.some((x) => x.name === agent)
+      if (!isPrimaryAgent) return
       syncedSessionID = sessionID
 
       // Only set agent if it's a primary agent (not a subagent).
@@ -359,7 +362,7 @@ export function Prompt(props: PromptProps) {
       // selected model should resolve to the agent's configured default (falling back to a
       // manual in-run pick), not the model that happened to be saved in an old session.
       // Keep command line --agent if specified.
-      if (!args.agent) local.agent.set(msg.agent)
+      if (!args.agent) local.agent.set(agent)
     }
   })
 

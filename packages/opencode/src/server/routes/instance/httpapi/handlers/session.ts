@@ -83,7 +83,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
-      return yield* requireSession(ctx.params.sessionID)
+      const info = yield* requireSession(ctx.params.sessionID)
+      const lastUserAgent = yield* MessageV2.lastUserAgent({ sessionID: ctx.params.sessionID }).pipe(
+        Effect.catch(() => Effect.succeed(Option.none<string>())),
+      )
+      return { ...info, lastUserAgent: Option.getOrUndefined(lastUserAgent) }
     })
 
     const children = Effect.fn("SessionHttpApi.children")(function* (ctx: { params: { sessionID: SessionID } }) {
