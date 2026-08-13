@@ -187,8 +187,14 @@ const layer = Layer.effect(
             const info = data.info
             yield* sync(info.sessionID, [{ type: "message", data: structuredClone(info) as SDK.Message }])
             if (info.role !== "user") return
-            const model = yield* provider.getModel(info.model.providerID, info.model.modelID)
-            yield* sync(info.sessionID, [{ type: "model", data: [model] }])
+            // Historical messages (e.g. forked copies) can carry model IDs
+            // that no longer exist in the provider config; skip the model
+            // sync instead of failing the whole event handler (which logged
+            // an error per message - hundreds per fork).
+            const model = yield* provider.getModel(info.model.providerID, info.model.modelID).pipe(
+              Effect.catchTag("ProviderModelNotFoundError", () => Effect.succeed(undefined)),
+            )
+            if (model) yield* sync(info.sessionID, [{ type: "model", data: [model] }])
           }),
         )
         yield* watch(MessageV2.Event.PartUpdated, (data) =>
