@@ -5,8 +5,10 @@ import { SessionV1, StallGuardError } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
+import { Skill } from "@/skill"
 import { TimeContext } from "./time-context"
 import { Epoch } from "./epoch"
+import { SkillDelta } from "./skill-delta"
 
 import { LoopGuard } from "./loop-guard"
 import { StallGuard } from "./stall-guard"
@@ -121,6 +123,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const status = yield* SessionStatus.Service
     const sessions = yield* Session.Service
+    const skill = yield* Skill.Service
     const agents = yield* Agent.Service
     const provider = yield* Provider.Service
     const processor = yield* SessionProcessor.Service
@@ -1374,6 +1377,11 @@ const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 TimeContext.stampUserMessages(msgs)
+            // Skill hot-reload: re-stat cached skill files (and re-scan dirs on
+            // dir-mtime change) BEFORE the skills section renders, so the epoch
+            // section diff sees table changes (descriptions/adds/removals) and
+            // skill tool loads serve fresh content.
+            const skillChanges = yield* skill.refresh()
 
             const [skills, env, instructions, mcpInstructions] = yield* Effect.all([
               sys.skills(agent),
@@ -1405,6 +1413,17 @@ TimeContext.stampUserMessages(msgs)
                     step,
                     compactingPrompt: !!compactingPrompt,
                   }).pipe(Effect.provideService(Session.Service, sessions))
+            yield* SkillDelta.apply({
+             msgs,
+             sessionID,
+             user: lastUserMsg!,
+             userSystem: lastUser.system,
+             step,
+             compactingPrompt: !!compactingPrompt,
+             changed: skillChanges,
+           }).pipe(
+             Effect.provideService(Session.Service, sessions),
+           )
 
             const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model)
             // "Inject"-method compaction: the last rendered user message (the
@@ -1881,6 +1900,7 @@ export const node = LayerNode.make({
   deps: [
     SessionStatus.node,
     Session.node,
+    Skill.node,
     Agent.node,
     Provider.node,
     SessionProcessor.node,
