@@ -3,8 +3,8 @@ import path from "path"
 import fs from "fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { EditTool, findIndentWarnings } from "../../src/tool/edit"
-import { hashlineRef } from "../../src/tool/hashline"
+import { EditTool, findIndentWarnings, normalizeIndentToHint } from "../../src/tool/edit"
+import { hashlineRef, type HashlineEditInput } from "../../src/tool/hashline"
 import { disposeAllInstances, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LSP } from "@/lsp/lsp"
@@ -1158,7 +1158,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("warns on the one-short comment-indent fold via the validator", () =>
+  it.instance("auto-corrects the one-short comment-indent fold (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       const body = ["function outer() {", "  const alpha = 1", "}"]
@@ -1167,11 +1167,9 @@ describe("grammar parser + legacy hints", () => {
         filePath: filepath,
         edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: [" // one space short"] }],
       })
-      // The edit applies (the fold is a warning, not a rejection)...
-      expect(yield* load(filepath)).toContain(" // one space short")
-      // ...but the validator flags it for the model to fix on the next call.
-      expect(result.output).toContain("indentation validator")
-      expect(result.output).toContain("one space short")
+      // The fold (1 space for a 2-space body) is corrected at apply time.
+      expect(yield* load(filepath)).toContain("  // one space short")
+      expect(result.output).not.toContain("indentation validator")
     }),
   )
  
@@ -1189,7 +1187,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("warns on a one-short block-comment opener via the validator", () =>
+  it.instance("auto-corrects a one-short block-comment opener (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       const body = ["function outer() {", "  const alpha = 1", "}"]
@@ -1198,9 +1196,9 @@ describe("grammar parser + legacy hints", () => {
         filePath: filepath,
         edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: [" /* one space short", "  * continuation", "  */"] }],
       })
-      expect(yield* load(filepath)).toContain(" /* one space short")
-      expect(result.output).toContain("indentation validator")
-      expect(result.output).toContain("one space short")
+      expect(yield* load(filepath)).toContain("  /* one space short")
+      expect(result.output).not.toContain("indentation validator")
+      
     }),
   )
   
@@ -1218,7 +1216,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("warns when the fold is against the line ABOVE the comment", () =>
+  it.instance("auto-corrects a fold against the line ABOVE the comment (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       const body = ["function outer() {", "  const alpha = 1", "}"]
@@ -1229,8 +1227,8 @@ describe("grammar parser + legacy hints", () => {
       })
       // Inserted after line 2: the comment at 1 space sits against the code
       // above at 2 (the closing brace below is at 0) - the above check fires.
-      expect(yield* load(filepath)).toContain(" // one space short")
-      expect(result.output).toContain("indentation validator")
+      expect(yield* load(filepath)).toContain("  // one space short")
+      expect(result.output).not.toContain("indentation validator")
     }),
   )
   
@@ -1247,7 +1245,7 @@ describe("grammar parser + legacy hints", () => {
       expect(result.output).not.toContain("indentation validator")
     }),
   )
-  it.instance("warns on the one-short CODE-line fold via the validator", () =>
+  it.instance("auto-corrects the one-short CODE-line fold (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       const body = ["function outer() {", "  const alpha = 1", "}"]
@@ -1256,10 +1254,10 @@ describe("grammar parser + legacy hints", () => {
         filePath: filepath,
         edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: [" const beta = 2"] }],
       })
-      expect(yield* load(filepath)).toContain(" const beta = 2")
-      expect(result.output).toContain("indentation validator")
-      expect(result.output).toContain("one space short")
-      expect(result.output).toContain("code line")
+      expect(yield* load(filepath)).toContain("  const beta = 2")
+      expect(result.output).not.toContain("indentation validator")
+      
+      
     }),
   )
 
@@ -1277,7 +1275,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("warns when a replacement lands one space short of the line it replaced", () =>
+  it.instance("auto-corrects a replacement one space short of the line it replaced (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       // Neighbors straddle the expected indent (8 above, 12 below, line at
@@ -1296,9 +1294,9 @@ describe("grammar parser + legacy hints", () => {
           },
         ],
       })
-      expect(yield* load(filepath)).toContain("         const beta = 22")
-      expect(result.output).toContain("indentation validator")
-      expect(result.output).toContain("original line at 10")
+      expect(yield* load(filepath)).toContain("          const beta = 22")
+      expect(result.output).not.toContain("indentation validator")
+      
     }),
   )
 
@@ -1323,7 +1321,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("warns on the one-over comment fold via the validator", () =>
+  it.instance("auto-corrects the one-over comment fold (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       const body = ["function outer() {", "  const alpha = 1", "}"]
@@ -1332,9 +1330,9 @@ describe("grammar parser + legacy hints", () => {
         filePath: filepath,
         edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["   // three spaces, one over"] }],
       })
-      expect(yield* load(filepath)).toContain("   // three spaces, one over")
-      expect(result.output).toContain("indentation validator")
-      expect(result.output).toContain("one space OVER")
+      expect(yield* load(filepath)).toContain("  // three spaces, one over")
+      expect(result.output).not.toContain("indentation validator")
+      
     }),
   )
 
@@ -1352,7 +1350,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("warns when a replacement lands one space OVER the line it replaced", () =>
+  it.instance("auto-corrects a replacement one space OVER the line it replaced (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       // Equal-count REPLACE: orig at 10, new at 11 - the adjacent scan sees
@@ -1371,10 +1369,10 @@ describe("grammar parser + legacy hints", () => {
           },
         ],
       })
-      expect(yield* load(filepath)).toContain("           const beta = 22")
-      expect(result.output).toContain("indentation validator")
-      expect(result.output).toContain("original line at 10")
-      expect(result.output).toContain("one space OVER")
+      expect(yield* load(filepath)).toContain("          const beta = 22")
+      expect(result.output).not.toContain("indentation validator")
+      
+      
     }),
   )
 
@@ -1399,7 +1397,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("checks a changed line even when its text byte-matches a line elsewhere (Set-collision)", () =>
+  it.instance("auto-corrects a Set-collision fold (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       // The file already holds a one-short comment. The edit REPLACES a code
@@ -1420,7 +1418,7 @@ describe("grammar parser + legacy hints", () => {
           },
         ],
       })
-      expect(result.output).toContain("indentation validator")
+      expect(result.output).not.toContain("indentation validator")
     }),
   )
 
@@ -1438,7 +1436,7 @@ describe("grammar parser + legacy hints", () => {
     }),
   )
 
-  it.instance("skips a blank line when finding the adjacent code (LF-only neighbor)", () =>
+  it.instance("auto-corrects a fold with a blank line before the adjacent code (hint-normalize)", () =>
     Effect.gen(function* () {
       const filepath = path.join((yield* TestInstance).directory, "a.txt")
       const body = ["function outer() {", "  const alpha = 1", "}"]
@@ -1449,7 +1447,7 @@ describe("grammar parser + legacy hints", () => {
         filePath: filepath,
         edits: [{ type: "insert_after", line: hashlineRef(1, body[0]), text: ["", " const beta = 2"] }],
       })
-      expect(result.output).toContain("indentation validator")
+      expect(result.output).not.toContain("indentation validator")
     }),
   )
 
@@ -1685,7 +1683,7 @@ describe("indentation validator (changed-lines map)", () => {
     expect(findIndentWarnings(after, before, changed)).toEqual([])
   })
 
-  it.instance("flags a uniformly shifted block end-to-end when the patch also inserts", () =>
+  it.instance("auto-corrects a uniformly shifted block end-to-end when the patch also inserts (hint-normalize)", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const filepath = path.join(test.directory, "nested.ts")
@@ -1704,11 +1702,11 @@ describe("indentation validator (changed-lines map)", () => {
           { type: "insert_after", line: hashlineRef(1, lines[0]), text: "  // insert" },
         ],
       })
-      expect(result.output).toContain("indentation validator flags")
+      expect(result.output).not.toContain("indentation validator flags")
       // both replaced lines are caught via the changed-lines map (unequal
       // line counts: the insert disables the equal-count fallback)
-      expect((result.output.match(/one space OVER/g) ?? []).length).toBe(2)
-      expect(yield* load(filepath)).toBe("function f() {\n  // insert\n  if (x) {\n     const a = 1 // over\n     const b = 2\n  }\n}\n")
+      expect((result.output.match(/one space OVER/g) ?? []).length).toBe(0)
+      expect(yield* load(filepath)).toBe("function f() {\n  // insert\n  if (x) {\n    const a = 1 // over\n    const b = 2\n  }\n}\n")
     }),
   )
 
@@ -1730,4 +1728,76 @@ describe("indentation validator (changed-lines map)", () => {
       expect(yield* load(filepath)).toBe("function f() {\n  if (x) {\n    const a = 2\n    const b = 3\n  }\n}\n")
     }),
   )
+})
+describe("normalizeIndentToHint (hint-normalize)", () => {
+  test("pads a uniform one-short fold after a block-opener", () => {
+    const lines = ["function outer() {", "  const alpha = 1", "}"]
+    const edits: HashlineEditInput[] = [{ type: "insert_after", line: hashlineRef(1, lines[0]), text: [" // comment"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  // comment"])
+  })
+
+  test("pads an own-depth insert after a block-opener (two short)", () => {
+    const lines = ["function outer() {", "  const alpha = 1", "}"]
+    const edits: HashlineEditInput[] = [{ type: "insert_after", line: hashlineRef(1, lines[0]), text: ["// comment"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  // comment"])
+  })
+
+  test("trims a uniform one-over block after a block-opener", () => {
+    const lines = ["function outer() {", "  const alpha = 1", "}"]
+    const edits: HashlineEditInput[] = [{ type: "insert_after", line: hashlineRef(1, lines[0]), text: ["   // comment"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  // comment"])
+  })
+
+  test("leaves correctly-indented copy rows untouched", () => {
+    const lines = ["function outer() {", "  const alpha = 1", "}"]
+    const edits: HashlineEditInput[] = [{ type: "insert_after", line: hashlineRef(1, lines[0]), text: ["  const beta = 2"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  const beta = 2"])
+  })
+
+  test("corrects mixed-depth blocks as a unit (min-rule)", () => {
+    const lines = ["export function handler() {", "  const busy = true", "  if (busy) {", "    queue()", "  }", "}"]
+    const edits: HashlineEditInput[] = [{ type: "insert_after", line: hashlineRef(3, lines[2]), text: [
+      "  // note",
+      "  yield* status.show({",
+      "    title: \"x\"",
+      "  })",
+    ] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual([
+      "    // note",
+      "    yield* status.show({",
+      "      title: \"x\"",
+      "    })",
+    ])
+  })
+
+  test("BEFORE a block-opener is a sibling - no pad", () => {
+    const lines = ["function f() {", "  if (x) {", "    a()", "  }", "}"]
+    const edits: HashlineEditInput[] = [{ type: "insert_before", line: hashlineRef(2, lines[1]), text: ["  // sibling"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  // sibling"])
+  })
+
+  test("mixed copy blocks (I_spacing_sweep shape) are untouched", () => {
+    const lines = ["x0 plain", "x1 plain", "x2 plain"]
+    const edits: HashlineEditInput[] = [{ type: "replace_lines", start_line: hashlineRef(1, lines[0]), end_line: hashlineRef(3, lines[2]), text: [" a", "  b", "   c"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual([" a", "  b", "   c"])
+  })
+
+  test("cut/paste ops are skipped (no text)", () => {
+    const lines = ["a", "b", "c"]
+    const edits: HashlineEditInput[] = [
+      { type: "cut", start_line: hashlineRef(1, lines[0]), end_line: hashlineRef(1, lines[0]), register: "@r" },
+      { type: "paste", register: "@r", insert_after_line: hashlineRef(3, lines[2]) },
+    ]
+    normalizeIndentToHint(edits, lines)
+    expect(edits).toHaveLength(2)
+    expect(edits[0]).toMatchObject({ type: "cut" })
+    expect(edits[1]).toMatchObject({ type: "paste" })
+  })
 })
