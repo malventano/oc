@@ -698,7 +698,7 @@ export const EditTool = Tool.define(
           // Post-apply validator: flag the one-short indent fold (comments
           // AND code) so the model can fix it on the next call (the applied
           // edit is valid; this is a hint, not a rejection).
-          const warnings = displayPlans.flatMap((p) => (p.changed && !p.deleted ? findIndentWarnings(p.after, p.before, p.changedLines) : []))
+          const warnings = displayPlans.flatMap((p) => (p.changed && !p.deleted ? findIndentWarnings(p.after, p.before, p.changedLines, { filePath: p.targetPath }) : []))
           if (warnings.length > 0) {
             output += `\n\n<system-reminder>Edit applied, but the indentation validator flags ${warnings.length} line${warnings.length > 1 ? "s" : ""} that appear${warnings.length > 1 ? "" : "s"} one space short (the '+' separator was likely folded into the content):\n- ${warnings.join("\n- ")}\nIf the offset was not intentional, you may wish to re-issue a small edit to adjust it.</system-reminder>`
           }
@@ -761,7 +761,7 @@ function noopPlan(sourcePath: string, targetPath: string) {
  * intentionally misaligned markers. Blank lines are skipped when finding
  * the adjacent code line (a lone linefeed is not a real neighbor).
  */
-export function findIndentWarnings(after: string, before?: string, changedLines?: Map<number, string>): string[] {
+export function findIndentWarnings(after: string, before?: string, changedLines?: Map<number, string>, opts?: { filePath?: string }): string[] {
   const lines = after.split("\n")
   // When the pre-edit content is available, only consider lines the edit
   // actually ADDED or CHANGED - never nudge about pre-existing lines the
@@ -778,6 +778,42 @@ export function findIndentWarnings(after: string, before?: string, changedLines?
   const beforeLinesArr = before ? before.split("\n") : undefined
   const beforeLen = beforeLinesArr?.length ?? 0
   const warnings: string[] = []
+  // Content-context exemptions: lines that live INSIDE a literal context
+  // carry arbitrary indentation that is not a fold, so the ±1 checks must
+  // never see them (sweep 2026-08-13: 90%+ of flags on real content were
+  // these two classes):
+  // - markdown code fences (``` / ~~~): diff blocks (context lines at 1
+  //   vs fence at 0), pasted terminal output, ASCII art, code samples
+  // - template-literal interiors (TS/JS): string content between
+  //   unescaped backticks (e.g. a diff fixture inside a `...` literal)
+  const exempt = new Set<number>()
+  const ext = opts?.filePath?.split(".").pop() ?? ""
+  if (["md", "markdown"].includes(ext)) {
+    let inFence = false
+    for (let i = 0; i < lines.length; i++) {
+      if (/^\s*(```|~~~)/.test(lines[i]!)) { inFence = !inFence; exempt.add(i) }
+      else if (inFence) exempt.add(i)
+    }
+    // Unbalanced fence markers (stray ``` in prose - found a real one in
+    // BUILD.md 2026-08-13) invert the state for every later fence; don't
+    // trust the exemption on such files - fall back to full checking
+    // (a noisy hint beats silently skipping real folds).
+    if (inFence) exempt.clear()
+  } else if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(ext)) {
+    let inTemplate = false
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!
+      let odd = false
+      for (let j = 0; j < line.length; j++) {
+        if (line[j] === "\\") { j++; continue }
+        if (line[j] === "`") odd = !odd
+      }
+      if (inTemplate && !odd) exempt.add(i)
+      if (odd) inTemplate = !inTemplate
+    }
+  }
+  // (template parity is heuristic: backticks inside regexes/interpolations
+  // can mis-toggle, which only ever suppresses a warning - never invents one)
   const isCommentOrInterior = (l: string) => /^\s*(\/\/|\/\*|\*)/.test(l)
   // Block-comment interior/close lines (`*` continuation, `*/`) are
   // decorative: they sit at opener-indent + 1 BY DESIGN, so the fold
@@ -788,6 +824,7 @@ export function findIndentWarnings(after: string, before?: string, changedLines?
     const line = lines[i]!
     if (line.trim() === "") continue
     if (isInterior(line)) continue
+    if (exempt.has(i)) continue
     if (beforeLinesArr && i < beforeLen && beforeLinesArr[i] === line) continue // pre-existing line, not ours
     const lineIndent = line.match(/^\s*/)![0].length
     const kind = /^\s*(\/\/|\/\*)/.test(line) ? "comment" : "code line"
