@@ -97,6 +97,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   let selection: { value: T; category?: string } | undefined
   let resetSelection = false
   let visibilityGeneration = 0
+  const [submitting, setSubmitting] = createSignal(false)
 
   createEffect(
     on(
@@ -341,8 +342,19 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     }
   }
 
+  async function selectOption(option: DialogSelectOption<T>) {
+    if (props.locked || submitting()) return
+    setSubmitting(true)
+    try {
+      await option.onSelect?.(dialog)
+      props.onSelect?.(option)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   function submit() {
-    if (props.locked) return
+    if (props.locked || submitting()) return
     setStore("input", "keyboard")
     const index = focusedAction()
     if (index !== undefined) {
@@ -351,8 +363,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     }
     const option = selected()
     if (!option) return
-    option.onSelect?.(dialog)
-    props.onSelect?.(option)
+    void selectOption(option)
   }
 
   function moveAction(direction: 1 | -1) {
@@ -647,8 +658,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                           }}
                           onMouseUp={() => {
                             if (props.locked) return
-                            option.onSelect?.(dialog)
-                            props.onSelect?.(option)
+                            void selectOption(option)
                           }}
                           onMouseOver={() => {
                             if (props.locked) return
