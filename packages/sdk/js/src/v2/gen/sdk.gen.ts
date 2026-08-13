@@ -191,6 +191,8 @@ import type {
   SessionDiffResponses,
   SessionForkErrors,
   SessionForkResponses,
+  SessionForkTargetsErrors,
+  SessionForkTargetsResponses,
   SessionGetErrors,
   SessionGetResponses,
   SessionInitErrors,
@@ -3791,6 +3793,38 @@ export class Session2 extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * List fork targets
+   *
+   * Retrieve the user messages of a session (chronological, with parts) for the fork dialog - skips the assistant/tool message history.
+   */
+  public forkTargets<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionForkTargetsResponses, SessionForkTargetsErrors, ThrowOnError>({
+      url: "/session/{sessionID}/fork-targets",
+      ...options,
+      ...params,
     })
   }
 
