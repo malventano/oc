@@ -36,7 +36,7 @@ import { errorMessage } from "@/util/error"
 import { isMedia } from "@/util/media"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -488,6 +488,28 @@ export const forkTargets = Effect.fn("MessageV2.forkTargets")(function* (input: 
     .all()
     .pipe(Effect.orDie)
   return yield* hydrate(db, rows)
+})
+// Resume-mode lookup: agent of the session's last user message, one indexed
+// row read, uncapped. Clients restore the plan/build mode from this on
+// session open; a message-window cap would miss sessions whose final turn
+// ran more assistant messages than the window (all newer than the user
+// message that parented them).
+export const lastUserAgent = Effect.fn("MessageV2.lastUserAgent")(function* (input: { sessionID: SessionID }) {
+  const { db } = yield* Database.Service
+  const row = yield* db
+    .select({ agent: sql<string>`json_extract(${MessageTable.data}, '$.agent')` })
+    .from(MessageTable)
+    .where(
+      and(
+        eq(MessageTable.session_id, input.sessionID),
+        sql`json_extract(${MessageTable.data}, '$.role') = 'user'`,
+      ),
+    )
+    .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
+    .limit(1)
+    .get()
+    .pipe(Effect.orDie)
+  return row?.agent ? Option.some(row.agent) : Option.none()
 })
 
 export function stream(sessionID: SessionID) {

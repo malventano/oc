@@ -561,6 +561,9 @@ export const SessionInfo = Schema.Struct({
   share: optional(SessionShare),
   title: Schema.String,
   agent: optional(Schema.String),
+  // Agent of the session's last user message (computed, not stored): the
+  // resume-mode lookup for clients restoring the plan/build state on open.
+  lastUserAgent: optional(Schema.String),
   model: optional(SessionModel),
   version: Schema.String,
   metadata: optional(Schema.Record(Schema.String, Schema.Any)),
