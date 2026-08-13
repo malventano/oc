@@ -17,6 +17,7 @@ import { Glob } from "@opencode-ai/core/util/glob"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
 import { escapeHtml } from "@/util/html"
+import * as NFS from "fs/promises"
 
 const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
@@ -82,16 +83,30 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Ski
 type State = {
   skills: Record<string, Info>
   dirs: Set<string>
+  /** Per-skill file stats as of the last refresh (or the deleted sentinel). */
+  lastSeen: Record<string, { mtimeMs: number; size: number } | { deleted: true }>
+  /** Per-scanned-root dir mtime at last re-scan (dir mtime changes on entry add/remove). */
+  dirMtimes: Record<string, number>
+  /** Per-scanned-root matched path list at last re-scan (for add/remove detection). */
+  matchCache: Record<string, string[]>
 }
+
+type ScanSpec = { root: string; pattern: string; opts?: { dot?: boolean; scope?: string } }
+
+export type RefreshChange =
+  | { name: string; deleted: true }
+  | { name: string; deleted: false; description: string | undefined; content: string; mtimeMs: number }
 
 type DiscoveryState = {
   matches: string[]
   dirs: string[]
+  specs: ScanSpec[]
 }
 
 type ScanState = {
   matches: Set<string>
   dirs: Set<string>
+  specs: ScanSpec[]
 }
 
 export interface Interface {
@@ -99,6 +114,7 @@ export interface Interface {
   readonly require: (name: string) => Effect.Effect<Info, NotFoundError>
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
+  readonly refresh: () => Effect.Effect<RefreshChange[], never, never>
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
 }
 
@@ -180,7 +196,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   directory: string,
   worktree: string,
 ) {
-  const state: ScanState = { matches: new Set(), dirs: new Set() }
+  const state: ScanState = { matches: new Set(), dirs: new Set(), specs: [] }
 
   const externalDirs: string[] = []
   if (!disableExternalSkills) {
@@ -190,6 +206,7 @@ const discoverSkills = Effect.fnUntraced(function* (
     for (const dir of externalDirs) {
       const root = path.join(global.home, dir)
       if (!(yield* fsys.isDir(root))) continue
+      state.specs.push({ root, pattern: EXTERNAL_SKILL_PATTERN, opts: { dot: true, scope: "global" } })
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
     }
 
@@ -198,12 +215,14 @@ const discoverSkills = Effect.fnUntraced(function* (
       .pipe(Effect.catch(() => Effect.succeed([] as string[])))
 
     for (const root of upDirs) {
+      state.specs.push({ root, pattern: EXTERNAL_SKILL_PATTERN, opts: { dot: true, scope: "project" } })
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
     }
   }
 
   const configDirs = yield* config.directories()
   for (const dir of configDirs) {
+    state.specs.push({ root: dir, pattern: OPENCODE_SKILL_PATTERN })
     yield* scan(state, dir, OPENCODE_SKILL_PATTERN)
   }
 
@@ -216,12 +235,14 @@ const discoverSkills = Effect.fnUntraced(function* (
       continue
     }
 
+    state.specs.push({ root: dir, pattern: SKILL_PATTERN })
     yield* scan(state, dir, SKILL_PATTERN)
   }
 
   for (const url of cfg.skills?.urls ?? []) {
     const pulledDirs = yield* discovery.pull(url)
     for (const dir of pulledDirs) {
+      state.specs.push({ root: dir, pattern: SKILL_PATTERN })
       yield* scan(state, dir, SKILL_PATTERN)
     }
   }
@@ -229,6 +250,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   return {
     matches: Array.from(state.matches),
     dirs: Array.from(state.dirs),
+    specs: state.specs,
   }
 })
 
@@ -272,7 +294,7 @@ const layer = Layer.effect(
     )
     const state = yield* InstanceState.make(
       Effect.fn("Skill.state")(function* () {
-        const s: State = { skills: {}, dirs: new Set() }
+        const s: State = { skills: {}, dirs: new Set(), lastSeen: {}, dirMtimes: {}, matchCache: {} }
         // Register the built-in skill BEFORE disk discovery so a user-disk
         // skill with the same name can override it.
         s.skills[CUSTOMIZE_OPENCODE_SKILL_NAME] = {
@@ -313,8 +335,88 @@ const layer = Layer.effect(
       if (!agent) return list
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
+    const refresh: () => Effect.Effect<RefreshChange[], never, never> = () =>
+      Effect.gen(function* () {
+      const s = yield* InstanceState.get(state)
+      const d = yield* InstanceState.get(discovered)
+      const changed: RefreshChange[] = []
+      // File-level: stat each cached skill's SKILL.md; re-parse on change. A failed
+      // stat marks the skill deleted (once - the sentinel suppresses re-reports).
+      for (const info of Object.values(s.skills)) {
+        if (info.location === "<built-in>") continue
+        const prev = s.lastSeen[info.name]
+        const st = yield* Effect.tryPromise(() => NFS.stat(info.location)).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (!st) {
+          if (prev && "deleted" in prev) continue
+          s.lastSeen[info.name] = { deleted: true }
+          changed.push({ name: info.name, deleted: true })
+          continue
+        }
+        if (prev && !("deleted" in prev) && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue
+        const md = yield* Effect.tryPromise(() => ConfigMarkdown.parse(info.location)).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        s.lastSeen[info.name] = { mtimeMs: st.mtimeMs, size: st.size }
+        if (!md || !isSkillFrontmatter(md.data)) continue
+        s.skills[info.name] = {
+          name: md.data.name,
+          description: md.data.description,
+          location: info.location,
+          content: md.content,
+        }
+        changed.push({ name: md.data.name, deleted: false, description: md.data.description, content: md.content, mtimeMs: st.mtimeMs })
+        if (md.data.name !== info.name) {
+          // Frontmatter rename: drop the old key.
+          delete s.skills[info.name]
+          delete s.lastSeen[info.name]
+        }
+      }
+      // Dir-level: re-scan roots whose dir mtime changed (entry add/remove/rename),
+      // then add new matches and drop cached skills whose file vanished from the scan.
+      for (const spec of d.specs) {
+       // Watch the parents of known matches plus the well-known skill dirs,
+       // not just the root: a new SKILL.md lands at root/skills/<name>/SKILL.md,
+       // which changes the skills/ dir's mtime - the root's own mtime only
+       // changes for DIRECT children (grandchild add/remove would be missed).
+       const watched = new Set<string>([spec.root])
+       for (const m of s.matchCache[spec.root] ?? []) watched.add(path.dirname(m))
+       watched.add(path.join(spec.root, "skills"))
+       watched.add(path.join(spec.root, "skill"))
+       let rescan = false
+       for (const dir of watched) {
+         const st = yield* Effect.tryPromise(() => NFS.stat(dir)).pipe(Effect.catch(() => Effect.succeed(undefined)))
+         if (!st) continue
+         if (s.dirMtimes[dir] !== st.mtimeMs) {
+           s.dirMtimes[dir] = st.mtimeMs
+           rescan = true
+         }
+       }
+       if (!rescan) continue
+        const scanState: ScanState = { matches: new Set(), dirs: new Set(), specs: [] }
+        yield* scan(scanState, spec.root, spec.pattern, spec.opts)
+        const prevMatches = new Set(s.matchCache[spec.root] ?? [])
+        const curMatches = Array.from(scanState.matches)
+        s.matchCache[spec.root] = curMatches
+        for (const m of curMatches) {
+          if (prevMatches.has(m) || Object.values(s.skills).some((i) => i.location === m)) continue
+          yield* add(s, m, events)
+          const info = Object.values(s.skills).find((i) => i.location === m)
+          if (info) {
+            const st2 = yield* Effect.tryPromise(() => NFS.stat(m)).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            if (st2) s.lastSeen[info.name] = { mtimeMs: st2.mtimeMs, size: st2.size }
+          }
+        }
+        for (const [name, info] of Object.entries(s.skills)) {
+          if (info.location === "<built-in>") continue
+          if (prevMatches.has(info.location) && !curMatches.includes(info.location)) {
+            delete s.skills[name]
+            delete s.lastSeen[name]
+            changed.push({ name, deleted: true })
+          }
+        }
+      }
+      return changed
+    })
 
-    return Service.of({ get, require, all, dirs, available })
+    return Service.of({ get, require, all, dirs, available, refresh })
   }),
 )
 
