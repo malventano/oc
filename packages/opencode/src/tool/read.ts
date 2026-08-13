@@ -348,7 +348,18 @@ export const ReadTool = Tool.define<
       }
       // Anchor hashes the FULL untruncated line so truncated reads still yield
       // valid anchors (the display line may be capped; the hash is not).
-      output += file.raw.map((line, i) => `${hashlineRef(i + file.offset, file.full[i] ?? line)}:${line}`).join("\n")
+      // Indent hint: block-opener lines (ending with `{`) hint one level
+      // deeper than the brace (the body indent); other lines hint their own
+      // leading-space count. The model writes content after a line with the
+      // hint as the CONTENT indent; the edit tool's hint-normalize step
+      // corrects a uniform ±1 fold against the same value.
+      output += file.raw
+        .map((line, i) => {
+          const nsp = (line.match(/^ */) ?? [""])[0].length
+          const hint = line.trimEnd().endsWith("{") ? nsp + 2 : nsp
+          return `${hashlineRef(i + file.offset, file.full[i] ?? line)}[${hint}]:${line}`
+        })
+        .join("\n")
 
       const last = file.offset + file.raw.length - 1
       const next = last + 1

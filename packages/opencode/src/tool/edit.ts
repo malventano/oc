@@ -181,6 +181,7 @@ export const EditTool = Tool.define(
           const autocorrect = conf.experimental?.hashline_autocorrect !== false || Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
           const aggressiveAutocorrect = Bun.env.OPENCODE_HL_AUTOCORRECT === "1"
           const enforceSeenLines = conf.experimental?.hashline_seen_lines !== false
+          const indentHint = conf.experimental?.hashline_indent_hint !== false
           // aggressiveAutocorrect (echo-stripping + rewrap restore) is env-
           // gated, not config-gated: it rewrites the model's payload and
           // must stay opt-in per-launch; basic autocorrect is the safe,
@@ -371,6 +372,12 @@ export const EditTool = Tool.define(
                     raw: "",
                   }
               const parsed = prev ? parseHashlineContent(Buffer.from(prev.after)) : diskParsed
+
+              // Hint-normalize BEFORE register expansion: paste content must
+              // never be rewritten (cut/paste ops carry no text and are
+              // skipped here). Anchor refs at this point match the read
+              // output the model saw; chained sections are remapped later.
+              if (indentHint) normalizeIndentToHint(edits, parsed.lines)
 
               const expanded = expandRegisters(edits, parsed.lines, registers, anonymousRegister)
               if (expanded.anonymous) anonymousRegister = expanded.anonymous
@@ -899,6 +906,72 @@ function expandRegisters(
     out.push(edit)
   }
   return { edits: out, registers: newRegisters, anonymous: newAnonymous }
+}
+
+/**
+* Engine-side indent-fold correction (hint-normalize). The read output
+* annotates each line with its indent hint `[N]` (block-openers hint the
+* body indent, others their own). The model tends to write the hint as the
+* TOTAL spaces after `+` (separator fold: content lands one short) or to
+* use the anchor's own depth for opener lines (two short). This corrects
+* each text op's rows against its anchor line's hint:
+* - insert_after an opener (`{` line): content can never legitimately sit
+*   shallower than the body indent -> MIN-rule: shift the whole block by
+*   the delta of its minimum row (fold -1 pad, own-depth -2 pad, one-over
+*   +1 trim). Mixed-depth blocks (O) shift as a unit.
+* - all other anchors (BEFORE/SET/REPLACE content is a SIBLING of the
+*   anchor line - own indent even when the line ends with `{`): only
+*   uniform single-depth blocks are corrected (mixed copy blocks like
+*   I_spacing_sweep are untouched).
+* Runs BEFORE register expansion so paste content (captured verbatim from
+* a CUT) is never rewritten - cut/paste ops carry no text and are skipped.
+*/
+export function normalizeIndentToHint(edits: HashlineEditInputZ[], lines: string[]) {
+  for (const op of edits) {
+    if (!("text" in op) || op.text.length === 0) continue
+    const anchorRef: string =
+      "line" in op
+        ? String(op.line)
+        : "start_line" in op
+          ? String(op.start_line)
+          : "insert_after_line" in op
+            ? String(op.insert_after_line)
+            : "insert_before_line" in op
+              ? String(op.insert_before_line)
+              : ""
+    const anchorNo = anchorRef.split("#")[0]
+    const anchorLine = lines[Number(anchorNo) - 1] ?? ""
+    if (anchorLine === "") continue
+    const aLead = (anchorLine.match(/^ */) ?? [""])[0].length
+    const opener = op.type === "insert_after" && anchorLine.trimEnd().endsWith("{")
+    const hint = opener ? aLead + 2 : aLead
+    const rows = Array.isArray(op.text) ? op.text : [op.text]
+    const lead = (r: string) => (r.match(/^ */) ?? [""])[0].length
+    const nonBlank = rows.map((r, i) => (r === "" ? -1 : i)).filter((i) => i >= 0)
+    if (nonBlank.length === 0) continue
+    const leads = nonBlank.map((i) => lead(rows[i]))
+    let delta = 0
+    if (opener) {
+      const minLead = Math.min(...leads)
+      if (minLead === hint - 1) delta = 1
+      else if (minLead === hint + 1) delta = -1
+      else if (minLead === hint - 2) delta = 2
+    } else {
+      const uniform = leads.every((l) => l === leads[0])
+      if (uniform && leads[0] === hint - 1) delta = 1
+      else if (uniform && leads[0] === hint + 1) delta = -1
+    }
+    if (delta !== 0) {
+      const fixed = rows.map((r, i) =>
+        r === ""
+          ? r
+          : delta > 0
+            ? " ".repeat(delta) + r
+            : r.replace(new RegExp(`^ {${-delta}}`), ""),
+      )
+      op.text = Array.isArray(op.text) ? fixed : fixed[0]
+    }
+  }
 }
 
 function boundaryAnnotations(edits: HashlineEditZ[], lines: string[]) {

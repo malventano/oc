@@ -193,6 +193,10 @@ export const Info = Schema.Struct({
         description:
           "Reject hashline edits referencing lines never displayed by read/search (default true; set false to disable)",
       }),
+      hashline_indent_hint: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Auto-correct a uniform ±1 indent fold against the read output's indent hints (default true; set false to disable)",
+      }),
     }),
   ),
 }).annotate({ identifier: "Config" })
