@@ -579,6 +579,7 @@ export function Session() {
                 return child.id === messageID
               })
               if (child) scroll.scrollBy(child.y - scroll.y - 1)
+              else scroll.scrollTo(0)
             }}
             sessionID={route.sessionID}
           />

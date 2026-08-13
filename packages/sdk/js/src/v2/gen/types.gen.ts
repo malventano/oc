@@ -9858,6 +9858,43 @@ export type SessionPromptResponses = {
 
 export type SessionPromptResponse = SessionPromptResponses[keyof SessionPromptResponses]
 
+export type SessionForkTargetsData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/fork-targets"
+}
+
+export type SessionForkTargetsErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionForkTargetsError = SessionForkTargetsErrors[keyof SessionForkTargetsErrors]
+
+export type SessionForkTargetsResponses = {
+  /**
+   * List of fork targets
+   */
+  200: Array<{
+    info: Message
+    parts: Array<Part>
+  }>
+}
+
+export type SessionForkTargetsResponse = SessionForkTargetsResponses[keyof SessionForkTargetsResponses]
+
 export type SessionDeleteMessageData = {
   body?: never
   path: {
