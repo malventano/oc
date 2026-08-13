@@ -386,6 +386,10 @@ export const ReadTool = Tool.define<
           preview: file.raw.slice(0, 20).join("\n"),
           truncated,
           loaded: loaded.map((item) => item.filepath),
+          // Read-time stat backing fileDelta staleness detection: the walk
+          // compares the disk stat against this baseline on later user
+          // prompts and reminds the model to re-read on drift.
+          stat: { mtimeMs: Option.getOrUndefined(stat.mtime)?.getTime() ?? 0, size: Number(stat.size) },
           display: {
             type: "file" as const,
             path: filepath,

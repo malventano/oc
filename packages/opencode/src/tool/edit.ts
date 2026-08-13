@@ -6,6 +6,7 @@
 // insert-position warnings. Backups were intentionally NOT merged (hashline
 // prevents corruption at the gate; omp ships none).
 
+import * as NFS from "fs/promises"
 import * as path from "path"
 import { Effect, Schema, Semaphore } from "effect"
 import * as Tool from "./tool"
@@ -627,6 +628,22 @@ export const EditTool = Tool.define(
             )
           }
 
+          // Post-write stat per written path, backing fileDelta staleness
+          // detection: session self-edits are never re-reminded (the walk
+          // treats the post-edit stat as the reported state), and external
+          // changes after the edit diff against it. Stat AFTER the commit
+          // phase so format re-writes are included.
+          const writtenStats = new Map<string, { mtimeMs: number; size: number }>()
+          for (const plan of planned) {
+            if (plan.deleted || !plan.changed) continue
+            const target = plan.targetPath
+            if (writtenStats.has(target)) continue
+            const st = yield* Effect.tryPromise(() => NFS.stat(target)).pipe(
+              Effect.catch(() => Effect.succeed(undefined)),
+            )
+            if (st) writtenStats.set(target, { mtimeMs: st.mtimeMs, size: st.size })
+          }
+
           const diagnostics = yield* lsp.diagnostics()
           let additions = 0
           let deletions = 0
@@ -703,6 +720,13 @@ export const EditTool = Tool.define(
               additions: Math.max(0, p.lineCounts.new - p.lineCounts.old),
               deletions: Math.max(0, p.lineCounts.old - p.lineCounts.new),
               movePath: p.section.rename ? p.targetPath : undefined,
+              // Post-write stat backing fileDelta staleness detection: session
+              // self-edits are never re-reminded; the walk treats this stat as
+              // the reported state. Deletes/moves carry a { deleted: true }
+              // sentinel so the missing source path is not re-reminded.
+              stat: p.deleted || p.section.rename
+                ? { deleted: true }
+                : writtenStats.get(p.targetPath) ?? undefined,
             }))
             .filter((f) => f.type === "delete" || f.patch.length > 0)
           const metadata = {
