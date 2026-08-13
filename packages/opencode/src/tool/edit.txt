@@ -17,7 +17,7 @@ Operations (colon headers take `+` body rows, the final content):
 - `AFTER N#ID:` - insert body rows after line N
 - `BEFORE N#ID:` - insert body rows before line N
 - `BETWEEN A#ID B#ID:` - insert body rows between lines A and B
-- `APPEND:` - add body rows at the end of the file
+- `APPEND:` / `PREPEND:` are anchor-free - they work without a read; use them instead of shell redirection (cat >>).
 - `PREPEND:` - add body rows at the start of the file
 - `CUT A#ID B#ID` - delete lines A..B, capture into the anonymous register
 - `CUT A#ID B#ID @name` - delete lines A..B, capture into register `@name`
@@ -32,11 +32,12 @@ Content rows:
 - INDENT HINTS in read output: every read line carries its indent hint after the anchor: `2#QM[4]:  if (x) {` means content inserted right AFTER line 2 belongs at FOUR leading spaces. Block-opener lines (ending with `{`) hint one level deeper than the brace (the body indent); other lines hint their own leading-space count. Use the hint as the content indent: content at 2 spaces is `+  x` (separator + two content spaces). The tool AUTO-CORRECTS a uniform one-space fold against the hint (if every row lands one short of the hinted indent, it pads them; one over, it trims), so rows written with the hint as the total after `+` still land correctly. Content inserted BEFORE a `}`-closer line (like `})`) belongs to the CLOSED BLOCK's body, so the same correction applies with the closer's indent + 2 (mixed blocks like a whole test inserted before a closing `})` shift as a unit); `*`-prefixed rows (docblock/block-comment bodies) are decorative and never trimmed.
 - Content is RAW: backticks, `${...}`, double quotes, `\` sequences, and all punctuation after the separator are literal content. NEVER escape, backslash, or wrap them. Text-based search/replace is not available - anchors only.
 - A literal leading `-` or `+` in the content keeps its prefix: Markdown bullet `- item` becomes `+ - item`; a literal `+ item` becomes `+ + item`.
-- The range deletes; the body is ONLY the final content. Body length is irrelevant to the range.
+- The range deletes; the body is ONLY the final content. Do NOT echo the old line(s) into the body - an echoed first line is auto-stripped, but later echoes duplicate content (a mangled replace).
 - To delete lines, use `CUT`. Empty `SET`/`REPLACE` bodies are invalid.
 
 Rules:
 - Anchors come from the latest `read`/`grep` output. Never invent or guess them - a wrong anchor is rejected with retry-with anchors; re-read if unsure.
+- On an anchor-mismatch rejection, retry with the CORRECTED anchors from the error message - do not re-read (the message already shows the current content and the fresh LINE#IDs).
 - Every section header carries the 4-hex `#TAG` from the latest `read` of that file (`[PATH#TAG]`); copy it verbatim from the read output.
 - Touch only lines displayed by the read. Undisplayed/elided lines are UNSEEN - re-read the range first.
 - Ranges are tight: cover only the lines that change. Non-adjacent changes are separate ops.

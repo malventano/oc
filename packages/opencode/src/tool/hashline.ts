@@ -757,8 +757,17 @@ export function applyHashlineEdits(input: {
       const shifted = new Map<number, string>()
       for (const [idx, orig] of changedLines) {
         if (idx < op.start) shifted.set(idx, orig)
+        // 0113: keep entries at positions the replacement text now occupies
+        // ([op.start, op.start + min(text, del))) - the just-recorded
+        // replaced originals key exactly there; the OLD rebuild dropped
+        // them whenever text.length > del (e.g. SET with two rows replacing
+        // one line), silently emptying the changedLines map for that op
+        // (found via the 0113 auto-fix live tests - orig lookups came back
+        // undefined and folds went unfixed).
+        else if (idx < op.start + Math.min(text.length, op.del)) shifted.set(idx, orig)
+        // shift entries above the original range by the net delta
         else if (idx >= op.start + op.del) shifted.set(idx + delta, orig)
-        // entries inside the deleted range are gone
+        // entries keyed at deleted positions beyond the replacement text are gone
       }
       changedLines.clear()
       for (const [idx, orig] of shifted) changedLines.set(idx, orig)

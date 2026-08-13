@@ -6,7 +6,7 @@
 // any unmapped, non-uniform, or ambiguous anchor returns null and the caller
 // falls back to the mismatch error with retry-with anchors.
 
-import { HashlineEdit, parseHashlineRef } from "./hashline"
+import { HashlineEdit, hashlineID, parseHashlineRef } from "./hashline"
 
 type Run = { type: "equal" | "removed" | "added"; oldStart: number; newStart: number; count: number }
 
@@ -192,4 +192,89 @@ export function remapEditsToCurrent(
   // means mixed/non-uniform shifts, also unrecoverable.
   if (!hadAnchored || delta === null || delta === 0) return null
   return out
+}
+
+/**
+* Same-line stale-anchor substitution (patch 0113). The remap above only
+* recovers anchors whose lines SHIFTED (uniform offset through unchanged
+* lines). It fails closed on in-place content changes at the same line
+* number - exactly what the model's own prior edit (or a parallel session)
+* produces. This walks each anchor and substitutes the fresh ID when the
+* anchor's ID matches a candidate state at the SAME line number:
+* - candidates[0] = current disk lines (anchor fresh, no substitution)
+* - later candidates = older states the model actually saw (snapshot
+*   content, snapshot.previous) - anchor verified stale, substitute
+* An anchor matching NO candidate (fabricated/guessed, or copied from a
+* different file) fails the whole patch - the caller keeps the mismatch
+* error. The substituted IDs are re-validated by applyHashlineEdits
+* against live content before any splice runs, so nothing applies blind.
+*/
+export function substituteSameLineAnchors(
+  edits: HashlineEdit[],
+  candidates: Array<string[] | undefined>,
+): { edits: HashlineEdit[]; substituted: string[] } | null {
+  const out: HashlineEdit[] = []
+  const substituted: string[] = []
+  for (const edit of edits) {
+    if (edit.type === "replace" || edit.type === "append" || edit.type === "prepend") {
+      out.push(edit)
+      continue
+    }
+    const refs = anchoredRefs(edit)
+    let next: HashlineEdit = edit
+    let ok = true
+    for (const ref of refs) {
+      let matched = false
+      for (let c = 0; c < candidates.length; c++) {
+        const line = candidates[c]?.[ref.line - 1]
+        if (line === undefined) continue
+        if (hashlineID(ref.line, line) === ref.id) {
+          if (c > 0) {
+            // Fresh ID comes from the CURRENT disk line (candidates[0]),
+            // never from the matched older state - hashing the old content
+            // would reproduce the stale ID and make the substitution a no-op.
+            const diskLine = candidates[0]?.[ref.line - 1]
+            if (diskLine === undefined) {
+              ok = false
+              break
+            }
+            const fresh = hashlineID(ref.line, diskLine)
+            next = editWithRef(next as Anchored, ref.key, `${ref.line}#${fresh}`)
+            substituted.push(`${ref.line}#${ref.id} -> ${ref.line}#${fresh}`)
+          }
+          matched = true
+          break
+        }
+      }
+      if (!matched) {
+        ok = false
+        break
+      }
+      if (!ok) return null
+      out.push(next)
+    }
+  }
+  if (substituted.length === 0) return null
+  return { edits: out, substituted }
+}
+
+/**
+* 0113: validate that every remapped anchor's ID matches the LIVE content at
+* its mapped line number. Gates the Tier 1 shift-remap: the remap moves
+* anchors by line-offset, which is right when the model's read predates the
+* shift, but WRONG when the model read the post-shift file with fresh anchors
+* (they would be moved off their intended lines). Fresh anchors fail this
+* check and the caller falls through to same-line substitution (a no-op for
+* fresh anchors) - the edit then applies untouched.
+*/
+export function remappedAnchorsValidate(edits: HashlineEdit[], diskLines: string[]): boolean {
+  for (const edit of edits) {
+    if (edit.type === "replace" || edit.type === "append" || edit.type === "prepend") continue
+    for (const ref of anchoredRefs(edit)) {
+      const line = diskLines[ref.line - 1]
+      if (line === undefined) return false
+      if (hashlineID(ref.line, line) !== ref.id) return false
+    }
+  }
+  return true
 }
