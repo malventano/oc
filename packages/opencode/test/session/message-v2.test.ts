@@ -1727,3 +1727,134 @@ describe("session.message-v2.latest", () => {
     expect(state.tasks[0]).toMatchObject({ type: "subtask", prompt: "inspect" })
   })
 })
+describe("session.message-v2.filterCompacted epochs", () => {
+  const T = MessageID.make("msg_epoch_t")
+  const C = MessageID.make("msg_epoch_c")
+  const S = MessageID.make("msg_epoch_s")
+  const N = MessageID.make("msg_epoch_n")
+
+  // Fresh fixtures per test: the delta filter reassigns msg.parts on the
+  // filtered objects, so shared fixtures would leak mutations between tests.
+  const makeChain = () => {
+    const delta = (messageID: MessageID): SessionV1.Part =>
+      ({
+        ...basePart(messageID, "pd"),
+        type: "text",
+        text: "<system-reminder>\nSystem context drift: instructions (AGENTS.md) changed\n</system-reminder>",
+        synthetic: true,
+        metadata: { epochDelta: true },
+      }) as SessionV1.Part
+    const tailWithDelta: SessionV1.WithParts = {
+      info: { ...userInfo(T), time: { created: 100 } },
+      parts: [{ ...basePart(T, "p1"), type: "text", text: "original prompt" } as SessionV1.Part, delta(T)],
+    }
+    const compactionUser: SessionV1.WithParts = {
+      info: { ...userInfo(C), time: { created: 200 } },
+      parts: [{ ...basePart(C, "p1"), type: "compaction", auto: true, tail_start_id: T } as SessionV1.Part],
+    }
+    const summaryAssistant: SessionV1.WithParts = {
+      info: {
+        ...assistantInfo(S, C),
+        time: { created: 300 },
+        summary: true,
+        finish: "stop",
+      } as SessionV1.Assistant,
+      parts: [],
+    }
+    const continueUser: SessionV1.WithParts = {
+      info: { ...userInfo(N), time: { created: 400 } },
+      parts: [{ ...basePart(N, "p1"), type: "text", text: "continue" } as SessionV1.Part],
+    }
+    return { tailWithDelta, compactionUser, summaryAssistant, continueUser }
+  }
+
+  const hasDelta = (msgs: SessionV1.WithParts[]) =>
+    msgs.flatMap((m) => m.parts).some((p) => p.type === "text" && p.metadata?.epochDelta)
+
+  test("epoch deltas survive on a chain without a compaction", () => {
+    const { tailWithDelta, continueUser } = makeChain()
+    const out = MessageV2.filterCompacted([continueUser, tailWithDelta])
+    expect(hasDelta(out)).toBe(true)
+  })
+
+  test("post-compaction: deltas from the superseded epoch are dropped from the model chain", () => {
+    const { tailWithDelta, compactionUser, summaryAssistant, continueUser } = makeChain()
+    const out = MessageV2.filterCompacted([continueUser, summaryAssistant, compactionUser, tailWithDelta])
+    // The compaction pair survives (the summary is the new epoch boundary).
+    expect(out.some((m) => m.info.id === S)).toBe(true)
+    expect(out.some((m) => m.info.id === C)).toBe(true)
+    expect(hasDelta(out)).toBe(false)
+    const tail = out.find((m) => m.info.id === T)!
+    expect(tail.parts.some((p) => p.type === "text" && p.metadata?.epochDelta)).toBe(false)
+    expect(tail.parts.some((p) => p.type === "text" && p.text === "original prompt")).toBe(true)
+  })
+
+  test("the compaction turn itself still sees the deltas (no newer summary yet)", () => {
+    const { tailWithDelta, compactionUser } = makeChain()
+    const out = MessageV2.filterCompacted([compactionUser, tailWithDelta])
+    expect(hasDelta(out)).toBe(true)
+  })
+
+  test("undo past the compaction restores the delta parts (boundary reverts)", () => {
+    const { tailWithDelta, continueUser } = makeChain()
+    const out = MessageV2.filterCompacted([continueUser, tailWithDelta])
+    expect(hasDelta(out)).toBe(true)
+  })
+
+  test("multi-compaction: only the newest epoch's deltas reach the model", () => {
+    const { tailWithDelta, compactionUser, summaryAssistant, continueUser } = makeChain()
+    // Second pair: c2/s2 over a tail starting at the FIRST tail message; the
+    // older pair (c1/s1) then sits inside the retained tail, and its epoch's
+    // delta (on tailWithDelta) plus any pre-s2 delta must be dropped while
+    // the post-s2 delta (on continueUser) stays.
+    const C2 = MessageID.make("msg_epoch_c2")
+    const S2 = MessageID.make("msg_epoch_s2")
+    const deltaOnContinue = ({
+      ...basePart(N, "pd2"),
+      type: "text",
+      text: "<system-reminder>\nSystem context drift: skills changed\n</system-reminder>",
+      synthetic: true,
+      metadata: { epochDelta: true },
+    }) as SessionV1.Part
+    // The current-epoch delta rides a message AFTER s2 (chronological).
+    const newestUser: SessionV1.WithParts = {
+      info: { ...userInfo("msg_epoch_z"), time: { created: 700 } },
+      parts: [{ ...basePart("msg_epoch_z", "p1"), type: "text", text: "newest" } as SessionV1.Part, deltaOnContinue],
+    }
+    const compactionUser2: SessionV1.WithParts = {
+      info: { ...userInfo(C2), time: { created: 500 } },
+      parts: [{ ...basePart(C2, "p1"), type: "compaction", auto: true, tail_start_id: T } as SessionV1.Part],
+    }
+    const summaryAssistant2: SessionV1.WithParts = {
+      info: {
+        ...assistantInfo(S2, C2),
+        time: { created: 600 },
+        summary: true,
+        finish: "stop",
+      } as SessionV1.Assistant,
+      parts: [],
+    }
+    const newestUser2: SessionV1.WithParts = {
+      info: { ...userInfo("msg_epoch_z2"), time: { created: 800 } },
+      parts: [{ ...basePart("msg_epoch_z2", "p1"), type: "text", text: "newest2" } as SessionV1.Part],
+    }
+    const out = MessageV2.filterCompacted([
+      newestUser,
+      summaryAssistant2,
+      compactionUser2,
+      summaryAssistant,
+      compactionUser,
+      tailWithDelta,
+    ])
+    expect(out.some((m) => m.info.id === S2)).toBe(true)
+    expect(out.some((m) => m.info.id === S)).toBe(true) // older pair retained in the tail
+    // The pre-s2 deltas are dropped; the post-s2 delta (on the newest
+    // message, after s2 chronologically) stays.
+    expect(out.find((m) => m.info.id === T)!.parts.some((p) => p.type === "text" && p.metadata?.epochDelta)).toBe(false)
+    expect(
+      out
+        .find((m) => m.info.id === "msg_epoch_z")!
+        .parts.some((p) => p.type === "text" && p.metadata?.epochDelta),
+    ).toBe(true)
+  })
+})
