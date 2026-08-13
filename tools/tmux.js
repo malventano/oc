@@ -276,7 +276,7 @@ Operations:
 Status codes (poll/run wait=true): complete, error, abnormal, stuck, input-needed, timeout, cancelled.
 Wait status codes: ready, stuck, input-needed, timeout, cancelled.
 
-Safety: Use this tool's run (bash -c wrapper isolates child processes). NEVER pipe pane commands through tail/head - the pane is where output is meant to be seen (that's the point of running work in a pane); piping to tail hides it from the visible pane and buffers until close. The lines parameter only controls what the model receives, never the visible pane.
+Safety: Use this tool's run (bash -c wrapper isolates child processes). Do not use tail/head in pane run commands (never pipe \`cmd 2>&1 | tail -N\`) - the pane is where output is meant to be seen (that's the point of running work in a pane); piping to tail/head hides it from the visible pane and buffers until close. To limit what you receive, set the \`lines\` parameter on run/poll/capture (10-200); it only affects your view, never the visible pane.
 
 DONE marker format: bash -c '<command>' ; echo "DONE_<suffix>=\$?"
 Subshell wrapper prevents destructive commands (exit, kill \$\$) from killing pane.
@@ -297,7 +297,7 @@ WORKFLOW PATTERNS:
 USAGE NOTES:
 - poll blocks until completion or timeout. Issue as last tool call in a turn so other work isn't blocked.
 - Plugin tools have NO execution timeout (poll loops survive up to 3600s). User ESC delivers abort cleanly.
-- Background panes for: visible long-running jobs (builds, test suites, Docker builds/logs, SSH sessions, monitoring like htop/nvtop/tail -f). One-shot commands (quick SSH, docker ps) run inline via Bash tool.
+- Background panes for: visible long-running jobs (builds, test suites, Docker builds/logs, SSH sessions, monitoring like htop/nvtop/tail -f (follow logs)). One-shot commands (quick SSH, docker ps) run inline via Bash tool.
 - Cleanup: close panes when task done unless providing ongoing value.`,
   args: {
     op: z.enum(["manage", "run", "keys", "poll", "capture", "wait"]).describe("Operation to perform"),
