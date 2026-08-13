@@ -364,6 +364,18 @@ export function Prompt(props: PromptProps) {
   })
 
 
+  // Full shell-mode cancel: exit shell mode and wipe the buffer (draft,
+  // parts, extmarks). ESC in shell mode always cancels - idle or busy - so
+  // the full cancel must not live only inside the busy-gated interrupt
+  // command; the idle path (shell-escape binding) uses the same helper.
+  const cancelShellMode = () => {
+    setStore("mode", "normal")
+    input.clear()
+    input.extmarks.clear()
+    setStore("prompt", { input: "", parts: [] })
+    setStore("extmarkToPartIndex", new Map())
+  }
+
   const promptCommands = createMemo(() =>
     [
       {
@@ -436,12 +448,10 @@ export function Prompt(props: PromptProps) {
           if (input.plainText !== store.prompt.input) setStore("prompt", "input", input.plainText)
           if (store.mode === "shell") {
             // Full cancel: exit shell mode and wipe the buffer, mirroring the
-            // autocomplete cancel (which deletes the trigger text).
-            setStore("mode", "normal")
-            input.clear()
-            input.extmarks.clear()
-            setStore("prompt", { input: "", parts: [] })
-            setStore("extmarkToPartIndex", new Map())
+            // autocomplete cancel (which deletes the trigger text). Shared
+            // with the shell-escape binding so the behavior is identical
+            // whether the session is busy or idle.
+            cancelShellMode()
             return
           }
           if (!props.sessionID) return
@@ -903,7 +913,7 @@ export function Prompt(props: PromptProps) {
     return {
       target: inputTarget,
       enabled: inputTarget() !== undefined && store.mode === "shell",
-      bindings: [{ key: "escape", desc: "Exit shell mode", group: "Prompt", cmd: () => setStore("mode", "normal") }],
+      bindings: [{ key: "escape", desc: "Cancel shell mode", group: "Prompt", cmd: () => cancelShellMode() }],
     }
   })
 
