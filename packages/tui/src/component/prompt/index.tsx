@@ -1080,7 +1080,7 @@ export function Prompt(props: PromptProps) {
       // A plain empty submit otherwise stays a no-op.
       if (queuedMessages().length > 0) {
         if (!props.sessionID) return false
-        void sdk.client.session.abort({ sessionID: props.sessionID, resume: true })
+        void sdk.client.session.abort({ sessionID: props.sessionID, resume: "true" })
         return true
       }
       return false

@@ -207,6 +207,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload?: typeof ForkPayload.Type
     }) {
+      // A fork snapshots the DB as-is; forking mid-turn copies a partial
+      // trailing assistant message (truncated text, no step-finish) that the
+      // source keeps streaming into its own session. Reject busy sources
+      // (409) so every fork is a complete, idle snapshot.
+      yield* SessionError.mapBusy(runState.assertNotBusy(ctx.params.sessionID))
       return yield* SessionError.mapStorageNotFound(
         session.fork({
           sessionID: ctx.params.sessionID,
