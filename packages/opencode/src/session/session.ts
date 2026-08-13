@@ -26,7 +26,7 @@ import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
-import { PartTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
@@ -38,7 +38,7 @@ import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@opencode-ai/core/global"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Effect, Exit, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optional } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -705,34 +705,86 @@ const layer: Layer.Layer<
       const idMap = new Map<string, MessageID>()
       const target = input.messageID ? msgs.findIndex((msg) => msg.info.id === input.messageID) : msgs.length
 
+      // Bulk copy: build every message/part row and commit them in a single
+      // transaction. Publishing per-item MessageUpdated/PartUpdated events
+      // (the previous approach) streamed ~21K events to the TUI for a
+      // 4.3K-message fork, saturating the UI thread for minutes, and an
+      // interrupted copy left a partial fork session. One transaction is
+      // atomic and emits no per-item events; clients fetch fork contents on
+      // navigation (the projector rows are all we need to persist).
+      const now = Date.now()
+      const messageRows: (typeof MessageTable.$inferInsert)[] = []
+      const partRows: (typeof PartTable.$inferInsert)[] = []
+      let cost = 0
+      const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+
       for (const msg of msgs.slice(0, target < 0 ? msgs.length : target)) {
         const newID = MessageID.ascending()
         idMap.set(msg.info.id, newID)
 
         const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
-        const cloned = yield* updateMessage({
-          ...msg.info,
-          sessionID: session.id,
-          id: newID,
-          ...(parentID && { parentID }),
-        })
+        const cloned: SessionV1.Info = { ...msg.info, sessionID: session.id, id: newID, ...(parentID && { parentID }) }
+        const { id: _m, sessionID: _ms, ...data } = cloned
+        messageRows.push({ id: newID, session_id: session.id, time_created: cloned.time.created, data })
 
         for (const part of msg.parts) {
-          const p: SessionV1.Part = {
-            ...part,
-            id: PartID.ascending(),
-            messageID: cloned.id,
-            sessionID: session.id,
-          }
+          const p: SessionV1.Part = { ...part, id: PartID.ascending(), messageID: cloned.id, sessionID: session.id }
           if (p.type === "compaction" && p.tail_start_id) {
             p.tail_start_id = idMap.get(p.tail_start_id)
           }
-          yield* updatePart(p)
+          if (p.type === "step-finish") {
+            cost += p.cost
+            tokens.input += p.tokens.input
+            tokens.output += p.tokens.output
+            tokens.reasoning += p.tokens.reasoning
+            tokens.cache.read += p.tokens.cache.read
+            tokens.cache.write += p.tokens.cache.write
+          }
+          const { id: _p, messageID: _pm, sessionID: _ps, ...partData } = p
+          partRows.push({ id: p.id, message_id: p.messageID, session_id: session.id, time_created: now, data: partData })
         }
       }
-      return session
-    })
 
+      yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            for (let i = 0; i < messageRows.length; i += 500) {
+              yield* tx.insert(MessageTable).values(messageRows.slice(i, i + 500)).run()
+            }
+            for (let i = 0; i < partRows.length; i += 500) {
+              yield* tx.insert(PartTable).values(partRows.slice(i, i + 500)).run()
+            }
+            yield* tx
+              .update(SessionTable)
+              .set({
+                cost,
+                tokens_input: tokens.input,
+                tokens_output: tokens.output,
+                tokens_reasoning: tokens.reasoning,
+                tokens_cache_read: tokens.cache.read,
+                tokens_cache_write: tokens.cache.write,
+              })
+              .where(eq(SessionTable.id, session.id))
+              .run()
+          }),
+        )
+        .pipe(
+          Effect.orDie,
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit)
+              ? Effect.void
+              : Effect.gen(function* () {
+                  yield* Effect.logError("fork copy failed - removing partial session", {
+                    sessionID: session.id,
+                    cause: exit.cause,
+                  })
+                  yield* events.publish(SessionV1.Event.Deleted, { sessionID: session.id, info: session })
+                }),
+          ),
+        )
+      return session
+
+    })
     const patch = (sessionID: SessionID, info: Patch) =>
       Effect.gen(function* () {
         const current = yield* get(sessionID)
