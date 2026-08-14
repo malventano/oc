@@ -672,7 +672,25 @@ export function Session() {
           .then(() => {
             toBottom()
           })
-        prompt?.set(promptInfoFromParts(sync.data.part[message.id] ?? []))
+        // Question answers re-enter as a user prompt (question_answers part
+        // metadata): the undo re-asks the question and the panel pre-populates
+        // the boxes from the tool part - pulling the answers text back into
+        // the input field would just duplicate them, so skip the pull-back
+        // for answers messages. Other messages: defer the pull-back so the
+        // slash menu's close/cancel input clear (which runs after the command
+        // run) does not wipe the restored text, and retry until the prompt is
+        // mounted (an undo from the question panel closes it asynchronously).
+        const parts = sync.data.part[message.id] ?? []
+        if (!parts.some((part) => part.type === "text" && part.metadata?.kind === "question_answers")) {
+          const restore = () => {
+            if (prompt) {
+              prompt.set(promptInfoFromParts(parts))
+              return
+            }
+            setTimeout(restore, 50)
+          }
+          setTimeout(restore, 0)
+        }
         dialog.clear()
       },
     },
@@ -693,14 +711,28 @@ export function Session() {
           void sdk.client.session.unrevert({
             sessionID: route.sessionID,
           })
-          prompt?.set({ input: "", parts: [] })
+          const clear = () => {
+            if (prompt) {
+              prompt.set({ input: "", parts: [] })
+              return
+            }
+            setTimeout(clear, 50)
+          }
+          setTimeout(clear, 0)
           return
         }
         void sdk.client.session.revert({
           sessionID: route.sessionID,
           messageID: message.id,
         })
-        prompt?.set(promptInfoFromParts(sync.data.part[message.id] ?? []))
+        const restore = () => {
+          if (prompt) {
+            prompt.set(promptInfoFromParts(sync.data.part[message.id] ?? []))
+            return
+          }
+          setTimeout(restore, 50)
+        }
+        setTimeout(restore, 0)
       },
     },
     {

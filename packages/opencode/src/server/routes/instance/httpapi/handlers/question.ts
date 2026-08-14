@@ -57,26 +57,6 @@ const writeToolResult = Effect.fn("QuestionHttpApi.writeToolResult")(function* (
   })
 })
 
-const writeToolRejected = Effect.fn("QuestionHttpApi.writeToolRejected")(function* (info: Question.Request) {
-  const session = yield* Session.Service
-  const database = yield* Database.Service
-  const tool = info.tool
-  if (!tool) return
-  const parts = yield* MessageV2.parts(tool.messageID).pipe(Effect.provideService(Database.Service, database))
-  const part = parts.find((p) => p.type === "tool" && p.callID === tool.callID)
-  if (!part || part.type !== "tool") return
-  yield* session.updatePart({
-    ...part,
-    state: {
-      status: "error",
-      input: part.state.input,
-      error: "The user dismissed this question",
-      metadata: { ...toolMetadata(part), interrupted: true },
-      time: { start: toolStartTime(part), end: Date.now() },
-    },
-  })
-})
-
 export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question", (handlers) =>
   Effect.gen(function* () {
     const svc = yield* Question.Service
@@ -119,6 +99,10 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
     })
 
     const reject = Effect.fn("QuestionHttpApi.reject")(function* (ctx: { params: { requestID: QuestionID } }) {
+      // Lazy rejection: the escaped tool call is registered and the
+      // interrupted state is written only when the user commits the state
+      // with a new prompt (Question.applyRejected at the turn start). An
+      // undo/redo across the escape keeps the question turn's answered bytes.
       yield* svc.reject(ctx.params.requestID).pipe(
         Effect.catchTag("Question.NotFoundError", (error) =>
           Effect.fail(
@@ -127,15 +111,6 @@ export const questionHandlers = HttpApiBuilder.group(InstanceHttpApi, "question"
               message: `Question request not found: ${error.requestID}`,
             }),
           ),
-        ),
-        Effect.tap((result) =>
-          result?.info.tool
-            ? writeToolRejected(result.info).pipe(
-                Effect.provideService(Session.Service, session),
-                Effect.provideService(Database.Service, database),
-                Effect.ignore,
-              )
-            : Effect.void,
         ),
       )
       return true
