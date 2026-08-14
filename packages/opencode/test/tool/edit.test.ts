@@ -411,6 +411,94 @@ describe("tool.edit", () => {
     )
   })
 
+  describe("register moves (CUT/PASTE)", () => {
+    it.instance("cuts and pastes a block within one file", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "cp.txt")
+        yield* put(filepath, "cp 1\ncp 2\ncp 3\ncp 4\ncp 5\ncp 6\ncp 7\ncp 8\ncp 9\n")
+        yield* run({
+          input:
+            "*** Begin Patch\n" +
+            `[${filepath}]\nCUT @fn:\ncp 2\ncp 3\ncp 4\n\n` +
+            `[${filepath}]\nPASTE @fn AFTER:\ncp 7\n` +
+            "*** End Patch",
+        })
+        expect(yield* load(filepath)).toBe("cp 1\ncp 5\ncp 6\ncp 7\ncp 2\ncp 3\ncp 4\ncp 8\ncp 9\n")
+      }),
+    )
+
+    it.instance("pastes before the context with BEFORE:", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "cp.txt")
+        yield* put(filepath, "a\nb\nc\nd\n")
+        yield* run({
+          input:
+            "*** Begin Patch\n" +
+            `[${filepath}]\nCUT @x:\nb\n\n` +
+            `[${filepath}]\nPASTE @x BEFORE:\nd\n` +
+            "*** End Patch",
+        })
+        expect(yield* load(filepath)).toBe("a\nc\nb\nd\n")
+      }),
+    )
+
+    it.instance("moves a block across files", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const fa = path.join(test.directory, "a.txt")
+        const fb = path.join(test.directory, "b.txt")
+        yield* put(fa, "one\ntarget\nthree\n")
+        yield* put(fb, "x\ny\n")
+        yield* run({
+          input:
+            "*** Begin Patch\n" +
+            `[${fa}]\nCUT @m:\ntarget\n\n` +
+            `[${fb}]\nPASTE @m AFTER:\nx\n` +
+            "*** End Patch",
+        })
+        expect(yield* load(fa)).toBe("one\nthree\n")
+        expect(yield* load(fb)).toBe("x\ntarget\ny\n")
+      }),
+    )
+
+    it.instance("a CUT with no PASTE is a delete", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "cp.txt")
+        yield* put(filepath, "keep\ngone\nkeep\n")
+        yield* run({ input: "*** Begin Patch\n" + `[${filepath}]\nCUT @d:\ngone\n` + "*** End Patch" })
+        expect(yield* load(filepath)).toBe("keep\nkeep\n")
+      }),
+    )
+
+    it.instance("a PASTE with no CUT is an error before any write", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "cp.txt")
+        yield* put(filepath, "a\nb\n")
+        const err = yield* fail({
+          input: "*** Begin Patch\n" + `[${filepath}]\nPASTE @nope AFTER:\na\n` + "*** End Patch",
+        })
+        expect(err.message).toContain("no CUT @nope")
+        expect(yield* load(filepath)).toBe("a\nb\n")
+      }),
+    )
+
+    it.instance("an ambiguous CUT block errors with line numbers", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "cp.txt")
+        yield* put(filepath, "dup\nx\ndup\n")
+        const err = yield* fail({
+          input: "*** Begin Patch\n" + `[${filepath}]\nCUT @d:\ndup\n` + "*** End Patch",
+        })
+        expect(err.message).toContain("matches 2 places")
+      }),
+    )
+  })
+
   describe("file-level ops", () => {
     it.instance("renames a file (content preserved)", () =>
       Effect.gen(function* () {
