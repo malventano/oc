@@ -10,6 +10,7 @@ import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { useBindings, useOpencodeModeStack } from "../../keymap"
+import { usePromptRef } from "../../context/prompt"
 
 const QUESTION_MODE = "question"
 
@@ -21,6 +22,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const modeStack = useOpencodeModeStack()
   const local = useLocal()
   const sync = useSync()
+  const promptRef = usePromptRef()
   const agentColor = createMemo(() => {
     const agent = local.agent.current()
     return agent ? local.agent.color(agent.name) : theme.accent
@@ -111,6 +113,29 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
       requestID: props.request.id,
       directory: props.directory,
     })
+    // Lazy rejection: the escape closes the panel and restores the answers
+    // text into the prompt input - the rejection solidifies (interrupted
+    // write) only when the user commits it with Enter on that text. The
+    // prompt remounts after the panel closes, so retry until it is there.
+    const tool = props.request.tool
+    if (!tool) return
+    const msgs = sync.data.message[props.request.sessionID] ?? []
+    const turnIndex = msgs.findIndex((m) => m.id === tool.messageID)
+    const answers = turnIndex >= 0 ? msgs[turnIndex + 1] : undefined
+    if (!answers) return
+    const parts = sync.data.part[answers.id] ?? []
+    const input = parts
+      .filter((p) => p.type === "text" && !p.synthetic)
+      .map((p) => (p as { text: string }).text)
+      .join("\n")
+    const restore = () => {
+      if (promptRef.current) {
+        promptRef.current.set({ input, parts: [] })
+        return
+      }
+      setTimeout(restore, 50)
+    }
+    setTimeout(restore, 0)
   }
 
   function pick(answer: string, custom: boolean = false) {
@@ -207,6 +232,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         },
       },
       ...tuiConfig.keybinds.get("prompt.clear"),
+      // The question box is the special input surface for the answers user
+      // prompt: the undo/redo hotkeys must keep working through it (the base
+      // mode bindings are inactive while the question mode is on top).
+      ...tuiConfig.keybinds.gather("session", ["session.undo", "session.redo"]),
       {
         key: "return",
         desc: "Submit answer edit",
@@ -346,6 +375,8 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
               { key: "return", desc: "Select answer", group: "Question", cmd: () => selectOption() },
               { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
               ...tuiConfig.keybinds.get("app.exit"),
+              // Undo/redo through the question box (see the editing group).
+              ...tuiConfig.keybinds.gather("session", ["session.undo", "session.redo"]),
             ]),
       ],
     }
