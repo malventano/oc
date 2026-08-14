@@ -204,6 +204,38 @@ describe("file-delta.computeFileDeltas", () => {
     expect(out).toEqual([])
   })
 
+  test("legacy float stat from a pre-0120 edit tool part is not a change", async () => {
+    // Pre-0120 binaries recorded raw float mtimeMs in edit/write metadata;
+    // the comparison truncates both sides, so the float compares equal to
+    // the truncated disk stat (no spurious drift after the 0120 rollout).
+    const out = await computeFileDeltas(
+      new Map([[FILE, reconstructed({ mtimeMs: 1786655410442.294971, size: 10 })]]),
+      disk(1786655410442, 10),
+      async () => undefined,
+    )
+    expect(out).toEqual([])
+  })
+
+  test("integer-ms normalization: float disk stat truncated at the source is not a change (0120)", async () => {
+    // apply() truncates the NFS.stat float to integer ms (Date.getTime()
+    // parity) before comparison; the read tool records the integer already.
+    const out = await computeFileDeltas(
+      new Map([[FILE, reconstructed({ mtimeMs: 1786655410442, size: 10 })]]),
+      disk(Math.trunc(1786655410442.294971), 10),
+      async () => undefined,
+    )
+    expect(out).toEqual([])
+  })
+
+  test("a real change of at least 1 ms still yields a diff", async () => {
+    const out = await computeFileDeltas(
+      new Map([[FILE, reconstructed({ mtimeMs: 1786655410442, size: 10 })]]),
+      disk(1786655410443, 10),
+      async () => "a",
+    )
+    expect(out).toEqual([{ path: FILE, kind: "changed", diff: { lines: ["- b", "- c"], truncated: false } }])
+  })
+
   test("a changed file yields a window diff", async () => {
     const out = await computeFileDeltas(
       new Map([[FILE, reconstructed(STAT_1, "a\nb\nc")]]),
