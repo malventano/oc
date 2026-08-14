@@ -48,7 +48,7 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "input": {
-      "description": "The patch text: \`*** Begin Patch\` ... \`*** End Patch\` (see the tool description for the grammar).",
+      "description": "The patch text: *** Begin Patch, [path] sections, OLD:/NEW: content blocks, *** End Patch",
       "type": "string",
     },
   },

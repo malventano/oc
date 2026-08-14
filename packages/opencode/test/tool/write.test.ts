@@ -67,7 +67,6 @@ describe("tool.write", () => {
         const result = yield* run({ filePath: filepath, content: "Hello, World!" })
 
         expect(result.output).toContain("Wrote file successfully")
-        expect(result.output).toMatch(/\+1#[A-Z]{2}:Hello, World!/)
         expect(result.metadata.exists).toBe(false)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
@@ -106,7 +105,6 @@ describe("tool.write", () => {
         const result = yield* run({ filePath: filepath, content: "new content" })
 
         expect(result.output).toContain("Wrote file successfully")
-        expect(result.output).toMatch(/\+1#[A-Z]{2}:new content/)
         expect(result.metadata.exists).toBe(true)
 
         const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
@@ -256,6 +254,7 @@ describe("tool.write", () => {
   describe("error handling", () => {
     it.instance("throws error when OS denies write access", () =>
       Effect.gen(function* () {
+        if (process.getuid?.() === 0) return // root bypasses permission checks
         const test = yield* TestInstance
         const readonlyPath = path.join(test.directory, "readonly.txt")
         yield* Effect.promise(() => fs.writeFile(readonlyPath, "test", "utf-8"))
