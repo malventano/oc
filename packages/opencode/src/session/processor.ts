@@ -461,6 +461,10 @@ const layer = Layer.effect(
               attachments: attachments.length ? attachments : undefined,
             }
             yield* completeToolCall(value.id, output)
+            // Open-ended question tool: the turn ends with the question
+            // asked (the answers arrive later as a new user prompt), so the
+            // step must stop instead of continuing the model loop.
+            if (value.name === "question") ctx.blocked = ctx.shouldBreak
             return
           }
 

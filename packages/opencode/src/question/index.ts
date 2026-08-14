@@ -51,11 +51,20 @@ export interface Interface {
     questions: ReadonlyArray<Info>
     tool?: Tool
   }) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
+  // Open-ended ask (question tool): registers the pending entry and returns
+  // immediately - the asking turn ends with the question pending, and the
+  // answers arrive later as a new user prompt (the tool result is written by
+  // the reply/reject HTTP handlers).
+  readonly askOpen: (input: {
+    sessionID: SessionID
+    questions: ReadonlyArray<Info>
+    tool?: Tool
+  }) => Effect.Effect<QuestionID>
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
-  }) => Effect.Effect<void, NotFoundError>
-  readonly reject: (requestID: QuestionID) => Effect.Effect<void, NotFoundError>
+  }) => Effect.Effect<{ info: Request; answers: ReadonlyArray<Answer> } | undefined, NotFoundError>
+  readonly reject: (requestID: QuestionID) => Effect.Effect<{ info: Request } | undefined, NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -111,6 +120,27 @@ const layer = Layer.effect(
       )
     })
 
+    const askOpen = Effect.fn("Question.askOpen")(function* (input: {
+      sessionID: SessionID
+      questions: ReadonlyArray<Info>
+      tool?: Tool
+    }) {
+      const pending = (yield* InstanceState.get(state)).pending
+      const id = QuestionID.ascending()
+      yield* Effect.logInfo("asking-open", { id, questions: input.questions.length })
+
+      const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
+      const info: Request = {
+        id,
+        sessionID: input.sessionID,
+        questions: input.questions,
+        tool: input.tool,
+      }
+      pending.set(id, { info, deferred })
+      yield* events.publish(Event.Asked, info)
+      return id
+    })
+
     const reply = Effect.fn("Question.reply")(function* (input: {
       requestID: QuestionID
       answers: ReadonlyArray<Answer>
@@ -129,6 +159,7 @@ const layer = Layer.effect(
         answers: input.answers.map((a) => [...a]),
       })
       yield* Deferred.succeed(existing.deferred, input.answers)
+      return existing.info.tool ? { info: existing.info, answers: input.answers } : undefined
     })
 
     const reject = Effect.fn("Question.reject")(function* (requestID: QuestionID) {
@@ -145,6 +176,7 @@ const layer = Layer.effect(
         requestID: existing.info.id,
       })
       yield* Deferred.fail(existing.deferred, new RejectedError())
+      return existing.info.tool ? { info: existing.info } : undefined
     })
 
     const list = Effect.fn("Question.list")(function* () {
@@ -152,7 +184,7 @@ const layer = Layer.effect(
       return Array.from(pending.values(), (x) => x.info)
     })
 
-    return Service.of({ ask, reply, reject, list })
+    return Service.of({ ask, askOpen, reply, reject, list })
   }),
 )
 

@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { Question } from "@/question"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -51,6 +52,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const shareSvc = yield* SessionShare.Service
     const promptSvc = yield* SessionPrompt.Service
     const revertSvc = yield* SessionRevert.Service
+    const questionSvc = yield* Question.Service
     const compactSvc = yield* SessionCompaction.Service
     const runState = yield* SessionRunState.Service
     const agentSvc = yield* Agent.Service
@@ -372,12 +374,54 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return yield* SessionError.mapBusy(promptSvc.shell({ ...ctx.payload, sessionID: ctx.params.sessionID }))
     })
 
+    // Undoing back to a question-asking turn re-asks the question: the open
+    // question tool call (with its stored questions in the tool input) is
+    // re-registered as pending so the TUI pops the question panel and the
+    // user can answer again (a fresh answers user message follows the reply).
+    const reAskQuestion = Effect.fn("SessionHttpApi.reAskQuestion")(function* (sessionID: SessionID) {
+      const info = yield* session.get(sessionID).pipe(Effect.orDie)
+      if (!info.revert) return
+      const all = yield* session.messages({ sessionID }).pipe(Effect.orDie)
+      const index = all.findIndex((msg) => msg.info.id === info.revert!.messageID)
+      const visible = index < 0 ? all : all.slice(0, index + 1)
+      const pending = yield* questionSvc.list()
+      if (pending.some((q) => q.sessionID === sessionID)) return
+      for (let i = visible.length - 1; i >= 0; i--) {
+        const msg = visible[i]
+        if (msg.info.role !== "assistant") continue
+        const part = [...msg.parts].reverse().find((p) => p.type === "tool" && p.tool === "question")
+        if (!part || part.type !== "tool") continue
+        const questions = (part.state.input as { questions?: ReadonlyArray<Question.Info> } | undefined)?.questions
+        if (!questions?.length) continue
+        yield* questionSvc.askOpen({
+          sessionID,
+          questions,
+          tool: { messageID: msg.info.id, callID: part.callID },
+        })
+        // The undo landed on the answers message (the message directly after
+        // the question turn): move the revert boundary to the question turn
+        // so the superseded answers are pruned when the re-answer lands
+        // (revert.cleanup on prompt) instead of stacking a second header.
+        const next = all[i + 1]
+        if (next && info.revert?.messageID === next.info.id && info.revert.partID === undefined) {
+          yield* session.setRevert({
+            sessionID,
+            revert: { ...info.revert, messageID: msg.info.id },
+            summary: info.summary,
+          })
+        }
+        return
+      }
+    })
+
     const revert = Effect.fn("SessionHttpApi.revert")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof RevertPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      return yield* SessionError.mapBusy(revertSvc.revert({ sessionID: ctx.params.sessionID, ...ctx.payload }))
+      const result = yield* SessionError.mapBusy(revertSvc.revert({ sessionID: ctx.params.sessionID, ...ctx.payload }))
+      yield* reAskQuestion(ctx.params.sessionID).pipe(Effect.ignore)
+      return result
     })
 
     const unrevert = Effect.fn("SessionHttpApi.unrevert")(function* (ctx: { params: { sessionID: SessionID } }) {
