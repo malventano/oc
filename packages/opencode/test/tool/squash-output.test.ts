@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { extractOutput } from "@/tool/squash-output"
 
-const HINT = "\n\n<system-reminder>Very large tool output (9000 chars, ~2250 tokens). If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>"
+const HINT = "\n\n<system-reminder>Very large tool output (9000 chars, ~2250 tokens). If you won't reference it again, call squash-output NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it.</system-reminder>"
 const STAMP = "\n\n<system-reminder>2026-08-12T03:53:00.000Z</system-reminder>"
 
 describe("extractOutput", () => {
