@@ -403,10 +403,10 @@ describe("tool.read truncation", () => {
       yield* put(path.join(dir, "offset.txt"), lines)
 
       const result = yield* exec(dir, { filePath: path.join(dir, "offset.txt"), offset: 10, limit: 5 })
-      expect(result.output).toMatch(/10#[A-Z]{2}\[\d+\]:line10/)
-      expect(result.output).toMatch(/14#[A-Z]{2}\[\d+\]:line14/)
-      expect(result.output).not.toMatch(/9#[A-Z]{2}:line10/)
-      expect(result.output).not.toMatch(/15#[A-Z]{2}:line15/)
+      expect(result.output).toMatch(/10: line10/)
+      expect(result.output).toMatch(/14: line14/)
+      expect(result.output).not.toMatch(/9: line10/)
+      expect(result.output).not.toMatch(/15: line15/)
       expect(result.output).toContain("line10")
       expect(result.output).toContain("line14")
       expect(result.output).not.toContain("line0")
@@ -607,23 +607,3 @@ describe("tool.read binary detection", () => {
   )
 })
 
-describe("tool.read hashline section headers", () => {
-  it.live("renders the path relative to the instance directory for in-project files", () =>
-    Effect.gen(function* () {
-      const dir = yield* tmpdirScoped()
-      yield* put(path.join(dir, "nested", "file.txt"), "one\ntwo\n")
-      const result = yield* exec(dir, { filePath: path.join(dir, "nested", "file.txt") })
-      expect(result.output).toMatch(/\[nested[\\/]file\.txt#[0-9A-F]{4}\]/)
-    }),
-  )
-
-  it.live("renders the absolute path for files outside the instance directory", () =>
-    Effect.gen(function* () {
-      const outer = yield* tmpdirScoped()
-      const dir = yield* tmpdirScoped()
-      yield* put(path.join(outer, "global.txt"), "outside\n")
-      const result = yield* exec(dir, { filePath: path.join(outer, "global.txt") })
-      expect(result.output).toContain(`[${path.join(outer, "global.txt")}#`)
-    }),
-  )
-})
