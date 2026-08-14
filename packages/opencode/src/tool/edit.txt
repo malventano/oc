@@ -33,6 +33,7 @@ Content rows:
 - Content is RAW: backticks, `${...}`, double quotes, `\` sequences, and all punctuation after the separator are literal content. NEVER escape, backslash, or wrap them. Text-based search/replace is not available - anchors only.
 - A literal leading `-` or `+` in the content keeps its prefix: Markdown bullet `- item` becomes `+ - item`; a literal `+ item` becomes `+ + item`.
 - The range deletes; the body is ONLY the final content. Do NOT echo the old line(s) into the body - an echoed first line is auto-stripped, but later echoes duplicate content (a mangled replace).
+- SET/REPLACE rows are VERBATIM final content - the engine never auto-corrects their indentation (a deliberate indent fix survives). If the applied result shows a block duplicated at the same lines (e.g. the tail echoed twice), the body echoed existing content - use CUT or narrow the range.
 - To delete lines, use `CUT`. Empty `SET`/`REPLACE` bodies are invalid.
 
 Rules:

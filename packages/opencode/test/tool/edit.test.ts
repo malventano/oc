@@ -3,7 +3,7 @@ import path from "path"
 import fs from "fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { EditTool, findIndentWarnings, normalizeIndentToHint } from "../../src/tool/edit"
+import { EditTool, findEchoDuplicateRuns, findIndentWarnings, fixIndentFolds, normalizeIndentToHint } from "../../src/tool/edit"
 import { hashlineRef, type HashlineEditInput } from "../../src/tool/hashline"
 import { disposeAllInstances, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -1480,7 +1480,7 @@ describe("grammar parser + legacy hints", () => {
         ],
       })
       expect(yield* load(filepath)).toBe("pairs = []\nfor k in items:\n    use(k, 1)\n    log(k)\n")
-      expect(result.output).toContain("stripped echoed first line")
+      expect(result.output).toContain("stripped echoed lines (lines 1-2): range now starts at line 3")
     }),
   )
 })
@@ -1868,5 +1868,104 @@ describe("normalizeIndentToHint (hint-normalize)", () => {
     const edits: HashlineEditInput[] = [{ type: "insert_before", line: hashlineRef(4, lines[3]), text: [" test(\"b\", () => {", "   expect(true).toBe(true)", " })"] }]
     normalizeIndentToHint(edits, lines)
     expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  test(\"b\", () => {", "    expect(true).toBe(true)", "  })"])
+  })
+})
+
+describe("0117 fixIndentFolds structural guard", () => {
+  const opts = { filePath: "x.ts" }
+
+  test("a deliberate closer-indent fix survives (130-class: opener matches at same indent)", () => {
+    // Closer folded at 3, fixed to 2; neighbors at 4 and 2 disagree, but the
+    // brace-match finds `for {` at 2 == lineIndent -> structurally aligned.
+    const before = "if (a) {\n  for (const x of xs) {\n    use(x)\n   }\n  next()\n}\n"
+    const after = "if (a) {\n  for (const x of xs) {\n    use(x)\n  }\n  next()\n}\n"
+    const changed = new Map<number, string>([[3, "   }"]])
+    const fixed = fixIndentFolds(after.split("\n"), before, changed, opts)
+    expect(fixed.fixed).toEqual([]) // no revert of the model's own fix
+    expect(fixed.lines[3]).toBe("  }")
+  })
+
+  test("a genuine closer fold still auto-fixes (582-class preserved)", () => {
+    // Closer at 3 where the matching opener is at 4 (a real fold - nothing
+    // at indent 3 structurally): brace-match finds nothing at 3, orig-+-1
+    // rule fires.
+    const before = "function f() {\n    if (x) {\n        use(x)\n    }\n}\n"
+    const after = "function f() {\n    if (x) {\n        use(x)\n   }\n}\n"
+    const changed = new Map<number, string>([[3, "    }"]])
+    const fixed = fixIndentFolds(after.split("\n"), before, changed, opts)
+    expect(fixed.fixed).toEqual(["4 (3 -> 4)"])
+    expect(fixed.lines[3]).toBe("    }")
+  })
+
+  test("a continuation aligned with its opener+2 survives (80-class)", () => {
+    // `.pipe(` at 10 with the callback at 12; orig was the folded 11.
+    const before = "          const x = yield* foo().pipe(\n           Effect.catch(() => 1),\n          )\n"
+    const after = "          const x = yield* foo().pipe(\n            Effect.catch(() => 1),\n          )\n"
+    const changed = new Map<number, string>([[1, "           Effect.catch(() => 1),"]])
+    const fixed = fixIndentFolds(after.split("\n"), before, changed, opts)
+    expect(fixed.fixed).toEqual([])
+    expect(fixed.lines[1]).toBe("            Effect.catch(() => 1),")
+  })
+
+  test("a plain statement one space off its original still auto-fixes (non-structural)", () => {
+    const before = "if (x) {\n    const a = 1\n   const b = 2\n}\n"
+    const after = "if (x) {\n    const a = 1\n  const b = 2\n}\n"
+    const changed = new Map<number, string>([[2, "   const b = 2"]])
+    const fixed = fixIndentFolds(after.split("\n"), before, changed, opts)
+    expect(fixed.fixed).toEqual(["3 (2 -> 3)"])
+  })
+})
+
+describe("0117 normalizeIndentToHint structural-closer fallback", () => {
+  test("a closer with disagreeing neighbors uses its opener's indent (130-class)", () => {
+    // Anchor line 3 at 3 spaces (folded); neighbors at 4 and 2 disagree, so
+    // the 0113 neighbor fallback bails - the closer fallback must find the
+    // opener at 2 instead, so a deliberate 3 -> 2 SET is not re-padded.
+    const lines = ["if (a) {", "  for (const x of xs) {", "    use(x)", "   }", "  next()", "}"]
+    const edits: HashlineEditInput[] = [{ type: "set_line", line: hashlineRef(4, lines[3]), text: ["  }"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  }"])
+  })
+
+  test("a closer whose opener is at a different indent is not touched (582-class)", () => {
+    // Closer at 2, opener at 4: no structural match, hint stays the anchor's
+    // own indent - a fold-away-from-opener is left for fixIndentFolds.
+    const lines = ["function f() {", "    if (x) {", "        use(x)", "  }", "}"]
+    const edits: HashlineEditInput[] = [{ type: "set_line", line: hashlineRef(4, lines[3]), text: ["  }"] }]
+    normalizeIndentToHint(edits, lines)
+    expect("text" in edits[0] ? edits[0].text : undefined).toEqual(["  }"])
+  })
+})
+
+describe("0117 findEchoDuplicateRuns", () => {
+  test("detects a duplicated block whose second copy sits in the changed region", () => {
+    const before = ["a", "b", "c", "d"]
+    const after = ["a", "b", "c", "b", "c", "d"]
+    const changed = new Map<number, string>([[3, "b"], [4, "c"]])
+    const out = findEchoDuplicateRuns(before, after, changed)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ start: 1, end: 4, pattern: "b\nc" })
+  })
+
+  test("pre-existing duplicate blocks elsewhere stay silent", () => {
+    const before = ["a", "b", "b", "c"]
+    const after = ["a", "b", "b", "c"]
+    const changed = new Map<number, string>([[3, "c"]])
+    expect(findEchoDuplicateRuns(before, after, changed)).toEqual([])
+  })
+
+  test("a single-line repeat is not flagged (min run 2)", () => {
+    const before = ["a", "b"]
+    const after = ["a", "b", "b"]
+    const changed = new Map<number, string>([[2, "b"]])
+    expect(findEchoDuplicateRuns(before, after, changed)).toEqual([])
+  })
+
+  test("returns at most 3 runs", () => {
+    const before = ["x", "y"]
+    const after = ["x", "y", "x", "y", "x", "y", "x", "y", "x", "y"]
+    const changed = new Map<number, string>([[2, "x"], [3, "y"], [4, "x"], [5, "y"], [6, "x"], [7, "y"], [8, "x"], [9, "y"]])
+    const out = findEchoDuplicateRuns(before, after, changed)
+    expect(out.length).toBeLessThanOrEqual(3)
   })
 })

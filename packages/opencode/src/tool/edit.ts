@@ -513,6 +513,25 @@ export const EditTool = Tool.define(
                   recoveryWarning += `\n\nIndent corrected (applied): ${fixed.fixed.join(", ")}`
                 }
               }
+              // 0117 duplicate-block detector: an edit that echoes existing
+              // lines into a SET/REPLACE body duplicates adjacent content
+              // (mangled replaces - the leading-echo strip only fires on
+              // byte-equal prefixes). Compare the changed region against
+              // `before`: a run of >= 2 adjacent identical lines that
+              // existed in `before` and now appears twice in a row in the
+              // result is the echo signature. High precision: only exact
+              // multi-line runs, only when the run existed in before, and
+              // only when the second copy sits in the edit's changed lines.
+              const dupWarn = findEchoDuplicateRuns(
+                before ? splitTextLines(before) : undefined,
+                next.lines,
+                next.changedLines,
+              )
+              if (dupWarn.length > 0) {
+                recoveryWarning += `\n\nWarning: block duplicated at ${dupWarn
+                .map((d) => `lines ${d.start + 1}-${d.end + 1} ("${d.pattern.trim()}" repeated)`)
+                  .join(", ")} - the body echoed existing content; use CUT or narrow the range.`
+              }
               const output = serializeHashlineContent({
                 lines: next.lines,
                 trailing: next.trailing,
@@ -1110,6 +1129,20 @@ export function normalizeIndentToHint(edits: HashlineEditInputZ[], lines: string
         if (aNeighbors.every((n) => n === convention)) aLead = convention
       }
     }
+    // 0117 structural-closer fallback: when the anchor is a block closer
+    // (`}`) whose neighbors DISAGREE (inner body above, outer content
+    // below), the neighbor convention is ambiguous - but the brace-match
+    // scan is not: the closer aligns with its matching opener. Without
+    // this, a deliberate closer-indent fix gets padded back to the anchor's
+    if (aLead === anchorLine.match(/^ */)![0].length && /^\s*}\s*[,;)\]\.]*$/.test(anchorLine)) {
+      for (let p = Number(anchorNo) - 2; p >= 0; p--) {
+        const pl = lines[p]!
+        if (!pl.trimEnd().endsWith("{")) continue
+        const openerIndent = (pl.match(/^ */) ?? [""])[0].length
+        if (openerIndent === aLead + 1 || openerIndent === aLead - 1) aLead = openerIndent
+        break
+      }
+    }
     const opener = op.type === "insert_after" && anchorLine.trimEnd().endsWith("{")
     const closer = op.type === "insert_before" && /}[,;)\]\.]*$/.test(anchorLine.trimEnd())
     const rows = Array.isArray(op.text) ? op.text : [op.text]
@@ -1310,6 +1343,45 @@ function unseenLinesMessage(
 * Returns the fixed lines plus a compact per-line report ("N (K -> M)").
 * Keep the classification in sync with findIndentWarnings.
 */
+/**
+* 0117: detect blocks the edit accidentally duplicated by echoing existing
+* lines into a SET/REPLACE body. A run of >= 2 adjacent identical lines that
+* (a) already exists in `before` and (b) appears twice consecutively in the
+* result, with the second copy in the edit's changed region, is the echo
+* signature (mangled replaces). Returns at most 3 runs (start/end are
+* 0-based indices into the result).
+*/
+export function findEchoDuplicateRuns(
+  before: string[] | undefined,
+  after: string[],
+  changedLines: Map<number, string> | undefined,
+  ): { start: number; end: number; pattern: string }[] {
+  if (!before || after.length < 4) return []
+  const out: { start: number; end: number; pattern: string }[] = []
+  const minRun = 2
+  const maxRun = 8
+  for (let i = 0; i < after.length - minRun * 2 + 1 && out.length < 3; i++) {
+    if (after[i]!.trim() === "") continue
+    // The second copy must overlap the edit's changed lines (the echo
+    // inserted it); pre-existing duplicate blocks elsewhere stay silent.
+    const secondStart = i + minRun
+    const changedHit = [...(changedLines?.keys() ?? [])].some((k) => k >= secondStart && k <= secondStart + maxRun - 1)
+    if (!changedHit) continue
+    for (let run = minRun; run <= maxRun && i + run * 2 <= after.length; run++) {
+      const pattern = after.slice(i, i + run).join("\n")
+      const firstIdx = before.findIndex((_, b) => {
+        if (before.slice(b, b + run).length < run) return false
+        return before.slice(b, b + run).join("\n") === pattern
+    })
+      if (firstIdx < 0) continue
+      const second = after.slice(i + run, i + run * 2).join("\n") === pattern
+      if (!second) continue
+      out.push({ start: i, end: i + run * 2 - 1, pattern })
+      break
+    }
+  }
+  return out
+}
 export function fixIndentFolds(
   afterLines: string[],
   before: string | undefined,
@@ -1359,6 +1431,45 @@ export function fixIndentFolds(
       (beforeLinesArr && shiftMap.has(i + 1) ? beforeLinesArr[shiftMap.get(i + 1)! - 1] : undefined) ??
       (beforeLinesArr && beforeLinesArr.length === lines.length ? beforeLinesArr[i] : undefined)
     if (orig !== undefined && orig === line) continue // shifted pre-existing, untouched
+    // Structural alignment (0117): a line whose indent matches its BLOCK
+    // STRUCTURE is a deliberate placement, never a separator fold - the
+    // auto-fix must not rewrite it. Two shapes:
+    //   (a) a closer (`}`) whose nearest preceding block opener (a line
+    //       ending with `{`) sits at the SAME indent - the model is
+    //       closing the block at the structural position (e.g. a 9 -> 10
+    //       closer fix would otherwise be reverted because |10-9| == 1);
+    //   (b) a continuation whose nearest preceding real-code line ends
+    //       with `(` or `{` and sits at indent + 2 - the prettier
+    //       continuation convention (e.g. `.pipe(` at 10 with the
+    //       callback at 12, reverted as a "fold" when the original was
+    //       the folded 11).
+    // The 582-class (a plain statement in a SET/REPLACE body) matches
+    // neither shape and still falls through to the orig-+-1 fold rule.
+    const isCloserLine = /^\s*}\s*[,;)\]\.]*$/.test(line)
+    const structurallyAligned = (() => {
+      if (isCloserLine) {
+        // Brace-match scan: the closer aligns with its matching opener.
+        // Continue past inner blocks at other indents (the nearest
+        // `{`-line may be an inner block) until one at the SAME indent is
+        // found. A fold writes the closer at opener +- 1, which matches
+        // nothing here and falls through to the orig-+-1 rule below.
+        for (let p = i - 1; p >= 0; p--) {
+          const pl = lines[p]!
+          if (pl.trim() === "" || isCommentOrInterior(pl)) continue
+          if (!pl.trimEnd().endsWith("{")) continue
+          if (pl.match(/^\s*/)![0].length === lineIndent) return true
+        }
+        return false
+      }
+
+      let p = i - 1
+      while (p >= 0 && (lines[p]!.trim() === "" || isCommentOrInterior(lines[p]!))) p--
+      if (p < 0) return false
+      const pl = lines[p]!
+      const plIndent = pl.match(/^\s*/)![0].length
+      return (pl.trimEnd().endsWith("(") || pl.trimEnd().endsWith("{")) && plIndent + 2 === lineIndent
+    })()
+    if (structurallyAligned) continue
     const adjacentIndents: number[] = []
     let j = i + 1
     while (j < lines.length && (lines[j]!.trim() === "" || isCommentOrInterior(lines[j]!))) j++
