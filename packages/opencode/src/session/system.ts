@@ -48,6 +48,27 @@ export function provider(model: Provider.Model) {
   return [PROMPT_DEFAULT]
 }
 
+/** Local calendar date ("Wed Aug 13 2026") per the process TZ. */
+const localDate = () => new Date().toDateString()
+
+/** IANA timezone name per the process TZ ("America/Kentucky/Monticello", "UTC"). */
+const tzName = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+  } catch {
+    return "UTC"
+  }
+}
+
+/** UTC offset of the process TZ ("UTC-04:00" for EDT, "UTC" for UTC). */
+const utcOffset = () => {
+  const off = -new Date().getTimezoneOffset()
+  if (off === 0) return "UTC"
+  const sign = off > 0 ? "+" : "-"
+  const abs = Math.abs(off)
+  return `UTC${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`
+}
+
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
@@ -78,6 +99,7 @@ const layer = Layer.effect(
             `  Workspace root folder: ${ctx.worktree}`,
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  Platform: ${process.platform}`,
+            `  Today's date: ${localDate()} (${tzName()}, ${utcOffset()})`,
             `</env>`,
           ].join("\n"),
           references.length === 0
