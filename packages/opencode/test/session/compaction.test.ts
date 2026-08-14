@@ -2058,7 +2058,86 @@ it.instance(
     expect(filtered.filter((m) => m.info.role === "assistant" && m.info.summary).length).toBe(1)
   }),
 )
+it.instance(
+    "filterCompacted re-inserts the NEWEST real pair after virtuals cut a multi-compaction tail",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const first = yield* createUserMessage(session.id, "first")
+      yield* createAssistantMessage(session.id, first.id, test.directory)
+      const second = yield* createUserMessage(session.id, "second")
+      yield* createAssistantMessage(session.id, second.id, test.directory)
+      const oldMarkerID = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+      const oldSummaryID = (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id
+      const third = yield* createUserMessage(session.id, "third")
+      yield* createAssistantMessage(session.id, third.id, test.directory)
+      const newMarkerID = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: second.id })
+      const newSummaryID = (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id
 
+      // Consume the retained window with virtuals (mirrors the 3 -> 2 -> 1 -> 0 chain).
+      const firstOutcome = yield* SessionCompaction.use.virtual({
+        sessionID: session.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      expect(firstOutcome).toBe("virtual_reduced")
+      const secondOutcome = yield* SessionCompaction.use.virtual({
+        sessionID: session.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      expect(secondOutcome).toBe("virtual_reduced")
+
+      const newTurn = yield* createUserMessage(session.id, "after virtuals")
+      const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+      const ids = filtered.map((m) => m.info.id)
+      // The virtual cut dropped the newest pair; the re-insertion must restore
+      // the NEWEST real pair (marker B + summary B), never the oldest one.
+      expect(ids).toEqual([newMarkerID, newSummaryID, newTurn.id])
+      expect(ids).not.toContain(oldMarkerID)
+      expect(ids).not.toContain(oldSummaryID)
+    }),
+  )
+
+it.instance(
+    "keeps the last completed real pair when an in-flight compaction marker is present",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      const first = yield* createUserMessage(session.id, "first")
+      yield* createAssistantMessage(session.id, first.id, test.directory)
+      const second = yield* createUserMessage(session.id, "second")
+      yield* createAssistantMessage(session.id, second.id, test.directory)
+      const realMarkerID = yield* completeCompaction({ sessionID: session.id, root: test.directory, tailStartID: first.id })
+      const realSummaryID = (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id
+
+      const firstOutcome = yield* SessionCompaction.use.virtual({
+        sessionID: session.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      expect(firstOutcome).toBe("virtual_reduced")
+      const secondOutcome = yield* SessionCompaction.use.virtual({
+        sessionID: session.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      expect(secondOutcome).toBe("virtual_reduced")
+
+      // The /compact trigger: an in-flight marker (no summary yet) is the
+      // newest compaction marker while the compaction turn runs.
+      yield* createCompactionMarker(session.id)
+      const inFlightID = (yield* ssn.messages({ sessionID: session.id })).at(-1)!.info.id
+
+      const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+      const ids = filtered.map((m) => m.info.id)
+      // The compaction turn's request must keep the completed real pair at
+      // the front (byte-identical to the prior turns' cached prefix); the
+      // in-flight marker rides at the end. The in-flight marker must not
+      // satisfy the re-insertion or the pair stays dropped (full prefix
+      // miss on the compaction prompt submission).
+      expect(ids.slice(0, 2)).toEqual([realMarkerID, realSummaryID])
+      expect(ids.at(-1)).toBe(inFlightID)
+    }),
+  )
 it.instance(
     "undo chain: removing the synthetic marker restores the previous tail",
     Effect.gen(function* () {
