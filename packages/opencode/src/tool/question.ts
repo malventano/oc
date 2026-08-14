@@ -8,7 +8,7 @@ export const Parameters = Schema.Struct({
 })
 
 type Metadata = {
-  answers: ReadonlyArray<Question.Answer>
+  requestID: string
 }
 
 export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Service>(
@@ -21,21 +21,21 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
-          const answers = yield* question.ask({
+          // Open-ended ask: register the pending question and return
+          // immediately - the turn ends with the question asked, and the
+          // answers arrive later as the user's next prompt (the reply
+          // handler writes this tool's result part).
+          const requestID = yield* question.askOpen({
             sessionID: ctx.sessionID,
             questions: params.questions,
             tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
           })
 
-          const formatted = params.questions
-            .map((q, i) => `"${q.question}"="${answers[i]?.length ? answers[i].join(", ") : "Unanswered"}"`)
-            .join(", ")
-
           return {
             title: `Asked ${params.questions.length} question${params.questions.length > 1 ? "s" : ""}`,
-            output: `User has answered your questions: ${formatted}. You can now continue with the user's answers in mind.`,
+            output: "Question pending: the user's answers arrive in a follow-up prompt.",
             metadata: {
-              answers,
+              requestID,
             },
           }
         }).pipe(Effect.orDie),

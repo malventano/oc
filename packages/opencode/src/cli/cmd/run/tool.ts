@@ -836,7 +836,6 @@ function scrollQuestionStart(_: ToolProps<typeof QuestionTool>): string {
 
 function scrollQuestionFinal(p: ToolProps<typeof QuestionTool>): string {
   const q = p.input.questions ?? []
-  const a = p.metadata.answers ?? []
   const time = span(p.frame.state)
   if (q.length === 0) {
     if (!time) {
@@ -844,6 +843,13 @@ function scrollQuestionFinal(p: ToolProps<typeof QuestionTool>): string {
     }
 
     return `0 questions · ${time}`
+  }
+
+  // Open-ended question tool: the result metadata carries the requestID; the
+  // answers are written into the tool part later by the reply handler.
+  const a = (p.metadata as unknown as { answers?: ReadonlyArray<ReadonlyArray<string>> }).answers
+  if (!a) {
+    return `? ${q.length} question${q.length > 1 ? "s" : ""} pending${time ? ` · ${time}` : ""}`
   }
 
   const rows: string[] = []
