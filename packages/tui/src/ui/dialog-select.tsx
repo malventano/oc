@@ -41,6 +41,7 @@ export interface DialogSelectProps<T> {
     title: string
     side?: "left" | "right"
     hidden?: boolean
+    showInFooter?: boolean
     disabled?: boolean | ((option: DialogSelectOption<T> | undefined) => boolean)
     onTrigger: (option: DialogSelectOption<T>) => void
   }[]
@@ -138,7 +139,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   const visibleActions = createMemo(() => [
     ...shownActions()
       .map((item) => ({ ...item, label: actionLabels().get(item.command) ?? "" }))
-      .filter((item) => item.label),
+      .filter((item) => item.label)
+      .filter((item) => item.showInFooter !== false),
     ...(props.footerHints ?? []),
   ])
   const actionItems = createMemo(() =>
