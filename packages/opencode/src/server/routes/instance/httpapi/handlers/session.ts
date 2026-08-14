@@ -380,37 +380,59 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     // user can answer again (a fresh answers user message follows the reply).
     const reAskQuestion = Effect.fn("SessionHttpApi.reAskQuestion")(function* (sessionID: SessionID) {
       const info = yield* session.get(sessionID).pipe(Effect.orDie)
-      if (!info.revert) return
+      if (!info.revert || info.revert.partID !== undefined) return
       const all = yield* session.messages({ sessionID }).pipe(Effect.orDie)
       const index = all.findIndex((msg) => msg.info.id === info.revert!.messageID)
-      const visible = index < 0 ? all : all.slice(0, index + 1)
+      if (index < 1) return
       const pending = yield* questionSvc.list()
       if (pending.some((q) => q.sessionID === sessionID)) return
-      for (let i = visible.length - 1; i >= 0; i--) {
-        const msg = visible[i]
-        if (msg.info.role !== "assistant") continue
-        const part = [...msg.parts].reverse().find((p) => p.type === "tool" && p.tool === "question")
-        if (!part || part.type !== "tool") continue
-        const questions = (part.state.input as { questions?: ReadonlyArray<Question.Info> } | undefined)?.questions
-        if (!questions?.length) continue
-        yield* questionSvc.askOpen({
-          sessionID,
-          questions,
-          tool: { messageID: msg.info.id, callID: part.callID },
-        })
-        // The undo landed on the answers message (the message directly after
-        // the question turn): move the revert boundary to the question turn
-        // so the superseded answers are pruned when the re-answer lands
-        // (revert.cleanup on prompt) instead of stacking a second header.
-        const next = all[i + 1]
-        if (next && info.revert?.messageID === next.info.id && info.revert.partID === undefined) {
-          yield* session.setRevert({
-            sessionID,
-            revert: { ...info.revert, messageID: msg.info.id },
-            summary: info.summary,
-          })
+      // An undo goes one user prompt back - never walk back for a question.
+      // Only when that prompt IS the answers to an answered (uncancelled)
+      // question tool call do we pop it back: re-ask with the stored
+      // questions (the panel pre-populates the answer boxes from the part
+      // metadata). The revert boundary stays on the answers message: the
+      // re-answer's revert.cleanup removes it plus everything after
+      // (msgs.slice(index) includes the boundary message), keeping the
+      // question turn - the model still sees the tool call + the fresh
+      // answers after it.
+      const boundary = all[index]
+      const turn = all[index - 1]
+      if (boundary.info.role !== "user" || turn.info.role !== "assistant") return
+      const part = [...turn.parts].reverse().find((p) => p.type === "tool" && p.tool === "question")
+      if (!part || part.type !== "tool") return
+      if (part.state.status !== "completed") return
+      const questions = (part.state.input as { questions?: ReadonlyArray<Question.Info> } | undefined)?.questions
+      if (!questions?.length) return
+      yield* questionSvc.askOpen({
+        sessionID,
+        questions,
+        tool: { messageID: turn.info.id, callID: part.callID },
+      })
+    })
+
+    // The pending question follows the undo/redo boundary: it stays live only
+    // while the revert boundary sits on its answers message (the message
+    // directly after the question turn). A boundary move away (undo past the
+    // question, redo past the answers, unrevert) cancels the pending -
+    // runtime-only, no tool-part write-back, so the question turn keeps its
+    // answered bytes and a redo back re-asks it cleanly.
+    const cancelStaleQuestion = Effect.fn("SessionHttpApi.cancelStaleQuestion")(function* (
+      sessionID: SessionID,
+      boundaryMessageID: string | undefined,
+    ) {
+      const pending = yield* questionSvc.list()
+      const own = pending.filter((q) => q.sessionID === sessionID && q.tool)
+      // A boundary move also clears the lazy rejection: the escape never
+      // solidifies if the user undoes/redoes across it.
+      yield* questionSvc.clearRejected(sessionID)
+      if (!own.length) return
+      const all = yield* session.messages({ sessionID }).pipe(Effect.orDie)
+      for (const q of own) {
+        const turnIndex = all.findIndex((m) => m.info.id === q.tool!.messageID)
+        const answers = turnIndex >= 0 ? all[turnIndex + 1] : undefined
+        if (answers?.info.id !== boundaryMessageID) {
+          yield* questionSvc.cancel(q.id).pipe(Effect.ignore)
         }
-        return
       }
     })
 
@@ -420,12 +442,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       yield* requireSession(ctx.params.sessionID)
       const result = yield* SessionError.mapBusy(revertSvc.revert({ sessionID: ctx.params.sessionID, ...ctx.payload }))
+      const info = yield* session.get(ctx.params.sessionID).pipe(Effect.orDie)
+      yield* cancelStaleQuestion(ctx.params.sessionID, info.revert?.messageID)
       yield* reAskQuestion(ctx.params.sessionID).pipe(Effect.ignore)
       return result
     })
 
     const unrevert = Effect.fn("SessionHttpApi.unrevert")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
+      yield* cancelStaleQuestion(ctx.params.sessionID, undefined)
       return yield* SessionError.mapBusy(revertSvc.unrevert({ sessionID: ctx.params.sessionID }))
     })
 

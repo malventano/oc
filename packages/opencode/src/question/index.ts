@@ -5,6 +5,9 @@ import { SessionID } from "@/session/schema"
 import { QuestionID } from "./schema"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { QuestionV1 } from "@opencode-ai/schema/question-v1"
+import { Session } from "@/session/session"
+import { Database } from "@opencode-ai/core/database/database"
+import { MessageV2 } from "@/session/message-v2"
 
 export const Option = QuestionV1.Option
 export type Option = typeof Option.Type
@@ -41,6 +44,12 @@ interface PendingEntry {
 
 interface State {
   pending: Map<QuestionID, PendingEntry>
+  // Escaped question tool calls whose interrupted state has NOT been written
+  // yet: the rejection is lazy - it solidifies only when the user commits the
+  // state with a new prompt (Enter on the restored answers text). An
+  // undo/redo across it clears the entry so the question turn keeps its
+  // answered bytes (byte-identical chain, no prefix miss).
+  rejected: Map<SessionID, Tool>
 }
 
 // Service
@@ -65,6 +74,18 @@ export interface Interface {
     answers: ReadonlyArray<Answer>
   }) => Effect.Effect<{ info: Request; answers: ReadonlyArray<Answer> } | undefined, NotFoundError>
   readonly reject: (requestID: QuestionID) => Effect.Effect<{ info: Request } | undefined, NotFoundError>
+  // Runtime-only cancel (undo/redo boundary moves away from the answers):
+  // drops the pending entry + publishes the rejected event (the TUI closes
+  // the panel) but does NOT write back into the question turn's tool part -
+  // the part keeps its answered state so a later redo can re-ask it cleanly.
+  readonly cancel: (requestID: QuestionID) => Effect.Effect<void>
+  // Lazy rejection: the reject registers the escaped tool call here; the
+  // interrupted state is written to the question turn's part only when the
+  // user commits the state with a new prompt (applyRejected). Undo/redo
+  // across the escape clears the entry (clearRejected) so the chain keeps
+  // its answered bytes.
+  readonly clearRejected: (sessionID: SessionID) => Effect.Effect<void>
+  readonly applyRejected: (sessionID: SessionID) => Effect.Effect<void>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
 }
 
@@ -74,10 +95,13 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const sessions = yield* Session.Service
+    const database = yield* Database.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Question.state")(function* () {
         const state = {
           pending: new Map<QuestionID, PendingEntry>(),
+          rejected: new Map<SessionID, Tool>(),
         }
 
         yield* Effect.addFinalizer(() =>
@@ -176,7 +200,57 @@ const layer = Layer.effect(
         requestID: existing.info.id,
       })
       yield* Deferred.fail(existing.deferred, new RejectedError())
+      // Lazy rejection: register the escaped tool call; the interrupted write
+      // lands on the next prompt (applyRejected), so an undo/redo across the
+      // escape keeps the question turn's answered bytes.
+      if (existing.info.tool) {
+        const all = yield* InstanceState.get(state)
+        all.rejected.set(existing.info.sessionID, existing.info.tool)
+      }
       return existing.info.tool ? { info: existing.info } : undefined
+    })
+
+    const clearRejected = Effect.fn("Question.clearRejected")(function* (sessionID: SessionID) {
+      const rejected = (yield* InstanceState.get(state)).rejected
+      rejected.delete(sessionID)
+    })
+
+    const applyRejected = Effect.fn("Question.applyRejected")(function* (sessionID: SessionID) {
+      const all = yield* InstanceState.get(state)
+      const tool = all.rejected.get(sessionID)
+      if (!tool) return
+      all.rejected.delete(sessionID)
+      const parts = yield* MessageV2.parts(tool.messageID).pipe(Effect.provideService(Database.Service, database))
+      const part = parts.find((p) => p.type === "tool" && p.callID === tool.callID)
+      if (!part || part.type !== "tool") return
+      const s = part.state
+      const start = s.status === "running" || s.status === "completed" || s.status === "error" ? s.time.start : Date.now()
+      yield* sessions.updatePart({
+        ...part,
+        state: {
+          status: "error",
+          input: part.state.input,
+          error: "The user dismissed this question",
+          metadata: {
+            ...(s.status === "completed" || s.status === "error" ? (s.metadata ?? {}) : {}),
+            interrupted: true,
+          },
+          time: { start, end: Date.now() },
+        },
+      })
+    })
+
+    const cancel = Effect.fn("Question.cancel")(function* (requestID: QuestionID) {
+      const pending = (yield* InstanceState.get(state)).pending
+      const existing = pending.get(requestID)
+      if (!existing) return
+      pending.delete(requestID)
+      yield* Effect.logInfo("cancelled", { requestID })
+      yield* events.publish(Event.Rejected, {
+        sessionID: existing.info.sessionID,
+        requestID: existing.info.id,
+      })
+      yield* Deferred.fail(existing.deferred, new RejectedError())
     })
 
     const list = Effect.fn("Question.list")(function* () {
@@ -184,10 +258,14 @@ const layer = Layer.effect(
       return Array.from(pending.values(), (x) => x.info)
     })
 
-    return Service.of({ ask, askOpen, reply, reject, list })
+    return Service.of({ ask, askOpen, reply, reject, cancel, clearRejected, applyRejected, list })
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node] })
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [EventV2Bridge.node, Session.node, Database.node],
+})
 
 export * as Question from "."
