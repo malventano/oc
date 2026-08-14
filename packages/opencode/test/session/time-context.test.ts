@@ -16,15 +16,15 @@ function userMsg(time: number, text?: string, synthetic?: boolean): SessionV1.Wi
 
 const textOf = (msg: SessionV1.WithParts) => (msg.parts[0] as SessionV1.TextPart).text
 
-describe("TimeContext.localIso", () => {
-  test("formats local time with UTC offset", () => {
-    const stamp = TimeContext.localIso(1786406400000)
-    expect(stamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/)
+describe("TimeContext.isoZ", () => {
+  test("formats UTC at second precision", () => {
+    expect(TimeContext.isoZ(1786406400000)).toBe("2026-08-11T00:00:00Z")
+    expect(TimeContext.isoZ(1786406400000)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
   })
 
   test("is byte-stable for the same instant", () => {
     const t = Date.now()
-    expect(TimeContext.localIso(t)).toBe(TimeContext.localIso(t))
+    expect(TimeContext.isoZ(t)).toBe(TimeContext.isoZ(t))
   })
 })
 
@@ -32,7 +32,7 @@ describe("TimeContext.stampUserMessages", () => {
   test("stamps the first non-synthetic text part of a user message", () => {
     const msgs = [userMsg(1786406400000)]
     TimeContext.stampUserMessages(msgs)
-    expect(textOf(msgs[0])).toContain(`\n\n<system-reminder>${TimeContext.localIso(1786406400000)}</system-reminder>`)
+    expect(textOf(msgs[0])).toContain(`\n\n<system-reminder>${TimeContext.isoZ(1786406400000)}</system-reminder>`)
   })
 
   test("skips assistant messages", () => {
@@ -50,7 +50,7 @@ describe("TimeContext.stampUserMessages", () => {
     const msgs = [userMsg(1786406400000, "already\n\n<system-reminder>2026-01-01T00:00:00.000Z</system-reminder>")]
     TimeContext.stampUserMessages(msgs)
     expect(textOf(msgs[0])).toContain("2026-01-01T00:00:00.000Z")
-    expect(textOf(msgs[0])).not.toContain(TimeContext.localIso(1786406400000))
+    expect(textOf(msgs[0])).not.toContain(TimeContext.isoZ(1786406400000))
   })
 
   test("skips messages with only synthetic text parts", () => {
@@ -64,7 +64,7 @@ describe("TimeContext.stampToolOutput", () => {
   test("appends a UTC reminder to a string output", () => {
     const output = { output: "result" }
     TimeContext.stampToolOutput(output)
-    expect(output.output).toMatch(/^result\n\n<system-reminder>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z<\/system-reminder>$/)
+    expect(output.output).toMatch(/^result\n\n<system-reminder>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z<\/system-reminder>$/)
   })
 
   test("skips outputs that already contain a reminder", () => {
