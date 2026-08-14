@@ -5,6 +5,8 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Skill } from "../skill"
 import * as Tool from "./tool"
 
+/** ISO 8601 UTC timestamp at second precision, "" for undefined dates. */
+const isoZ = (t?: Date) => (t ? `${t.toISOString().slice(0, 19)}Z` : "")
 const DESCRIPTION = `Read-only skill metadata query. Returns frontmatter (name, description), line/char counts, sibling file inventory, last-modified mtime, and description byte count for one or all skills. Use for auditing skill state, verifying description changes, or inspecting sibling structure without loading full bodies. No DB access - pure filesystem read.`
 
 export const Parameters = Schema.Struct({
@@ -63,7 +65,7 @@ export const SkillMetadataTool = Tool.define<typeof Parameters, Metadata, FSUtil
                 description,
                 lineCount: lines.length,
                 charCount: content.length,
-                lastModified: Option.getOrUndefined(stat.mtime)?.toISOString() ?? "",
+                lastModified: isoZ(Option.getOrUndefined(stat.mtime)),
                 descriptionBytes,
               }
               if (params.includeSiblings !== false) {
@@ -77,7 +79,7 @@ export const SkillMetadataTool = Tool.define<typeof Parameters, Metadata, FSUtil
                       name: sib.name,
                       lineCount: sibContent.split("\n").length,
                       charCount: sibContent.length,
-                      lastModified: Option.getOrUndefined(sibStat.mtime)?.toISOString() ?? "",
+                      lastModified: isoZ(Option.getOrUndefined(sibStat.mtime)),
                     })
                   }
                 }

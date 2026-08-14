@@ -47,7 +47,7 @@ Requires only `bun`:
 - Annotated diffs: applied lines carry their new refs (`+3#AB:content`) so the next edit can chain without a re-read
 
 ### Built-in tooling (ships in the binary)
-- **Time context (0027)**: every user message carries a byte-stable local-ISO `<system-reminder>` stamp and every tool output a UTC one; the stale `Today's date` line is gone from the system prompt (both the env block and the SystemContext `core/date` feature)
+- **Time context (0027, 0119)**: every user message and tool output carries a UTC `<system-reminder>` stamp (ISO 8601, second precision, trailing Z - TZ-invariant since 0119); the env block declares the user's local date + offset (`Today's date: Wed Aug 13 2026 (America/Kentucky/Monticello, UTC-04:00)`, epoch-delta'd on change); sessions-browse/skill-metadata emit UTC Z seconds
 - **Loop guard (0028)**: dual-channel loop detection: repeated identical tool output or repeated user prompts abort with a diagnostic instead of looping
 - **Sessions DB tools (0030)**: read-only session browsing, SQLite queries, and confirm-gated write management against the session database
 - **Squash output (0031)**: replace a finished tool output with a short summary you write (depth-gated), keeping the context chain small
