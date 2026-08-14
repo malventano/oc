@@ -214,7 +214,14 @@ export function computeFileDeltas(
         entries.push({ path, kind: "deleted" })
         continue
       }
-      if (disk.mtimeMs === st.stat.mtimeMs && disk.size === st.stat.size) continue
+      // Integer-ms convention (0120): every recorded stat is truncated to
+      // integer milliseconds (Date.getTime() parity - the read tool, and
+      // Math.trunc at each NFS.stat source: apply below, edit.ts, write.ts).
+      // The comparison truncates BOTH sides: edit/write metadata recorded by
+      // pre-0120 binaries carried raw float mtimeMs, which would never match
+      // the truncated disk stat (spurious drift after the 0120 rollout, one
+      // prompt later). Sub-ms precision is noise either way.
+      if (Math.trunc(disk.mtimeMs) === Math.trunc(st.stat.mtimeMs) && disk.size === st.stat.size) continue
       entries.push({ path, kind: "changed", diff: await windowDiff(st, disk, readNew) })
     }
     return entries
@@ -268,7 +275,7 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
     const st = yield* Effect.tryPromise(() => NFS.stat(path)).pipe(Effect.catch(() => Effect.succeed(undefined)))
     diskStats.set(
       path,
-      st ? { mtimeMs: st.mtimeMs, size: st.size } : undefined,
+      st ? { mtimeMs: Math.trunc(st.mtimeMs), size: st.size } : undefined,
     )
   }
 

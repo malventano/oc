@@ -16,4 +16,6 @@ Usage:
 - Avoid tiny repeated slices (30 line chunks). If you need more context, read a larger window.
 - This tool can read image files and PDFs and return them as file attachments.
 
+Staleness tracking: files read here are watched. If a file changes on disk after your read - edited OUTSIDE the edit tool (bash sed/echo/heredoc, scripts), or changed by another agent/session or the user - you will receive a "File context drift" reminder on your next user turn telling you to re-read before acting on stale content. Edits you make with the edit/write tools update the tracked state and never trigger that reminder.
+
 CRITICAL: filePath is always required. Even when continuing a prior read with offset/limit, you must explicitly restate the filePath. The read tool does not remember which file was last accessed.
