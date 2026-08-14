@@ -7,15 +7,10 @@ Usage:
 - To read later sections, call this tool again with a larger offset.
 - Use the grep tool to find specific content in large files or files with long lines.
 - If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.
-- Contents are returned with a line prefix.
-- Default format: `LINE#ID[N]:<content>` (example: `1#AB[0]:foo`) where `[N]` is the line's INDENT HINT - the leading-space count to use for content inserted after this line (block-opener lines ending with `{` hint one level deeper than the brace, i.e. the body indent). Use these anchors for hashline edits.
-- Anchors stay valid for same-turn edits: unchanged lines keep their `LINE#ID` regardless of edits elsewhere in the file - one read can serve multiple back-to-back edits.
-- For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories.
+- Contents are returned with each line prefixed by its line number as `<line>: <content>`. For example, if a file has contents "foo\n", you will receive "1: foo\n". For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories.
 - Any line longer than 2000 characters is truncated.
 - Call this tool in parallel when you know there are multiple files you want to read.
 - Avoid tiny repeated slices (30 line chunks). If you need more context, read a larger window.
 - This tool can read image files and PDFs and return them as file attachments.
 
-Staleness tracking: files read here are watched. If a file changes on disk after your read - edited OUTSIDE the edit tool (bash sed/echo/heredoc, scripts), or changed by another agent/session or the user - you will receive a "File context drift" reminder on your next user turn telling you to re-read before acting on stale content. Edits you make with the edit/write tools update the tracked state and never trigger that reminder.
-
-CRITICAL: filePath is always required. Even when continuing a prior read with offset/limit, you must explicitly restate the filePath. The read tool does not remember which file was last accessed.
+Staleness tracking: files read here are watched. If a file changes on disk after your read - edited OUTSIDE the edit/write tools (bash sed/echo/heredoc, scripts), or changed by another agent/session or the user - you will receive a "File context drift" reminder on your next user turn telling you to re-read before acting on stale content. Edits you make with the edit/write tools update the tracked state and never trigger that reminder.
