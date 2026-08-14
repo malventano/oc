@@ -116,7 +116,7 @@ export const WriteTool = Tool.define(
             title: path.relative(instance.worktree, filepath),
             metadata: {
               diagnostics,
-              stat: postStat ? { mtimeMs: postStat.mtimeMs, size: postStat.size } : undefined,
+              stat: postStat ? { mtimeMs: Math.trunc(postStat.mtimeMs), size: postStat.size } : undefined,
               filepath,
               exists: exists,
             },

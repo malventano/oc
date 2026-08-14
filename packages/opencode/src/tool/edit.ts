@@ -660,7 +660,7 @@ export const EditTool = Tool.define(
             const st = yield* Effect.tryPromise(() => NFS.stat(target)).pipe(
               Effect.catch(() => Effect.succeed(undefined)),
             )
-            if (st) writtenStats.set(target, { mtimeMs: st.mtimeMs, size: st.size })
+            if (st) writtenStats.set(target, { mtimeMs: Math.trunc(st.mtimeMs), size: st.size })
           }
 
           const diagnostics = yield* lsp.diagnostics()
