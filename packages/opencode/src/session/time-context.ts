@@ -46,7 +46,7 @@ export function stampSquashHint(output: { output?: string; [key: string]: unknow
   const len = output.output.length
   if (len < SQUASH_HINT_MIN_CHARS) return
   const tokens = Math.round(len / 4)
-  output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>`
+  output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call squash-output NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it.</system-reminder>`
 }
 
 export * as TimeContext from "./time-context"

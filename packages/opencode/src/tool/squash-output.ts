@@ -4,7 +4,9 @@ import { unlink } from "node:fs/promises"
 import { Database } from "@opencode-ai/core/database/database"
 import * as Tool from "./tool"
 
-const DESCRIPTION = `Replace a past tool output in this session with a short summary you write, so future prompts see the small version instead of the full output. Use proactively: every turn re-reads every output in the chain, so long outputs you've finished with keep costing context. Squash soon after use - edits near the end of the chain preserve the prefix cache; edits deep in history invalidate everything after them.
+const DESCRIPTION = `Replace a past tool output in this session with a short summary you write, so future prompts see the small version instead of the full output. Use proactively: every turn re-reads every output in the chain, so long outputs you've finished with keep costing context.
+
+TIMING (NON-NEGOTIABLE): squash each output in the message immediately after it arrives, as the FIRST tool call of that message, before any other work. A rewrite at position P invalidates the cached prefix of everything AFTER P - the next prompt re-encodes the whole tail. Squashing early keeps that tail to just the squash call; deferring an early output's squash to the end of the turn invalidates the entire turn's cache. Never defer, never batch squash calls for outputs from earlier in the turn. If you missed the moment, squash anyway (one-time invalidation beats paying the full output on every future prompt), and with several pending, squash the NEWEST first - each rewrite invalidates after its own target.
 
 WHEN to squash: outputs > ~2K tokens you won't reference again (ls, grep, docker logs, git diff/status, build logs) once you've extracted what you need from them.
 
@@ -16,7 +18,7 @@ TARGET: omit for the most recent completed tool output; pass { part_id } for pre
 
 DEPTH (default 3): only outputs within the last 3 user turns. Deeper targets are refused - pass depth: -1 to reach any depth, including content below the compaction boundary (not in the current prompt; the change applies if that content re-enters the live chain; large prefix-cache invalidation).
 
-The TUI record stays; only future prompts see the summary. Multiple calls in one message are fine (each targets its own output). Cannot squash this tool's own output.
+The TUI record stays; only future prompts see the summary. Cannot squash this tool's own output.
 
 POST-SQUASH STATE (read before squashing): the summary you write REPLACES the
 original output - the old text is destroyed. The rewrite updates the session
@@ -165,6 +167,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
 
           const results = []
           let maxTurnsBack = 0
+          let maxPartsBack = 0
           let belowBoundary = false
           for (const u of updates) {
             const turnsBackRow = yield* db
@@ -172,6 +175,11 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
               .pipe(Effect.orDie)
             const turnsBack = (turnsBackRow as { c: number }).c
             maxTurnsBack = Math.max(maxTurnsBack, turnsBack)
+            const partsBackRow = yield* db
+              .get(sql`SELECT COUNT(*) AS c FROM part p WHERE p.session_id = ${sessionID} AND p.time_created > ${u.row.time_created}`)
+              .pipe(Effect.orDie)
+            const partsBack = (partsBackRow as { c: number }).c
+            maxPartsBack = Math.max(maxPartsBack, partsBack)
             if (cutoff > 0 && u.row.time_created <= cutoff) belowBoundary = true
 
             u.data.state.output = params.summary + u.stamp
@@ -192,7 +200,8 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           const lines = results
             .map((r) => `Squashed ${r.tool} output (${r.originalLen} chars → ${params.summary.length} char summary)`)
             .join("\n")
-          const note = `\n\nDepth: ${maxTurnsBack} user turn(s) back of ${totalTurns}; this edit invalidates the prefix cache for the chain after it.`
+          const late = maxPartsBack > 2 ? " LATE SQUASH - issue squash-output in the message right after the target output arrives." : ""
+          const note = `\n\nDepth: ${maxTurnsBack} user turn(s) back of ${totalTurns}; target ${maxPartsBack} part(s) behind the live edge - the rewrite invalidates the cached prefix from the target forward.${late}`
           const boundaryNote = belowBoundary
             ? `\nBelow the compaction boundary: not in the current prompt; applies if/when it re-enters the live chain.`
             : ""
@@ -207,6 +216,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
               aggregateOriginal,
               summaryLen: params.summary.length,
               maxTurnsBack,
+              maxPartsBack,
               belowBoundary,
             },
           }
