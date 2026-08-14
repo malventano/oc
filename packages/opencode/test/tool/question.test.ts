@@ -83,10 +83,15 @@ describe("tool.question", () => {
 
       const fiber = yield* tool.execute({ questions }, ctx).pipe(Effect.forkScoped)
       const item = yield* pending(question)
-      yield* question.reply({ requestID: item.id, answers: [["Dog"]] })
-
+      // Open-ended: the execute returns immediately with the pending output -
+      // the answers are written into the tool part later by the reply HTTP
+      // handlers, and the reply returns the entry info for that update.
       const result = yield* Fiber.join(fiber)
-      expect(result.output).toContain(`"What is your favorite animal?"="Dog"`)
+      expect(result.title).toBe("Asked 1 question")
+      expect(result.metadata?.requestID).toBe(item.id)
+      const replied = yield* question.reply({ requestID: item.id, answers: [["Dog"]] })
+      expect(replied?.info.id).toBe(item.id)
+      expect(replied?.answers).toEqual([["Dog"]])
     }),
   )
 
