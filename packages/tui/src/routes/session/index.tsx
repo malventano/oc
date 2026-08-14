@@ -81,6 +81,7 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import { restart } from "../../util/restart"
 
 addDefaultParsers(parsers.parsers)
 
@@ -700,6 +701,25 @@ export function Session() {
           messageID: message.id,
         })
         prompt?.set(promptInfoFromParts(sync.data.part[message.id] ?? []))
+      },
+    },
+    {
+      title: "Restart the app",
+      value: "session.restart",
+      category: "Session",
+      slash: {
+        name: "restart",
+      },
+      run: () => {
+        dialog.clear()
+        try {
+          restart(route.sessionID)
+       } catch (error) {
+         toast.show({
+            message: error instanceof Error ? error.message : "Failed to restart",
+            variant: "error",
+          })
+        }
       },
     },
     {
