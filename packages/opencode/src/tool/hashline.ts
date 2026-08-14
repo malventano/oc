@@ -548,23 +548,33 @@ export function applyHashlineEdits(input: {
       const line = parseHashlineRef(edit.line, "set_line.line")
       refs.push(line)
       const text = parseText(edit.text)
-      if (text.length > 0 && equalsBytes(text[0], lines[line.line - 1])) {
-        if (text.length <= 1) {
+      // 0117: strip ALL leading echoed rows (multi-line echo prefix), not
+      // just the first - a SET body that echoes the anchor AND the lines
+      // below it means "keep those lines, add the rest after" (the model
+      // mentally REPLACEs a block but writes SET with an echo prefix).
+      let echoCount = 0
+      while (echoCount < text.length && equalsBytes(text[echoCount], lines[line.line - 1 + echoCount])) echoCount++
+      if (echoCount > 0) {
+        if (echoCount >= text.length) {
           throw new Error(
-            `set_line.text repeats the anchor line (line ${line.line}) with no new content - ambiguous (keep as-is vs delete). To keep the line and add content after it, use insert_after with the new content.`,
+            `set_line.text repeats the anchor line (line ${line.line}) with no new content - ambiguous (keep as-is vs delete). To keep the line and add content after it, use insert_after with the new content. If you meant to change this line's indentation, the content row needs one MORE space after the '+' (the separator consumes one: content at K spaces is '+ ' + K spaces).`,
           )
         }
         ops.push({
-          start: line.line,
+          start: line.line - 1 + echoCount,
           del: 0,
-          text: text.slice(1),
+          text: text.slice(echoCount),
           order,
           kind: "insert_after",
-          sortLine: line.line,
+          sortLine: line.line - 1 + echoCount,
           precedence: 1,
-          anchorLine: line.line,
+          anchorLine: line.line + echoCount - 1,
         })
-        notes.push(`stripped echoed first line (line ${line.line}): set_line treated as insert_after`)
+        notes.push(
+          echoCount === 1
+            ? `stripped echoed first line (line ${line.line}): set_line treated as insert_after`
+            : `stripped echoed lines (lines ${line.line}-${line.line + echoCount - 1}): set_line treated as insert_after`,
+        )
         return
       }
       ops.push({
@@ -592,13 +602,25 @@ export function applyHashlineEdits(input: {
       }
 
       const text = parseText(edit.text)
-      if (text.length > 0 && equalsBytes(text[0], lines[start.line - 1])) {
-        if (text.length <= 1) {
+      // 0117: strip ALL leading echoed rows (multi-line echo prefix) - a
+      // REPLACE body that echoes the range's leading lines in order means
+      // "keep those lines, replace the rest" (the model mentally extends
+      // the range but writes the retained prefix verbatim).
+      let echoCount = 0
+      while (
+        echoCount < text.length &&
+        start.line + echoCount <= end.line &&
+        equalsBytes(text[echoCount], lines[start.line - 1 + echoCount])
+      ) {
+        echoCount++
+      }
+      if (echoCount > 0) {
+        if (echoCount >= text.length) {
           throw new Error(
-            `replace_lines.text repeats the range's first line (line ${start.line}) with no new content - ambiguous. To keep the range's first line, start the range at the first differing line; to keep the line and insert after it, use insert_after.`,
+            `replace_lines.text repeats the range's first line (line ${start.line}) with no new content - ambiguous. To keep the range's first line, start the range at the first differing line; to keep the line and insert after it, use insert_after. If you meant to change this line's indentation, the content row needs one MORE space after the '+' (the separator consumes one: content at K spaces is '+ ' + K spaces).`,
           )
         }
-        if (start.line === end.line) {
+        if (echoCount === 1 && start.line === end.line) {
           ops.push({
             start: start.line,
             del: 0,
@@ -610,20 +632,24 @@ export function applyHashlineEdits(input: {
             anchorLine: start.line,
           })
           notes.push(`stripped echoed first line (line ${start.line}): single-line replace_lines treated as insert_after`)
-        } else {
-          ops.push({
-            start: start.line,
-            del: end.line - start.line,
-            text: text.slice(1),
-            order,
-            kind: "replace_lines",
-            sortLine: end.line,
-            precedence: 0,
-            startLine: start.line + 1,
-            endLine: end.line,
-          })
-          notes.push(`stripped echoed first line (line ${start.line}): range now starts at line ${start.line + 1}`)
+          return
         }
+        ops.push({
+          start: start.line - 1 + echoCount,
+          del: end.line - start.line + 1 - echoCount,
+          text: text.slice(echoCount),
+          order,
+          kind: "replace_lines",
+          sortLine: end.line,
+          precedence: 0,
+          startLine: start.line + echoCount,
+          endLine: end.line,
+        })
+        notes.push(
+          echoCount === 1
+            ? `stripped echoed first line (line ${start.line}): range now starts at line ${start.line + 1}`
+            : `stripped echoed lines (lines ${start.line}-${start.line + echoCount - 1}): range now starts at line ${start.line + echoCount}`,
+        )
         return
       }
       ops.push({
