@@ -628,44 +628,41 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   const virtualIds = new Set<string>()
   for (const msg of all) {
     if (msg.info.role !== "user") continue
-    if (msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual === true)) virtualIds.add(msg.info.id)
+    if (msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual === true))
+      virtualIds.add(msg.info.id)
   }
   const isVirtualArtifact = (m: WithParts) =>
     virtualIds.has(m.info.id) || (m.info.role === "assistant" && virtualIds.has(m.info.parentID ?? ""))
 
-  // Find the NEWEST real (non-virtual) compaction marker: chronological is
-  // oldest-first, so the first real marker found is the newest, and its
-  // summary (created after the marker) sits at a larger index. Only the
-  // newest pair can be cut by the retain logic above, so older pairs need
-  // no re-insertion. A newest marker may lack a summary (compaction still
-  // running) - the re-insert below then falls back to the bare marker.
+  // Find the NEWEST COMPLETED real (non-virtual) compaction pair: stream
+  // order is newest-first, so the first real marker WITH a finished summary
+  // is the newest completed pair. An in-flight marker (the compaction turn
+  // itself - no summary yet) must NOT satisfy the re-insertion: it is always
+  // already in the output, so the unshift would never fire and the completed
+  // pair dropped by the virtual cut stays dropped - the request then
+  // diverges from the cached chain at the first message (full prefix miss on
+  // the compaction prompt submission). Only the newest pair can be cut by
+  // the retain logic above, so older pairs need no re-insertion.
   let realMarker: WithParts | undefined
   let realSummary: WithParts | undefined
   const chronological = [...all].reverse()
-  for (let i = 0; i < chronological.length; i++) {
-    const msg = chronological[i]!
+  for (const msg of all) {
     if (msg.info.role !== "user") continue
-    if (
-      !msg.parts.some(
-        (p): p is CompactionPart => p.type === "compaction" && p.virtual !== true,
-      )
-    ) {
+    if (!msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual !== true)) {
       continue
     }
+    const summary = chronological.find(
+      (s) => s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id,
+    )
+    if (!summary) continue
     realMarker = msg
-    for (let j = i + 1; j < chronological.length; j++) {
-      const s = chronological[j]!
-      if (s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id) {
-        realSummary = s
-        break
-      }
-    }
+    realSummary = summary
     break
   }
 
   const out = ordered.filter((m) => !isVirtualArtifact(m))
   if (realMarker && !out.some((m) => m.info.id === realMarker!.info.id)) {
-  out.unshift(...(realSummary ? [realMarker, realSummary] : [realMarker]))
+    out.unshift(...(realSummary ? [realMarker, realSummary] : [realMarker]))
   }
 
   // Frozen-system epochs: a delta part announces drift against the snapshot
