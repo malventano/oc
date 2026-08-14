@@ -2529,7 +2529,15 @@ function Edit(props: ToolProps) {
   const editPaths = createMemo(() => {
     const fromMetadata = props.metadata.paths
     if (Array.isArray(fromMetadata)) {
-      return fromMetadata.filter((p): p is string => typeof p === "string" && p.length > 0)
+      // Dedupe: same-path multi-section patches report the path once per
+      // section, which would inflate the "N files" title (e.g. an append +
+      // delete on one file rendering as "Edit 2 files").
+      const seen = new Set<string>()
+      return fromMetadata.filter((p): p is string => {
+        if (typeof p !== "string" || p.length === 0 || seen.has(p)) return false
+        seen.add(p)
+        return true
+      })
     }
     const single = stringValue(props.input.filePath)
     if (single) return [single]
@@ -2550,6 +2558,10 @@ function Edit(props: ToolProps) {
   })
 
   const title = createMemo(() => {
+    // Failed calls carry no metadata - the input-derived count would count
+    // grammar-example [path] rows as files. "Edit failed" is honest; the
+    // error message (with the real path) renders as the body.
+    if (props.part.state.status === "error") return "Edit failed"
     const paths = editPaths()
     if (paths.length === 0) return "Edit"
     if (paths.length === 1) return `Edit ${pathFormatter.format(paths[0])}`
