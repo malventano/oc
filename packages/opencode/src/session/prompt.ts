@@ -12,6 +12,7 @@ import { SkillDelta } from "./skill-delta"
 import { FileDelta } from "./file-delta"
 
 import { LoopGuard } from "./loop-guard"
+import { Question } from "@/question"
 import { StallGuard } from "./stall-guard"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
@@ -149,6 +150,7 @@ const layer = Layer.effect(
     const llm = yield* LLM.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const question = yield* Question.Service
     const database = yield* Database.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
@@ -1126,6 +1128,10 @@ const layer = Layer.effect(
 
         let loopGuardEnabled = true
         let stallGuardEnabled = true
+        // Lazy question rejection: an escaped question tool call solidifies
+        // (interrupted write into the question turn's part) only when the user
+        // commits the state with a new prompt - this run is that commit.
+        yield* question.applyRejected(sessionID).pipe(Effect.ignore)
         // 3x fire budget per turn, shared reset: fires 1-2 steer in-turn, the
         // 3rd fire of either guard completes its banner then triggers an
         // auto-compaction (auto: true - the model continues from the compacted
@@ -1922,6 +1928,7 @@ export const node = LayerNode.make({
     Permission.node,
     FSUtil.node,
     MCP.node,
+    Question.node,
     LSP.node,
     ToolRegistry.node,
     Truncate.node,
