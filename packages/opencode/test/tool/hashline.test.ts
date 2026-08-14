@@ -135,7 +135,7 @@ test("replace_lines echo auto-strips first line and shifts range start", () => {
     aggressiveAutocorrect: false,
   })
   expect(result.lines).toEqual(["pairs = []", "for k in items:", "    use(k, 1)", "    log(k)", "done"])
-  expect(result.notes).toEqual(["stripped echoed first line (line 1): range now starts at line 2"])
+  expect(result.notes).toEqual(["stripped echoed lines (lines 1-2): range now starts at line 3"])
 })
 
 test("single-line replace_lines echo auto-strips and converts to insert_after", () => {
