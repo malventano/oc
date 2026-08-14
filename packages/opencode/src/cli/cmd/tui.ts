@@ -14,6 +14,7 @@ import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+import { restoreKeyboardSync, restoreTermiosSync } from "@opencode-ai/tui/util/restore"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -303,6 +304,18 @@ export const TuiThreadCommand = cmd({
         unguard?.()
       } catch {}
     }
+    // Synchronous restore of terminal modes before death: the renderer's
+    // own teardown sequences go through async io_uring writes that are
+    // dropped by process.exit, leaving the outer terminal's keyboard
+    // protocol (and mouse/paste modes) enabled - typing in the shell then
+    // arrives as CSI-u escapes and appears dead.
+    // Modes only - no 1049l: the renderer's own destroy already exits the
+    // alt screen; a second 1049l re-restores a stale saved cursor and moves
+    // the shell prompt on normal quits.
+    restoreKeyboardSync()
+    // Safety net: restore the shell's cooked termios if the renderer's own
+    // baseline capture was polluted (execve restart path).
+    restoreTermiosSync()
     process.exit(0)
   },
 })

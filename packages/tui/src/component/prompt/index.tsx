@@ -58,6 +58,7 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { restart } from "../../util/restart"
 
 registerOpencodeSpinner()
 
@@ -1091,6 +1092,19 @@ export function Prompt(props: PromptProps) {
     const agent = local.agent.current()
     if (!agent) return false
     const trimmed = store.prompt.input.trim()
+    if (trimmed === "/restart" || trimmed.startsWith("/restart ")) {
+      try {
+        restart(props.sessionID)
+     } catch (error) {
+       toast.show({
+          title: "Failed to restart",
+          message: errorMessage(error),
+          variant: "error",
+        })
+        return false
+      }
+      return true
+    }
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
       return true
