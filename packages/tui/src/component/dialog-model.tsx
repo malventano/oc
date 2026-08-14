@@ -8,6 +8,8 @@ import { DialogVariant } from "./dialog-variant"
 import * as fuzzysort from "fuzzysort"
 import { useConnected } from "./use-connected"
 import { useSync } from "../context/sync"
+import { useTheme } from "../context/theme"
+import { TextAttributes } from "@opentui/core"
 
 export function DialogModel(props: { providerID?: string }) {
   const local = useLocal()
@@ -17,6 +19,7 @@ export function DialogModel(props: { providerID?: string }) {
 
   const connected = useConnected()
   const providers = createDialogProviderOptions()
+  const { theme } = useTheme()
 
   const showExtra = createMemo(() => connected() && !props.providerID)
 
@@ -43,7 +46,7 @@ export function DialogModel(props: { providerID?: string }) {
             disabled: provider.id === "opencode" && model.id.includes("-nano"),
             footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
             onSelect: () => {
-              onSelect(provider.id, model.id)
+              applySelection(provider.id, model.id, false)
             },
           },
         ]
@@ -81,7 +84,7 @@ export function DialogModel(props: { providerID?: string }) {
             disabled: provider.id === "opencode" && model.includes("-nano"),
             footer: info.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
             onSelect() {
-              onSelect(provider.id, model)
+              applySelection(provider.id, model, false)
             },
           })),
           filter((option) => {
@@ -139,8 +142,14 @@ export function DialogModel(props: { providerID?: string }) {
     return value.name
   })
 
-  function onSelect(providerID: string, modelID: string) {
-    local.model.set({ providerID, modelID }, { recent: true })
+  function applySelection(providerID: string, modelID: string, all: boolean) {
+    const agents = all
+      ? local
+          .agent.list()
+          .filter((agent) => agent.model)
+          .map((agent) => agent.name)
+      : undefined
+    local.model.set({ providerID, modelID }, { recent: true, agents })
     const list = local.model.variant.list()
     const cur = local.model.variant.selected()
     if (cur === "default" || (cur && list.includes(cur))) {
@@ -173,10 +182,25 @@ export function DialogModel(props: { providerID?: string }) {
             local.model.toggleFavorite(option.value as { providerID: string; modelID: string })
           },
         },
+        {
+          command: "model.dialog.all",
+          title: "Set for all agents",
+          showInFooter: false,
+          onTrigger: (option) => {
+            const { providerID, modelID } = option.value as { providerID: string; modelID: string }
+            applySelection(providerID, modelID, true)
+          },
+        },
       ]}
       onFilter={setQuery}
       flat={true}
       skipFilter={true}
+      titleView={
+        <text attributes={TextAttributes.BOLD}>
+          <span style={{ fg: theme.text }}>{title()}</span>
+          <span style={{ fg: theme.textMuted }}> (Alt+Enter = all agents)</span>
+        </text>
+      }
       title={title()}
       current={local.model.current()}
     />
