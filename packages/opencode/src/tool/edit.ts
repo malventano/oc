@@ -189,6 +189,9 @@ export const EditTool = Tool.define(
           // disk and earlier sections would silently be discarded (last
           // write wins).
           const plannedByPath = new Map<string, { after: string; bom: boolean }>()
+          // Registers are patch-global: a CUT in any section (any file) can
+          // be PASTEd by any later section.
+          const registers = new Map<string, string[]>()
           for (const section of parsed.files) {
             const sourcePath = yield* resolveSourcePath(section.filePath)
             if (section.delete) {
@@ -227,6 +230,47 @@ export const EditTool = Tool.define(
             for (const op of section.ops) {
               if (op.kind === "append") {
                 work.push(...op.text)
+                continue
+              }
+              if (op.kind === "cut") {
+                const hits = findMatches(work, op.block)
+                if (hits.length === 0) {
+                  throw new Error(
+                    `CUT @${op.register}: no match for \`${(op.block[0] ?? "").slice(0, 60)}\` - copy the block byte-exact from the read output`,
+                  )
+                }
+                if (hits.length > 1) {
+                  throw new Error(
+                    `CUT @${op.register}: the block matches ${hits.length} places (e.g. lines ${hits
+                      .slice(0, 3)
+                      .map((h) => h + 1)
+                      .join(", ")}); extend it with surrounding lines to disambiguate`,
+                  )
+                }
+                registers.set(op.register, work.slice(hits[0], hits[0] + op.block.length))
+                work.splice(hits[0], op.block.length)
+                continue
+              }
+              if (op.kind === "paste") {
+                const content = registers.get(op.register)
+                if (!content) {
+                  throw new Error(`PASTE @${op.register}: no CUT @${op.register} in this patch`)
+                }
+                const hits = findMatches(work, op.context)
+                if (hits.length === 0) {
+                  throw new Error(
+                    `PASTE @${op.register}: no match for the context block \`${(op.context[0] ?? "").slice(0, 60)}\` - copy it byte-exact from the read output`,
+                  )
+                }
+                if (hits.length > 1) {
+                  throw new Error(
+                    `PASTE @${op.register}: the context block matches ${hits.length} places (e.g. lines ${hits
+                      .slice(0, 3)
+                      .map((h) => h + 1)
+                      .join(", ")}); extend it with surrounding lines to disambiguate`,
+                  )
+                }
+                work.splice(op.after ? hits[0] + op.context.length : hits[0], 0, ...content)
                 continue
               }
               const hits = findMatches(work, op.old)

@@ -31,6 +31,8 @@
 export type FenceOp =
   | { kind: "replace"; old: string[]; new: string[] }
   | { kind: "append"; text: string[] }
+  | { kind: "cut"; register: string; block: string[] }
+  | { kind: "paste"; register: string; after: boolean; context: string[] }
 
 export type FenceSection = {
   filePath: string
@@ -56,10 +58,38 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
   let cur: FenceSection | null = null
   let curOld: string[] | null = null
   let curNew: string[] | null = null
+  let curReg: string | null = null
+  let curRegRows: string[] | null = null
+  let curPaste: { name: string; after: boolean } | null = null
+  let curPasteRows: string[] | null = null
   let fileLevelDone = false
 
   const fail = (i: number, line: string, msg: string) => {
     errors.push(`line ${i + 1}: ${msg} - got: ${JSON.stringify(line.slice(0, 80))}`)
+  }
+
+  // Strip leading/trailing blank separator rows from a captured block
+  // (blank rows in the middle are real content).
+  const trimBlank = (rows: string[]): string[] => {
+    let a = 0
+    let b = rows.length - 1
+    while (a <= b && rows[a] === "") a++
+    while (b >= a && rows[b] === "") b--
+    return rows.slice(a, b + 1)
+  }
+  const sealCut = () => {
+    if (curReg !== null) {
+      cur?.ops.push({ kind: "cut", register: curReg, block: trimBlank(curRegRows ?? []) })
+      curReg = null
+      curRegRows = null
+    }
+  }
+  const sealPaste = () => {
+    if (curPaste !== null) {
+      cur?.ops.push({ kind: "paste", register: curPaste.name, after: curPaste.after, context: trimBlank(curPasteRows ?? []) })
+      curPaste = null
+      curPasteRows = null
+    }
   }
 
   // Resolve the current OLD/NEW pair into an op. A no-op (OLD === NEW) is a
@@ -90,7 +120,7 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     const trimmed = line.trim()
-    if (trimmed === "" && curOld === null && curNew === null) continue
+    if (trimmed === "" && curOld === null && curNew === null && curReg === null && curPaste === null) continue
     if (trimmed.startsWith("*** Begin Patch")) {
       if (files.length > 0) {
         fail(i, line, "duplicate begin marker")
@@ -103,6 +133,8 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
         resolvePair(i)
         if (errors.length > 0) return { ok: false, errors }
       }
+      sealCut()
+      sealPaste()
       if (files.length === 0) {
         fail(i, line, "empty patch (no file sections)")
         return { ok: false, errors }
@@ -115,6 +147,8 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
         resolvePair(i)
         if (errors.length > 0) return { ok: false, errors }
       }
+      sealCut()
+      sealPaste()
       cur = { filePath: sec[1], ops: [] }
       files.push(cur)
       curOld = null
@@ -129,6 +163,46 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
     if (fileLevelDone) {
       fail(i, line, "file-level op takes no blocks")
       return { ok: false, errors }
+    }
+    if (curReg !== null) {
+      // A new CUT/PASTE directive terminates the open CUT block; everything
+      // else (including directive-LOOKING content rows) accumulates raw.
+      if (/^(CUT|PASTE) @/.test(trimmed)) {
+        sealCut()
+        i--
+        continue
+      }
+      curRegRows!.push(line)
+      continue
+    }
+    if (curPaste !== null) {
+      if (/^(CUT|PASTE) @/.test(trimmed)) {
+        sealPaste()
+        i--
+        continue
+      }
+      curPasteRows!.push(line)
+      continue
+    }
+    const cutM = /^CUT @([A-Za-z0-9_]+):\s*$/.exec(trimmed)
+    if (cutM) {
+      if (curOld !== null) {
+        fail(i, line, "CUT inside an open OLD/NEW block - finish it first")
+        return { ok: false, errors }
+      }
+      curReg = cutM[1]
+      curRegRows = []
+      continue
+    }
+    const pasteM = /^PASTE @([A-Za-z0-9_]+) (AFTER|BEFORE):\s*$/.exec(trimmed)
+    if (pasteM) {
+      if (curOld !== null) {
+        fail(i, line, "PASTE inside an open OLD/NEW block - finish it first")
+        return { ok: false, errors }
+      }
+      curPaste = { name: pasteM[1], after: pasteM[2] === "AFTER" }
+      curPasteRows = []
+      continue
     }
     if (trimmed === "OLD:") {
       if (curNew !== null) {

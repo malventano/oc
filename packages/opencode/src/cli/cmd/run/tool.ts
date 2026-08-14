@@ -348,7 +348,9 @@ function runWebfetch(p: ToolProps<typeof WebFetchTool>): ToolInline {
 }
 
 function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
-  const paths = list<string>(p.metadata.paths).map((f) => toolPath(f))
+  // Dedupe: same-path multi-section patches report the path once per
+  // section (mirrors the TUI's editPaths).
+  const paths = [...new Set(list<string>(p.metadata.paths))].map((f) => toolPath(f))
   const title = paths.length > 0 ? paths.join(" → ") : toolPath(patchSectionPath(p.input.input ?? "") ?? "")
   return {
     icon: "←",

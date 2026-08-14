@@ -11,6 +11,7 @@ NEW:
 *** End Patch
 
 How it works:
+- Section headers take the path as shown by the read/grep tools: absolute paths (always correct) or paths relative to the working directory. A bare filename (no `/`) is resolved by walking the working tree; if it matches several files the tool errors - use the full path. When in doubt, use the absolute path.
 - `OLD:` starts a block; the lines after it are COPIED byte-exact from the read output (strip the `N: ` prefix, keep everything else exactly - indentation, punctuation, everything). This is the "before" content.
 - `NEW:` starts the replacement block; the lines after it are the new content, written as-is (never escape anything - backticks, `${...}`, quotes are literal).
 - The OLD block must match EXACTLY ONE place in the file. If it matches several, the tool errors with the matching line numbers - extend the OLD block with surrounding lines. If it matches none, the tool errors with the first unmatched line - re-copy it byte-exact (or re-read if the file changed).
@@ -35,6 +36,12 @@ Deletion: an OLD block with no NEW block removes the matched lines.
 Append: an OLD block with no lines (just `OLD:` then `NEW:` immediately) appends the NEW block at the end of the file.
 
 Multiple changes: several OLD/NEW pairs in one section, applied in order; multiple `[PATH]` sections in one patch apply independently and atomically. `DELETE` and `RENAME NEWPATH` are file-level (alone in their section).
+
+Register moves (CUT/PASTE): move a block of lines without re-typing them. `CUT @name:` starts a block holding the lines to REMOVE (matched byte-exact, same rules as OLD); the register captures them. `PASTE @name AFTER:` (or `BEFORE:`) starts a block holding the context line(s) to match, and the register's content is inserted after (or before) that context. Example: a section with `CUT @helper:` followed by the function's lines removes and captures the function; a later section with `PASTE @helper AFTER:` followed by a context line inserts it after that context.
+- The CUT block and the PASTE context must each match EXACTLY ONE place.
+- CUT with no matching PASTE = a delete; a PASTE with no prior CUT is an error.
+- Registers are shared across sections and files in the same patch.
+- OLD/NEW blocks still work exactly as before - mix them freely.
 
 Rules:
 - Copy the OLD lines from your latest read of the file. The read output shows `N: content` - the `N: ` prefix is never part of the content.
