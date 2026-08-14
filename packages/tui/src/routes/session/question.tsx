@@ -4,6 +4,7 @@ import { useRenderer } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
 import { useLocal } from "../../context/local"
+import { useSync } from "../../context/sync"
 import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
@@ -19,6 +20,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
   const local = useLocal()
+  const sync = useSync()
   const agentColor = createMemo(() => {
     const agent = local.agent.current()
     return agent ? local.agent.color(agent.name) : theme.accent
@@ -28,10 +30,30 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
   const tabs = createMemo(() => (single() ? 1 : questions().length + 1)) // questions + confirm tab (no confirm for single select)
   const [tabHover, setTabHover] = createSignal<number | "confirm" | null>(null)
+  // A re-asked question (undo back to the question turn) carries the tool
+  // part's stored answers: pre-populate the panel so the user can adjust
+  // their previous answers instead of re-entering them.
+  const priorAnswers = (): QuestionAnswer[] | undefined => {
+    const tool = props.request.tool
+    if (!tool) return undefined
+    const parts = sync.data.part[tool.messageID]
+    const part = parts?.find((p) => p.type === "tool" && p.callID === tool.callID)
+    if (part?.type !== "tool" || part.state.status !== "completed") return undefined
+    const answers = (part.state.metadata as { answers?: QuestionAnswer[] } | undefined)?.answers
+    return answers
+  }
   const [store, setStore] = createStore({
     tab: 0,
-    answers: [] as QuestionAnswer[],
-    custom: [] as string[],
+    answers: priorAnswers() ?? [],
+    custom: (() => {
+      const prior = priorAnswers()
+      if (!prior) return []
+      return props.request.questions.map((q, i) => {
+        const picked = prior[i] ?? []
+        const labels = q.options.map((o) => o.label)
+        return picked.find((a) => !labels.includes(a)) ?? ""
+      })
+    })(),
     selected: 0,
     editing: false,
   })
@@ -52,12 +74,35 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   })
   const allAnswered = createMemo(() => questions().every((_, i) => (store.answers[i]?.length ?? 0) > 0))
 
-  function submit() {
+  async function submit() {
+    // Capture before any await: the question.replied event removes the request
+    // from the sync store mid-submit, and Solid props are reactive getters - a
+    // later props.request read would see the removed (undefined) request.
+    const request = props.request
+    const directory = props.directory
     const answers = questions().map((_, i) => store.answers[i] ?? [])
-    void sdk.client.question.reply({
-      requestID: props.request.id,
-      directory: props.directory,
+    const replied = await sdk.client.question.reply({
+      requestID: request.id,
+      directory,
       answers,
+    })
+    if (replied.error) return
+    // The asking turn already ended when the question was asked (open-ended
+    // question tool) - the reply records the answers as the tool result
+    // server-side, and the answers re-enter as a user prompt in the CURRENT
+    // agent (plan/build), starting the continuation turn.
+    const agent = local.agent.current()
+    const model = local.model.current()
+    if (!agent || !model) return
+    const text = questions()
+      .map((q, i) => `"${q.question}"="${answers[i]?.length ? answers[i]!.join(", ") : "(not answered)"}"`)
+      .join(", ")
+    await sdk.client.session.prompt({
+      sessionID: request.sessionID,
+      agent: agent.name,
+      model,
+      variant: local.model.variant.current(),
+      parts: [{ type: "text", text, metadata: { kind: "question_answers" } }],
     })
   }
 
@@ -78,11 +123,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
       setStore("custom", inputs)
     }
     if (single()) {
-      void sdk.client.question.reply({
-        requestID: props.request.id,
-        directory: props.directory,
-        answers: [[answer]],
-      })
+      void submit()
       return
     }
     setStore("tab", store.tab + 1)
@@ -318,6 +359,15 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
       customBorderChars={SplitBorder.customBorderChars}
     >
       <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
+        <Show when={local.agent.current()}>
+          {(a) => (
+            <box flexDirection="row" gap={1} paddingLeft={1}>
+              <text fg={agentColor()}>{a().name}</text>
+              <text fg={theme.textMuted}>·</text>
+              <text fg={theme.text}>{local.model.parsed().model}</text>
+            </box>
+          )}
+        </Show>
         <Show when={!single()}>
           <box flexDirection="row" gap={1} paddingLeft={1}>
             <For each={questions()}>

@@ -325,6 +325,12 @@ export function Prompt(props: PromptProps) {
     extmarkToPartIndex: new Map(),
     interrupt: 0,
   })
+  // Restored content (undo/pull-back) must not survive the question/permission
+  // overlay stash: only user-typed drafts should come back after the panel.
+  // The content-change handler fires (deferred) for programmatic setText too,
+  // so the flag is only cleared when the content diverges from the restore.
+  let restored = false
+  let restoredText: string | undefined
 
   createEffect(
     on(
@@ -670,6 +676,8 @@ export function Prompt(props: PromptProps) {
       // the cursorVersion-gated bindings.
       input.focus()
       setCursorVersion((value) => value + 1)
+      restored = true
+      restoredText = prompt.input
     },
     reset() {
       input.clear()
@@ -698,7 +706,7 @@ export function Prompt(props: PromptProps) {
   })
 
   onCleanup(() => {
-    if (store.prompt.input) {
+    if (store.prompt.input && !restored) {
       stashed = { prompt: unwrap(store.prompt), cursor: input.cursorOffset }
     }
     setInputTarget(undefined)
@@ -1521,6 +1529,7 @@ export function Prompt(props: PromptProps) {
               maxHeight={maxHeight()}
               onContentChange={() => {
                 const value = input.plainText
+                if (value !== restoredText) restored = false
                 setStore("prompt", "input", value)
                 auto()?.onInput(value)
                 syncExtmarksWithPromptParts()

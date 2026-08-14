@@ -1436,6 +1436,7 @@ function UserMessage(props: {
 }) {
   const ctx = use()
   const local = useLocal()
+  const sync = useSync()
   const text = createMemo(() => {
     const texts = props.parts
       .map((x) => {
@@ -1456,10 +1457,65 @@ function UserMessage(props: {
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
 
   const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
+  // Question answers re-enter the conversation as a user prompt: render the
+  // turn summary header (▣ agent · model · pending duration) ABOVE the
+  // message, mirroring the assistant turn header, so the answer submission
+  // shows its agent boundary in the transcript.
+  const questionAnswers = createMemo(() =>
+    props.parts.some((x) => x.type === "text" && x.metadata?.kind === "question_answers"),
+  )
+  const sessionMessages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
+  // The header marks the QUESTION turn's completion (it sits below the tool
+  // line), so it is tied to the previous turn's agent/model - NOT the
+  // submit-time agent the answers message carries.
+  const questionTurn = createMemo(() => {
+    if (!questionAnswers()) return undefined
+    const msgs = sessionMessages()
+    const idx = msgs.findIndex((m) => m.id === props.message.id)
+    // Walk back to the assistant turn that asked the question (the most
+    // recent assistant message with a question tool call) - NOT the
+    // immediate predecessor, which may be unrelated when the answers
+    // message follows other turns (e.g. after a revert/re-ask).
+    for (let i = idx - 1; i >= 0; i--) {
+      const msg = msgs[i]
+      if (msg.role !== "assistant") continue
+      const parts = sync.data.part[msg.id]
+      if (parts?.some((p) => p.type === "tool" && p.tool === "question")) return msg
+    }
+    return undefined
+  })
+  const headerAgent = createMemo(() => questionTurn()?.agent ?? props.message.agent)
+  const headerColor = createMemo(() => local.agent.color(headerAgent()))
+  const modelName = createMemo(() => {
+    const turn = questionTurn()
+    if (turn) return Model.name(ctx.providers(), turn.providerID, turn.modelID)
+    const model = props.message.model
+    if (!model) return ""
+    return Model.name(ctx.providers(), model.providerID, model.modelID)
+  })
+  const pendingDuration = createMemo(() => {
+    const turn = questionTurn()
+    if (!turn?.time) return 0
+    return props.message.time.created - turn.time.created
+  })
 
   return (
     <>
       <Show when={text()}>
+        <Show when={questionAnswers()}>
+          <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
+            <text marginTop={1}>
+              <span style={{ fg: headerColor() }}>▣{" "}</span>{" "}
+              <span style={{ fg: theme.text }}>{Locale.titlecase(headerAgent())}</span>
+              <Show when={modelName()}>
+                <span style={{ fg: theme.textMuted }}> · {modelName()}</span>
+              </Show>
+              <Show when={pendingDuration()}>
+                <span style={{ fg: theme.textMuted }}> · {Locale.duration(pendingDuration())}</span>
+              </Show>
+            </text>
+          </box>
+        </Show>
         <box
           id={props.message.id}
           ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
