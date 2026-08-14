@@ -21,9 +21,9 @@ REQUIRED vs OPTIONAL args differ per op:
 Operations:
 - recent-sessions: List recent top-level sessions with message counts.
 - session-search: Search sessions by title or directory pattern.
-- session-info: Get session summary (messages, tokens, timestamps).
+- session-info: Get session summary (messages, tokens, UTC timestamps).
 - subagent-info: Get subagent child sessions.
-- list-session-messages: List messages in session with previews, timestamps, token counts. around_message_id+window = anchored paging (bookends + before/after counts included).
+- list-session-messages: List messages in session with previews, UTC timestamps, token counts. around_message_id+window = anchored paging (bookends + before/after counts included).
 - list-session-parts-by-tool: List tool call parts filtered by tool name and/or status. full_content capped at 80 KiB (omitted placeholder).
 - session-goal-history: Find ## Goal block updates chronologically.
 - search-text: Search text content in messages and tool outputs across all sessions or within specific session ID. Global search excludes current-session live-window hits and ancestor sessions by default; pre-compaction archived messages remain searchable (exclude_lineage=false to include everything).`
@@ -72,7 +72,7 @@ const clamp = (v: number | undefined, dflt: number, max: number) => {
 }
 
 const MSG_SQL = (textExpr: string, sessionId: string | undefined) => sql`SELECT m.id as message_id,
-  datetime(m.time_created/1000, 'unixepoch') as time,
+  strftime('%Y-%m-%dT%H:%M:%SZ', m.time_created/1000, 'unixepoch') as time,
   json_extract(m.data, '$.role') as role,
   json_extract(p.data, '$.type') as part_type,
   ${sql.raw(textExpr)} as text_preview,
@@ -124,7 +124,7 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
             const rows = yield* db
               .all(sql`SELECT s.id, s.title, s.directory, s.project_id,
                 (SELECT COUNT(*) FROM message WHERE session_id = s.id) as messages,
-                datetime(s.time_updated/1000, 'unixepoch') as last_active,
+                strftime('%Y-%m-%dT%H:%M:%SZ', s.time_updated/1000, 'unixepoch') as last_active,
                 s.cost
                 FROM session s WHERE s.parent_id IS NULL
                 ORDER BY s.time_updated DESC LIMIT ${lim} OFFSET ${off}`)
@@ -137,7 +137,7 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
             const rows = yield* db
               .all(sql`SELECT s.id, s.title, s.directory, s.project_id,
                 (SELECT COUNT(*) FROM message WHERE session_id = s.id) as messages,
-                datetime(s.time_updated/1000, 'unixepoch') as last_active
+                strftime('%Y-%m-%dT%H:%M:%SZ', s.time_updated/1000, 'unixepoch') as last_active
                 FROM session s WHERE s.parent_id IS NULL
                 AND (s.title LIKE ${pat} OR s.directory LIKE ${pat})
                 ORDER BY s.time_updated DESC LIMIT ${lim} OFFSET ${off}`)
@@ -149,8 +149,8 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
             const row = yield* db
               .get(sql`SELECT s.id, s.title, s.directory, s.project_id,
                 json_extract(s.model, '$.id') as model_id,
-                datetime(s.time_created/1000, 'unixepoch') as created,
-                datetime(s.time_updated/1000, 'unixepoch') as updated,
+                strftime('%Y-%m-%dT%H:%M:%SZ', s.time_created/1000, 'unixepoch') as created,
+                strftime('%Y-%m-%dT%H:%M:%SZ', s.time_updated/1000, 'unixepoch') as updated,
                 (SELECT COUNT(*) FROM message WHERE session_id = s.id) as messages,
                 (SELECT SUM(json_extract(data, '$.tokens.input')) FROM message WHERE session_id = s.id) as total_input,
                 (SELECT SUM(json_extract(data, '$.tokens.output')) FROM message WHERE session_id = s.id) as total_output,
@@ -164,8 +164,8 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
             const rows = yield* db
               .all(sql`SELECT s.id, s.title,
                 (SELECT COUNT(*) FROM message WHERE session_id = s.id) as messages,
-                datetime(s.time_created/1000, 'unixepoch') as started,
-                datetime(s.time_updated/1000, 'unixepoch') as finished,
+                strftime('%Y-%m-%dT%H:%M:%SZ', s.time_created/1000, 'unixepoch') as started,
+                strftime('%Y-%m-%dT%H:%M:%SZ', s.time_updated/1000, 'unixepoch') as finished,
                 (SELECT SUM(json_extract(data, '$.tokens.input')) FROM message WHERE session_id = s.id) as total_input,
                 (SELECT SUM(json_extract(data, '$.tokens.output')) FROM message WHERE session_id = s.id) as total_output
                 FROM session s WHERE s.parent_id = ${params.parentId}
@@ -222,7 +222,7 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
               const anchorMeta: unknown =
                 anchorRow ??
                 (yield* db
-                  .get(sql`SELECT m.id as message_id, datetime(m.time_created/1000, 'unixepoch') as time,
+                  .get(sql`SELECT m.id as message_id, strftime('%Y-%m-%dT%H:%M:%SZ', m.time_created/1000, 'unixepoch') as time,
                     json_extract(m.data, '$.role') as role, null as part_type, '(no text part)' as text_preview,
                     null as input_tokens, null as output_tokens FROM message m WHERE m.id = ${params.around_message_id} AND m.session_id = ${params.sessionId}`)
                   .pipe(Effect.orDie))
@@ -256,7 +256,7 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
             if (params.before) where = sql`${where} AND m.time_created < ${Math.floor(new Date(params.before).getTime() / 1000)}`
             const rows = yield* db
               .all(sql`SELECT m.id as message_id,
-                datetime(m.time_created/1000, 'unixepoch') as time,
+                strftime('%Y-%m-%dT%H:%M:%SZ', m.time_created/1000, 'unixepoch') as time,
                 json_extract(m.data, '$.role') as role,
                 json_extract(p.data, '$.type') as part_type,
                 ${sql.raw(textExpr)} as text_preview,
@@ -277,7 +277,7 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
             if (params.toolName) where = sql`${where} AND json_extract(p.data, '$.tool') = ${params.toolName}`
             if (params.status && params.status !== "all") where = sql`${where} AND json_extract(p.data, '$.state.status') = ${params.status}`
             const rows = yield* db
-              .all(sql`SELECT datetime(p.time_created/1000, 'unixepoch') as time,
+              .all(sql`SELECT strftime('%Y-%m-%dT%H:%M:%SZ', p.time_created/1000, 'unixepoch') as time,
                 json_extract(p.data, '$.tool') as tool,
                 json_extract(p.data, '$.state.status') as status,
                 ${sql.raw(inputExpr)} as input_preview,
@@ -299,7 +299,7 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
 
           if (op === "session-goal-history") {
             const rows = yield* db
-              .all(sql`SELECT datetime(m.time_created/1000, 'unixepoch') as time,
+              .all(sql`SELECT strftime('%Y-%m-%dT%H:%M:%SZ', m.time_created/1000, 'unixepoch') as time,
                 length(json_extract(p.data, '$.text')) as char_count,
                 json_extract(p.data, '$.text') as text
                 FROM message m
