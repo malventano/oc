@@ -317,7 +317,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setModelStore("recent", recentModels(next, modelStore.recent))
           save()
         },
-        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
+        set(
+          model: { providerID: string; modelID: string },
+          options?: { recent?: boolean; agents?: string[] },
+        ) {
           batch(() => {
             if (!isModelValid(model)) {
               toast.show({
@@ -329,7 +332,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             }
             const a = agent.current()
             if (!a) return
-            setModelStore("model", a.name, model)
+            // Default to the current agent; an explicit list applies the
+            // model to every named agent (used by the model dialog's
+            // "set for all agents" action).
+            const names = options?.agents?.length ? options.agents : [a.name]
+            for (const name of names) setModelStore("model", name, { ...model })
             if (options?.recent) {
               setModelStore("recent", recentModels(model, modelStore.recent))
               save()
