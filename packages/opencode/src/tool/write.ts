@@ -11,14 +11,11 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { Format } from "../format"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
-import { annotateDiff, trimDiff } from "./edit"
+import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
-import * as NFS from "fs/promises"
-import { readForSnapshot, recordSnapshot } from "./hashline-store"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
-const MAX_WRITE_ANNOTATED_LINES = 500
 
 export const Parameters = Schema.Struct({
   content: Schema.String.annotate({ description: "The content to write to the file" }),
@@ -68,33 +65,21 @@ export const WriteTool = Tool.define(
           if (yield* format.file(filepath)) {
             yield* Bom.syncFile(fs, filepath, desiredBom)
           }
-          const snapshotText = yield* readForSnapshot(fs, filepath)
-          if (snapshotText !== undefined) {
-            const count = snapshotText === "" ? 0 : snapshotText.endsWith("\n") ? snapshotText.split("\n").length - 1 : snapshotText.split("\n").length
-            recordSnapshot(filepath, snapshotText, Array.from({ length: count }, (_, i) => i + 1))
-          }
-          // Post-write stat backing fileDelta staleness detection: session
-          // self-edits are never re-reminded; external changes after the
-          // write diff against this stat.
-          const postStat = yield* Effect.tryPromise(() => NFS.stat(filepath)).pipe(
-            Effect.catch(() => Effect.succeed(undefined)),
-          )
-          let output = "Wrote file successfully."
-          const annotated = annotateDiff(diff)
-          if (annotated) {
-            const lines = annotated.split("\n")
-            const shown = lines.slice(0, MAX_WRITE_ANNOTATED_LINES)
-            output += `\n\n${shown.join("\n")}`
-            if (lines.length > MAX_WRITE_ANNOTATED_LINES) {
-              output += `\n\n(Anchored diff truncated at ${MAX_WRITE_ANNOTATED_LINES} lines; use Read with offset for further anchors.)`
-            }
-          }
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })
           yield* events.publish(Watcher.Event.Updated, {
             file: filepath,
             event: exists ? "change" : "add",
           })
 
+          // Post-write stat backing fileDelta staleness detection (0116):
+          // session self-edits are never re-reminded; the walk treats this
+          // stat as the reported state. Integer-ms convention (0120):
+          // Math.trunc(mtimeMs) at the source for Date.getTime() parity.
+          const postStat = yield* Effect.tryPromise(() => import("fs/promises").then((m) => m.stat(filepath))).pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+          )
+
+          let output = "Wrote file successfully."
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
@@ -116,9 +101,9 @@ export const WriteTool = Tool.define(
             title: path.relative(instance.worktree, filepath),
             metadata: {
               diagnostics,
-              stat: postStat ? { mtimeMs: Math.trunc(postStat.mtimeMs), size: postStat.size } : undefined,
               filepath,
               exists: exists,
+              stat: postStat ? { mtimeMs: Math.trunc(postStat.mtimeMs), size: postStat.size } : undefined,
             },
             output,
           }

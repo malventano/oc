@@ -1,91 +1,46 @@
-Performs file edits with a line-anchored patch grammar. The ONLY argument is `input`, a patch text block:
+Performs file edits with OLD/NEW content blocks. The ONLY argument is `input`, a patch text block:
 
 *** Begin Patch
-[path/to/file.ts#AB12]
-OP ANCHOR:
-+ content row
-+ content row
-[path/to/other.ts#CD34]
-OP ...
+[path/to/file.ts]
+OLD:
+    const old1 = foo
+    const old2 = bar
+NEW:
+    const new1 = foo2
+    const new2 = bar2
 *** End Patch
 
-Anchors are `LINE#ID` taken verbatim from your latest `read`/`grep` - they name ORIGINAL lines, never lines shifted by applied hunks. The read output you need is ALREADY in the conversation - edit from it directly. Do NOT call `read` again before editing; only re-read after an edit was REJECTED.
+How it works:
+- `OLD:` starts a block; the lines after it are COPIED byte-exact from the read output (strip the `N: ` prefix, keep everything else exactly - indentation, punctuation, everything). This is the "before" content.
+- `NEW:` starts the replacement block; the lines after it are the new content, written as-is (never escape anything - backticks, `${...}`, quotes are literal).
+- The OLD block must match EXACTLY ONE place in the file. If it matches several, the tool errors with the matching line numbers - extend the OLD block with surrounding lines. If it matches none, the tool errors with the first unmatched line - re-copy it byte-exact (or re-read if the file changed).
+- The matched OLD lines are replaced by the NEW lines.
 
-Operations (colon headers take `+` body rows, the final content):
-- `SET N#ID:` - replace line N with the body rows
-- `REPLACE A#ID B#ID:` - replace lines A through B (inclusive) with the body rows (takes TWO anchors - for ONE line use `SET N#ID:`, not REPLACE)
-- `AFTER N#ID:` - insert body rows after line N
-- `BEFORE N#ID:` - insert body rows before line N
-- `BETWEEN A#ID B#ID:` - insert body rows between lines A and B
-- `APPEND:` / `PREPEND:` are anchor-free - they work without a read; use them instead of shell redirection (cat >>).
-- `PREPEND:` - add body rows at the start of the file
-- `CUT A#ID B#ID` - delete lines A..B, capture into the anonymous register
-- `CUT A#ID B#ID @name` - delete lines A..B, capture into register `@name`
-- `PASTE @name AFTER N#ID` (or `... :` - the trailing colon is optional) - insert register content after line N
-- `PASTE @name BEFORE N#ID` (or `... :` - the trailing colon is optional) - insert register content before line N
-- `DELETE` - delete the file (file-level: no other op in the section)
-- `RENAME NEWPATH` - rename/move the file (file-level); a relative NEWPATH resolves against the source file's own directory, not the project root
+Insertions: include the line you want to insert after in BOTH blocks, then add the new lines in NEW:
 
-Content rows:
-- Every body row is `+ ` (plus sign followed by ONE space, then the content); `+` alone is a blank line.
-- The single space after `+` is a REQUIRED separator, STRIPPED and NOT part of the content: `+ x` = content `x`, `+  x` = content ` x`, `+   x` = content `  x`. COUNT the spaces: content with N leading spaces is `+` + separator + N content spaces (N+1 total after `+`). WORKED EXAMPLE (comment insertion - apply whenever you INVENT content): the code has `  const x = 1` (2 leading spaces); to insert a comment at that indent the row is `+   // comment` - `+` + THREE spaces + text (one separator + two content). If you write `+  // comment` the parser strips one and the comment lands at ONE space - WRONG. Rule of thumb: for content aligned with a code line at K spaces, the row starts with `+` followed by K+1 spaces. 0-INDENT content still needs the separator: `+ }` for a closing brace at column 0, `+ # heading` for a markdown heading, `+ **bold**` for a bold note - the space is mandatory even with no leading content spaces. When COPYING an indented line, write the separator space then every content space verbatim - do not fold the first content space into the separator. A row with text directly after `+` (`+x`) is a parse error - always put the space there.
-- INDENT HINTS in read output: every read line carries its indent hint after the anchor: `2#QM[4]:  if (x) {` means content inserted right AFTER line 2 belongs at FOUR leading spaces. Block-opener lines (ending with `{`) hint one level deeper than the brace (the body indent); other lines hint their own leading-space count. Use the hint as the content indent: content at 2 spaces is `+  x` (separator + two content spaces). The tool AUTO-CORRECTS a uniform one-space fold against the hint (if every row lands one short of the hinted indent, it pads them; one over, it trims), so rows written with the hint as the total after `+` still land correctly. Content inserted BEFORE a `}`-closer line (like `})`) belongs to the CLOSED BLOCK's body, so the same correction applies with the closer's indent + 2 (mixed blocks like a whole test inserted before a closing `})` shift as a unit); `*`-prefixed rows (docblock/block-comment bodies) are decorative and never trimmed.
-- Content is RAW: backticks, `${...}`, double quotes, `\` sequences, and all punctuation after the separator are literal content. NEVER escape, backslash, or wrap them. Text-based search/replace is not available - anchors only.
-- A literal leading `-` or `+` in the content keeps its prefix: Markdown bullet `- item` becomes `+ - item`; a literal `+ item` becomes `+ + item`.
-- The range deletes; the body is ONLY the final content. Do NOT echo the old line(s) into the body - an echoed first line is auto-stripped, but later echoes duplicate content (a mangled replace).
-- SET/REPLACE rows are VERBATIM final content - the engine never auto-corrects their indentation (a deliberate indent fix survives). If the applied result shows a block duplicated at the same lines (e.g. the tail echoed twice), the body echoed existing content - use CUT or narrow the range.
-- To delete lines, use `CUT`. Empty `SET`/`REPLACE` bodies are invalid.
+*** Begin Patch
+[PLAN.md]
+OLD:
+# Sample Doc
+NEW:
+# Sample Doc
+- task
+  - nested task
+*** End Patch
+
+(The `# Sample Doc` line stays; the new lines are inserted right after it. Same for inserting BEFORE a line - include that line in both blocks and put the new lines first in NEW.)
+
+Deletion: an OLD block with no NEW block removes the matched lines.
+
+Append: an OLD block with no lines (just `OLD:` then `NEW:` immediately) appends the NEW block at the end of the file.
+
+Multiple changes: several OLD/NEW pairs in one section, applied in order; multiple `[PATH]` sections in one patch apply independently and atomically. `DELETE` and `RENAME NEWPATH` are file-level (alone in their section).
 
 Rules:
-- Anchors come from the latest `read`/`grep` output. Never invent or guess them - a wrong anchor is rejected with retry-with anchors; re-read if unsure.
-- On an anchor-mismatch rejection, retry with the CORRECTED anchors from the error message - do not re-read (the message already shows the current content and the fresh LINE#IDs).
-- Every section header carries the 4-hex `#TAG` from the latest `read` of that file (`[PATH#TAG]`); copy it verbatim from the read output.
-- Touch only lines displayed by the read. Undisplayed/elided lines are UNSEEN - re-read the range first.
-- Ranges are tight: cover only the lines that change. Non-adjacent changes are separate ops.
-- Applied edits renumber the file and change IDs - take the next op's anchors from the edit response or a fresh `read`.
-- Multiple file sections in one patch apply independently (atomically validated). `CUT` + `PASTE @name` flows across sections; a paste's anchor must exist in its OWN section's file - give the paste its own [PATH] section targeting the destination. Registers are FORWARD-ONLY: the CUT section must come BEFORE the PASTE that uses it anywhere in the patch.
-- Prefer one call per file: independent changes to different files are separate edit calls (each renders its own block). Use a single multi-file patch only for one cohesive change spanning files, e.g. a `CUT` + `PASTE @name` move between files.
-- Multiple sections for the SAME file apply sequentially and compose (later sections base on earlier results; anchors are remapped onto shifted lines automatically) - but one section per file renders as a single block in the TUI, so prefer merging same-file ops into one section.
-- Every line must be exactly one op or one `+` body row. A malformed line fails the WHOLE patch with a parse error naming the line - fix it and resend the full patch; do not fall back to any other edit format.
-- NEVER copy lines from Read or edit-diff output into your replacement text - type fresh content. If you do copy, leading `N#ID:` / `+N#ID:` / `>>>` prefixes are stripped automatically.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required. Only use emojis if the user explicitly requests it.
-- If the file changed between your read and this edit, anchors are remapped through unchanged lines automatically (with a warning) when unambiguous, and rejected otherwise - re-read for fresh anchors.
-- After every successful edit, the response starts with a fresh `[PATH#TAG]` header; added lines in the diff carry their new `LINE#ID` refs (`+3#AB:content`), and each `*** path (N → M lines) [#TAG]` header shows its file tag - chain the next edit from those, or use a fresh `Read`.
-
-Example: `read` output:
-
-[greet.py#A1B2]
-1#ZP:def greet(name):
-2#QM:    msg = "Hello, " + name
-3#VR:    print(msg)
-4#WS:greet("world")
-
-Replace lines 2-3 with an f-string, then insert a call before line 4:
-
-*** Begin Patch
-[greet.py#A1B2]
-REPLACE 2#QM 3#VR:
-+     print(f"Hi, {name}")
-BEFORE 4#WS:
-+ greet("user")
-*** End Patch
-
-Markdown bullet insertion after line 1:
-
-*** Begin Patch
-[PLAN.md#E1F2]
-AFTER 1#YZ:
-+ - task
-+   - nested task
-*** End Patch
-
-Move a function to another file (register flows across sections):
-
-*** Begin Patch
-[greet.py#A1B2]
-CUT 1#ZP 3#VR @fn
-[other.py#3C4D]
-BEFORE 1#KH:
-+ def greet(name):
-+     print(f"Hi, {name}")
-*** End Patch
+- Copy the OLD lines from your latest read of the file. The read output shows `N: content` - the `N: ` prefix is never part of the content.
+- Ranges are tight: the OLD block covers only the lines that change. For a multi-line change, include a few surrounding lines in both blocks when the location could be ambiguous.
+- Blank lines inside a block are real content - keep them.
+- After a prior pair in the same patch, later pairs still reference the ORIGINAL content (non-overlapping edits apply correctly).
+- The edit FAILS if OLD and NEW are identical - the change must be in the NEW block.
+- Prefer one call per file. Every line must be inside an OLD:/NEW: block or be a header - a malformed line fails the whole patch naming the line.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.

@@ -1,10 +1,10 @@
+import * as path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Effect } from "effect"
 import * as NFS from "fs/promises"
 import { PartID, SessionID } from "./schema"
 import { Session } from "./session"
 import { isRealUser, lineDiff } from "./epoch"
-import { hashlineHeaderPath } from "@/tool/hashline-store"
 import { InstanceState } from "@/effect/instance-state"
 
 /**
@@ -296,10 +296,13 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
   }
 
   const sessions = yield* Session.Service
-  // Render paths project-relative when inside the worktree (hashline header
-  // convention); outside-project files keep their absolute path. The metadata
-  // keeps absolute paths for the walk.
-  const rendered = entries.map((e) => ({ ...e, path: hashlineHeaderPath(instance.directory, e.path) }))
+  // Render paths project-relative when inside the worktree; outside-project
+  // files keep their absolute path. The metadata keeps absolute paths for
+  // the walk.
+  const rendered = entries.map((e) => {
+    const rel = path.relative(instance.directory, e.path)
+    return { ...e, path: !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : e.path }
+  })
   const part = yield* sessions.updatePart({
     id: PartID.ascending(),
     messageID: input.user.info.id,

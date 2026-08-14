@@ -9,8 +9,6 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
-import { hashlineRef } from "./hashline"
-import { hashlineHeaderPath, readForSnapshot, recordSnapshot } from "./hashline-store"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -22,7 +20,7 @@ const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 
-// `offset` and `limit` were originally `z.coerce.number()` - the runtime
+// `offset` and `limit` were originally `z.coerce.number()` — the runtime
 // coercion was useful when the tool was called from a shell but serves no
 // purpose in the LLM tool-call path (the model emits typed JSON). The JSON
 // Schema output is identical (`type: "number"`), so the LLM view is
@@ -139,10 +137,9 @@ export const ReadTool = Tool.define<
     const lines = Effect.fn("ReadTool.lines")(function* (filepath: string, opts: { limit: number; offset: number }) {
       const start = opts.offset - 1
       const raw: string[] = []
-      const full: string[] = []
       const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
 
-      // Note: prefer manual TextDecoder over Stream.decodeText - when the source stream
+      // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
       // ends without flushing, decodeText drops the final unterminated line. We also
       // avoid Stream.runForEachWhile (it currently swallows the final unterminated
       // line of the upstream splitLines pipeline) and use a tagged error to stop the
@@ -166,7 +163,6 @@ export const ReadTool = Tool.define<
             const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
             if (flags.bytes + size <= MAX_BYTES) {
               raw.push(line)
-              full.push(text)
               flags.bytes += size
               return
             }
@@ -180,7 +176,7 @@ export const ReadTool = Tool.define<
         Effect.catchTag("ReadStop", () => Effect.void),
       )
 
-      return { raw, full, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
+      return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
     })
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
@@ -340,26 +336,7 @@ export const ReadTool = Tool.define<
       }
 
       let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
-      const snapshotText = yield* readForSnapshot(fs, filepath, Number(stat.size))
-      if (snapshotText !== undefined) {
-        const seen = Array.from({ length: file.raw.length }, (_, i) => i + file.offset)
-        const tag = recordSnapshot(filepath, snapshotText, seen)
-        output += `[${hashlineHeaderPath(instance.directory, filepath)}#${tag}]\n`
-      }
-      // Anchor hashes the FULL untruncated line so truncated reads still yield
-      // valid anchors (the display line may be capped; the hash is not).
-      // Indent hint: block-opener lines (ending with `{`) hint one level
-      // deeper than the brace (the body indent); other lines hint their own
-      // leading-space count. The model writes content after a line with the
-      // hint as the CONTENT indent; the edit tool's hint-normalize step
-      // corrects a uniform ±1 fold against the same value.
-      output += file.raw
-        .map((line, i) => {
-          const nsp = (line.match(/^ */) ?? [""])[0].length
-          const hint = line.trimEnd().endsWith("{") ? nsp + 2 : nsp
-          return `${hashlineRef(i + file.offset, file.full[i] ?? line)}[${hint}]:${line}`
-        })
-        .join("\n")
+      output += file.raw.map((line, i) => `${i + file.offset}: ${line}`).join("\n")
 
       const last = file.offset + file.raw.length - 1
       const next = last + 1
@@ -386,9 +363,10 @@ export const ReadTool = Tool.define<
           preview: file.raw.slice(0, 20).join("\n"),
           truncated,
           loaded: loaded.map((item) => item.filepath),
-          // Read-time stat backing fileDelta staleness detection: the walk
-          // compares the disk stat against this baseline on later user
-          // prompts and reminds the model to re-read on drift.
+          // Read-time stat backing fileDelta staleness detection (0116): the
+          // walk compares the disk stat against this baseline on later user
+          // prompts and reminds the model to re-read on drift. Integer ms
+          // (Date.getTime()) - the 0120 convention.
           stat: { mtimeMs: Option.getOrUndefined(stat.mtime)?.getTime() ?? 0, size: Number(stat.size) },
           display: {
             type: "file" as const,

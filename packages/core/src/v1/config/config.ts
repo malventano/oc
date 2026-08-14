@@ -185,22 +185,6 @@ export const Info = Schema.Struct({
       policies: Schema.optional(Schema.mutable(Schema.Array(ConfigExperimental.Policy))).annotate({
         description: "Policy statements applied to supported resources, such as provider access",
       }),
-      hashline_autocorrect: Schema.optional(Schema.Boolean).annotate({
-        description:
-          "Clean up copied LINE#ID:/>>> prefixes in hashline edit payloads (default true; set false to disable)",
-      }),
-      hashline_seen_lines: Schema.optional(Schema.Boolean).annotate({
-        description:
-          "Reject hashline edits referencing lines never displayed by read/search (default true; set false to disable)",
-      }),
-      hashline_indent_hint: Schema.optional(Schema.Boolean).annotate({
-        description:
-          "Auto-correct a uniform ±1 indent fold against the read output's indent hints (default true; set false to disable)",
-      }),
-      hashline_indent_autofix: Schema.optional(Schema.Boolean).annotate({
-        description:
-          "Auto-correct ±1 indent folds on lines the edit actually changed (default true; set false to keep only the validator warning)",
-      }),
     }),
   ),
 }).annotate({ identifier: "Config" })
