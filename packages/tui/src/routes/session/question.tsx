@@ -56,6 +56,19 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         return picked.find((a) => !labels.includes(a)) ?? ""
       })
     })(),
+    // Per-tab: the custom row is the active selection (clicked or arrowed
+    // to + confirmed) even before the text is committed - the check must
+    // move to it immediately because the tab stays visible for the text
+    // entry (unlike the other options, which auto-advance away).
+    customActive: (() => {
+      const prior = priorAnswers()
+      if (!prior) return []
+      return props.request.questions.map((q, i) => {
+        const picked = prior[i] ?? []
+        const labels = q.options.map((o) => o.label)
+        return picked.some((a) => !labels.includes(a))
+      })
+    })(),
     selected: 0,
     editing: false,
   })
@@ -74,6 +87,15 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     if (!value) return false
     return store.answers[store.tab]?.includes(value) ?? false
   })
+  // The custom row shows checked when its value is in the answers, or when
+  // it is the active selection (clicked/arrowed-to + confirmed) with the
+  // text still pending.
+  const customChecked = createMemo(() => customPicked() || (store.customActive[store.tab] ?? false))
+  // Upstream semantics: only COMMITTED answers count (the custom row's check
+  // without a committed text is a selection in progress, not an answer - the
+  // user must press Enter in the textarea first). The memo re-evaluates
+  // reactively on every state change, so the Confirm enables the moment the
+  // last answer commits, from any tab.
   const allAnswered = createMemo(() => questions().every((_, i) => (store.answers[i]?.length ?? 0) > 0))
 
   async function submit() {
@@ -142,6 +164,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     const answers = [...store.answers]
     answers[store.tab] = [answer]
     setStore("answers", answers)
+    setStore("customActive", store.tab, custom)
     if (custom) {
       const inputs = [...store.custom]
       inputs[store.tab] = answer
@@ -164,6 +187,10 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     const answers = [...store.answers]
     answers[store.tab] = next
     setStore("answers", answers)
+    // The custom entry toggled away: the active marker clears with it.
+    if (index !== -1 && answer === store.custom[store.tab]) {
+      setStore("customActive", store.tab, false)
+    }
   }
 
   function moveTo(index: number) {
@@ -179,6 +206,14 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   function selectOption() {
     if (other()) {
       if (!multi()) {
+        // The custom row becomes the selection immediately: unlike the other
+        // options (which auto-advance away), the tab stays visible for the
+        // text entry, so the check must move here at the click/Enter - clear
+        // the picked option and mark the custom as active.
+        const answers = [...store.answers]
+        answers[store.tab] = []
+        setStore("answers", answers)
+        setStore("customActive", store.tab, true)
         setStore("editing", true)
         return
       }
@@ -187,6 +222,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         toggle(value)
         return
       }
+      setStore("customActive", store.tab, true)
       setStore("editing", true)
       return
     }
@@ -326,10 +362,13 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 cmd: () => local.agent.move(1),
               },
               {
+                // At the Confirm, shift+tab steps back to the last question
+                // tab instead of scrolling the agents backwards (the mode
+                // scroll is forward-only via tab).
                 key: "shift+tab",
-                desc: "Previous agent",
+                desc: "Previous question",
                 group: "Question",
-                cmd: () => local.agent.move(-1),
+                cmd: () => selectTab((store.tab - 1 + tabs()) % tabs()),
               },
             ]
           : [
@@ -519,13 +558,13 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                       </text>
                     </box>
                     <box backgroundColor={other() ? theme.backgroundElement : undefined}>
-                      <text fg={other() ? theme.secondary : customPicked() ? theme.success : theme.text}>
-                        {multi() ? `[${customPicked() ? "✓" : " "}] Type your own answer` : "Type your own answer"}
+                      <text fg={other() ? theme.secondary : customChecked() ? theme.success : theme.text}>
+                        {multi() ? `[${customChecked() ? "✓" : " "}] Type your own answer` : "Type your own answer"}
                       </text>
                     </box>
 
                     <Show when={!multi()}>
-                      <text fg={theme.success}>{customPicked() ? " ✓" : ""}</text>
+                      <text fg={theme.success}>{customChecked() ? " ✓" : ""}</text>
                     </Show>
                   </box>
                   <Show when={store.editing}>
