@@ -49,6 +49,11 @@ export const OutputLengthError = NamedError.create("MessageOutputLengthError", {
 export const AuthError = NamedError.create("ProviderAuthError", { providerID: Schema.String, message: Schema.String })
 export const AbortedError = NamedError.create("MessageAbortedError", { message: Schema.String })
 export const StallGuardError = NamedError.create("StallGuardError", { message: Schema.String })
+// Loop-guard trim: the message was truncated at the loop start and KEEPS its
+// preserved prefix in the model request (exempted from the toModelMessage
+// error-skip alongside StallGuardError). Red banner like the full drop, but
+// the model continues from its own pre-loop text.
+export const LoopGuardTrimError = NamedError.create("LoopGuardTrimError", { message: Schema.String })
 export const StructuredOutputError = NamedError.create("StructuredOutputError", {
   message: Schema.String,
   retries: NonNegativeInt,
