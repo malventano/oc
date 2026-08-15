@@ -42,6 +42,7 @@ export const AuthError = namedError("ProviderAuthError", {
 
 export const AbortedError = namedError("MessageAbortedError", { message: Schema.String })
 export const StallGuardError = namedError("StallGuardError", { message: Schema.String })
+export const LoopGuardTrimError = namedError("LoopGuardTrimError", { message: Schema.String })
 export const StructuredOutputError = namedError("StructuredOutputError", {
   message: Schema.String,
   retries: NonNegativeInt,
@@ -198,6 +199,10 @@ export const CompactionPart = Schema.Struct({
   type: Schema.Literal("compaction"),
   auto: Schema.Boolean,
   overflow: Schema.optional(Schema.Boolean),
+  // guard: true = guard-triggered compaction (loop/stall 3rd/6th fire). The
+  // auto-continue directive forces completion of the pending request instead
+  // of offering a stop.
+  guard: Schema.optional(Schema.Boolean),
   tail_start_id: Schema.optional(MessageID),
   // virtual: true marks a virtual compact (no LLM summary turn - just a
   // tail drop with a synthetic note). Virtual markers and their synthetic
@@ -394,6 +399,7 @@ const AssistantErrorSchema = Schema.Union([
   OutputLengthError.EffectSchema,
   AbortedError.EffectSchema,
   StallGuardError.EffectSchema,
+  LoopGuardTrimError.EffectSchema,
   StructuredOutputError.EffectSchema,
   ContextOverflowError.EffectSchema,
   ContentFilterError.EffectSchema,

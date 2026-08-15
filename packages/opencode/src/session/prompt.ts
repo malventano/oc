@@ -1,7 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
-import { SessionV1, StallGuardError } from "@opencode-ai/core/v1/session"
+import { LoopGuardTrimError, SessionV1, StallGuardError } from "@opencode-ai/core/v1/session"
 import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
@@ -73,6 +73,10 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 const decodeMessageInfo = Schema.decodeUnknownExit(SessionV1.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(SessionV1.Part)
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
+// Minimum preserved prefix length for the loop-guard trim: below this the
+// trimmed message carries no useful content, so fall back to the whole-message
+// drop (the model restarts the step fresh).
+const TRIM_MIN_PRESERVED = 20
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
   "image/gif",
@@ -1137,8 +1141,16 @@ const layer = Layer.effect(
         // auto-compaction (auto: true - the model continues from the compacted
         // summary after it completes) instead of resuming with another steer.
         // Exhaustion NEVER disables the detectors.
+        // Auto-compaction budget + halt (2026-08-16): instruction-driven loops
+        // (user asks for repetition) survive compaction - the reset budget
+        // would re-fire and re-compact forever. TWO auto-compactions per turn
+        // (3rd and 6th fires), then the 9th fire HALTS: the guard actually
+        // stops the turn (break) - the model cannot keep looping if there is
+        // no next step.
         let loopFires = 0
         let stallFires = 0
+        let autoCompactRounds = 0
+        let guardsHalted = false
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1327,8 +1339,13 @@ const layer = Layer.effect(
               sessionID,
               model,
 
-              loopGuardEnabled: !compactingPrompt && loopGuardEnabled,
-              stallGuardEnabled: !compactingPrompt && stallGuardEnabled,
+              // Guards stay ACTIVE on compaction turns (2026-08-16): a
+              // poisoned context (loop-dropped garbage in the summary input)
+              // makes the summary turn loop too - the unguarded summary ran
+              // 42s of block spam until the user cancelled. The 3rd-fire
+              // auto-compaction is skipped for compaction turns (recursion).
+              loopGuardEnabled,
+              stallGuardEnabled,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1487,10 +1504,6 @@ TimeContext.stampUserMessages(msgs)
 
             if (handle.loopGuardFired) {
               yield* Effect.logWarning("loop guard fired", { "session.id": sessionID, detail: handle.loopGuardHit })
-              // Abort-marking: a non-Abort error both renders an obvious
-              // banner in the TUI and drops the message from the model
-              // request (toModelMessage skips error-marked messages), so the
-              // looped garbage is never replayed; the TUI keeps the full text.
               let note = `Loop guard interrupted the response: ${handle.loopGuardHit}`
               // 3x fire budget per turn. Fires 1-2 steer in-turn: the banner
               // shows the exact redirect the model receives (request-only
@@ -1501,27 +1514,117 @@ TimeContext.stampUserMessages(msgs)
               // summary instead of the polluted context.
               loopFires++
               if (loopFires < 3) {
-                note += `\n\n${LoopGuard.THINKING_LOOP_REDIRECT}`
-                steerPrompt = LoopGuard.THINKING_LOOP_REDIRECT
+                const redirect =
+                  handle.loopGuardChannel === "tool-input"
+                    ? LoopGuard.TOOL_INPUT_LOOP_REDIRECT
+                    : LoopGuard.THINKING_LOOP_REDIRECT
+                // Trim path (text/reasoning channels): truncate the fired
+                // part at the loop start and keep the preserved prefix in the
+                // request (LoopGuardTrimError is exempt from the error-skip),
+                // so the model continues from its own useful pre-loop content
+                // instead of losing it with the whole-message drop. Fall back
+                // to the drop when the preserved prefix is too small to be
+                // useful, or on a tool-input hit (the call never completed -
+                // nothing to preserve).
+                const trimAt = handle.loopTrimAt
+                let trimmed = false
+                if (trimAt !== null && trimAt >= TRIM_MIN_PRESERVED && handle.loopGuardChannel !== "tool-input") {
+                  const parts = yield* MessageV2.parts(handle.message.id).pipe(
+                    Effect.provideService(Database.Service, database),
+                  )
+                  const target =
+                    handle.loopGuardChannel === "reasoning"
+                      ? [...parts].reverse().find((p) => p.type === "reasoning")
+                      : [...parts].reverse().find((p) => p.type === "text")
+                  if (
+                    target &&
+                    target.text.length > trimAt &&
+                    target.text.slice(0, trimAt).trim().length >= TRIM_MIN_PRESERVED
+                  ) {
+                    yield* sessions.updatePart({ ...target, text: target.text.slice(0, trimAt) })
+                    trimmed = true
+                  }
+                }
+                if (trimmed) {
+                  note += `\n\nResponse text preserved up to the loop start; continuing from there.\n\n${redirect}`
+                  handle.message.error = new LoopGuardTrimError({ message: note }).toObject()
+                } else {
+                  // Abort-marking: a non-Abort error both renders an obvious
+                  // banner in the TUI and drops the message from the model
+                  // request (toModelMessage skips error-marked messages), so
+                  // the looped garbage is never replayed; the TUI keeps the
+                  // full text.
+                  note += `\n\n${redirect}`
+                  handle.message.error = new NamedError.Unknown({ message: note }).toObject()
+                }
+                steerPrompt = redirect
+              } else if (autoCompactRounds === 0) {
+                // 3rd fire: banner complete, now auto-compact. The
+                // compaction task is picked up on the next loop iteration;
+                // the counter reset gives the post-compaction continuation
+                // a fresh budget. Surface the auto-compaction as a red TUI
+                // toast (upper right), mirroring the overflow-compaction
+                // toast. Skipped entirely on compaction turns (no nested
+                // auto-compaction - the summary retries instead).
+                if (compactingPrompt) {
+                  note += `\n\nLoop guard fired 3 times this turn - the compaction summary is looping. No nested auto-compaction; the summary retries with the steer.`
+                } else {
+                  yield* events.publish(TuiEvent.ToastShow, {
+                    title: "Auto-compacting",
+                    message: "Loop guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                    variant: "error",
+                    duration: 8000,
+                  }).pipe(Effect.ignore)
+                  note += `\n\nLoop guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                  yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true, guard: true })
+                }
+                autoCompactRounds = 1
+                loopFires = 0
+                stallFires = 0
+              } else if (autoCompactRounds === 1) {
+                // 6th fire: second auto-compaction (round 2 of 3 - two
+                // compactions per turn, then the 9-fire halt).
+                if (compactingPrompt) {
+                  note += `\n\nLoop guard fired 6 times this turn - the compaction summary is looping. No nested auto-compaction; the summary retries with the steer.`
+                } else {
+                  yield* events.publish(TuiEvent.ToastShow, {
+                    title: "Auto-compacting",
+                    message: "Loop guard fired 6 times this turn - auto-compacting the conversation to reset context.",
+                    variant: "error",
+                    duration: 8000,
+                  }).pipe(Effect.ignore)
+                  note += `\n\nLoop guard fired 6 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                  yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true, guard: true })
+                }
+                autoCompactRounds = 2
+                loopFires = 0
+                stallFires = 0
               } else {
-                // 3rd fire: banner complete, now auto-compact. The compaction
-                // task is picked up on the next loop iteration; the counter
-                // reset gives the post-compaction continuation a fresh budget.
-                // Surface the auto-compaction as a red TUI toast (upper right),
-                // mirroring the overflow-compaction toast.
+                // 9th fire - HALT: the guard ACTUALLY stops the turn (break)
+                // - an infinite loop cannot continue if there is no next step
+                // (the user re-prompts to continue the task). Note mirrors
+                // the 3rd-fire note (same place, same format) but states why.
                 yield* events.publish(TuiEvent.ToastShow, {
-                  title: "Auto-compacting",
-                  message: "Loop guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                  title: "Loop guard halted",
+                  message: "Loop guard fired 9 times this turn - auto-compaction already used this turn, stopping the turn.",
                   variant: "error",
                   duration: 8000,
                 }).pipe(Effect.ignore)
-                note += `\n\nLoop guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
-                loopFires = 0
-                stallFires = 0
-                yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+                note += `\n\nLoop guard fired 9 times this turn - auto-compaction already used this turn, so this turn is being stopped. Re-prompt to continue the task.`
+                loopGuardEnabled = false
+                stallGuardEnabled = false
+                guardsHalted = true
+                // Mark the halted message FINISHED: without a finish the turn
+                // looks interrupted and the session machinery RESUMES the last
+                // user message (fresh variables - witnessed 2026-08-16: fires
+                // 10-12 with a second compaction cycle after the fire-9 halt).
+                // The error-mark keeps it out of future requests regardless.
+                handle.message.finish = "stop"
+                if (handle.message.time) handle.message.time.completed = Date.now()
               }
-              handle.message.error = new NamedError.Unknown({ message: note }).toObject()
+              handle.message.error ??= new NamedError.Unknown({ message: note }).toObject()
               yield* sessions.updateMessage(handle.message)
+              if (guardsHalted) return "break" as const
               return "continue" as const
             }
             if (handle.stallFired) {
@@ -1551,24 +1654,66 @@ TimeContext.stampUserMessages(msgs)
                 const redirect = StallGuard.detect(handle.message.finish, handle.stallText, handle.stallHadToolCall)
                 note += `\n\n${redirect!.redirect}`
                 steerPrompt = redirect!.redirect
+              } else if (autoCompactRounds === 0) {
+                if (compactingPrompt) {
+                  note += `\n\nStall guard fired 3 times this turn - the compaction summary is stalling. No nested auto-compaction; the summary retries with the steer.`
+                } else {
+                  note += `\n\nStall guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                  // Surface the auto-compaction as a red TUI toast (upper right),
+                  // mirroring the overflow-compaction toast.
+                  yield* events.publish(TuiEvent.ToastShow, {
+                    title: "Auto-compacting",
+                    message: "Stall guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                    variant: "error",
+                    duration: 8000,
+                  }).pipe(Effect.ignore)
+                  yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true, guard: true })
+                }
+                autoCompactRounds = 1
+                loopFires = 0
+                stallFires = 0
+              } else if (autoCompactRounds === 1) {
+                // 6th fire: second auto-compaction (round 2 of 3).
+                if (compactingPrompt) {
+                  note += `\n\nStall guard fired 6 times this turn - the compaction summary is stalling. No nested auto-compaction; the summary retries with the steer.`
+                } else {
+                  note += `\n\nStall guard fired 6 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                  yield* events.publish(TuiEvent.ToastShow, {
+                    title: "Auto-compacting",
+                    message: "Stall guard fired 6 times this turn - auto-compacting the conversation to reset context.",
+                    variant: "error",
+                    duration: 8000,
+                  }).pipe(Effect.ignore)
+                  yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true, guard: true })
+                }
+                autoCompactRounds = 2
+                loopFires = 0
+                stallFires = 0
               } else {
-                note += `\n\nStall guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
-                // Surface the auto-compaction as a red TUI toast (upper right),
-                // mirroring the overflow-compaction toast.
+                // 9th fire - HALT (mirrors the loop guard): end the turn.
                 yield* events.publish(TuiEvent.ToastShow, {
-                  title: "Auto-compacting",
-                  message: "Stall guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                  title: "Stall guard halted",
+                  message: "Stall guard fired 9 times this turn - auto-compaction already used this turn, stopping the turn.",
                   variant: "error",
                   duration: 8000,
                 }).pipe(Effect.ignore)
-                loopFires = 0
-                stallFires = 0
-                yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+                note += `\n\nStall guard fired 9 times this turn - auto-compaction already used this turn, so this turn is being stopped. Re-prompt to continue the task.`
+                loopGuardEnabled = false
+                stallGuardEnabled = false
+                guardsHalted = true
+                handle.message.finish = "stop"
+                if (handle.message.time) handle.message.time.completed = Date.now()
               }
               handle.message.error = new StallGuardError({ message: note }).toObject()
-              handle.message.finish = undefined
-              if (handle.message.time) handle.message.time.completed = undefined
+              if (!guardsHalted) {
+                // Continued-turn state for normal stall fires (the model
+                // resumes from its own text); the HALT keeps finish="stop" +
+                // completed so the turn resolves and nothing resumes it.
+                handle.message.finish = undefined
+                if (handle.message.time) handle.message.time.completed = undefined
+              }
               yield* sessions.updateMessage(handle.message)
+              if (guardsHalted) return "break" as const
               return "continue" as const
             }
 

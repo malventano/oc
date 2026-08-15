@@ -299,6 +299,13 @@ export type StallGuardError = {
   }
 }
 
+export type LoopGuardTrimError = {
+  name: "LoopGuardTrimError"
+  data: {
+    message: string
+  }
+}
+
 export type StructuredOutputError = {
   name: "StructuredOutputError"
   data: {
@@ -352,6 +359,7 @@ export type AssistantMessage = {
     | MessageOutputLengthError
     | MessageAbortedError
     | StallGuardError
+    | LoopGuardTrimError
     | StructuredOutputError
     | ContextOverflowError
     | ContentFilterError
@@ -1230,6 +1238,7 @@ export type GlobalEvent = {
             | MessageOutputLengthError
             | MessageAbortedError
             | StallGuardError
+    | LoopGuardTrimError
             | StructuredOutputError
             | ContextOverflowError
             | ContentFilterError
@@ -5373,6 +5382,7 @@ export type SessionError = {
       | MessageOutputLengthError
       | MessageAbortedError
       | StallGuardError
+    | LoopGuardTrimError
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
@@ -6699,6 +6709,7 @@ export type EventSessionError = {
       | MessageOutputLengthError
       | MessageAbortedError
       | StallGuardError
+    | LoopGuardTrimError
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
