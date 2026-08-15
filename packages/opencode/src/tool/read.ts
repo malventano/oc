@@ -27,8 +27,9 @@ class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 // unchanged; purely CLI-facing uses must now send numbers rather than strings.
 export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
-  offset: Schema.optional(NonNegativeInt).annotate({
-    description: "The line number to start reading from (1-indexed)",
+  offset: Schema.optional(Schema.Int).annotate({
+    description:
+      "The line number to start reading from (1-indexed). Negative = tail semantics: offset -50 reads the LAST 50 lines (limit defaults to the tail size in that case)",
   }),
   limit: Schema.optional(NonNegativeInt).annotate({
     description: "The maximum number of lines to read (defaults to 2000)",
@@ -134,8 +135,21 @@ export const ReadTool = Tool.define<
       )
     })
 
+    const countLines = Effect.fn("ReadTool.countLines")(function* (filepath: string) {
+      const decoder = new TextDecoder("utf-8")
+      let count = 0
+      yield* fs.stream(filepath).pipe(
+        Stream.map((bytes) => decoder.decode(bytes, { stream: true })),
+        Stream.splitLines,
+        Stream.runForEach(() => Effect.sync(() => { count += 1 })),
+      )
+      return count
+    })
+
     const lines = Effect.fn("ReadTool.lines")(function* (filepath: string, opts: { limit: number; offset: number }) {
-      const start = opts.offset - 1
+      // Negative offset = tail semantics: read the last N lines (a count
+      // pass first - the stream has no length knowledge).
+      const start = opts.offset < 0 ? Math.max(0, (yield* countLines(filepath)) + opts.offset) : opts.offset - 1
       const raw: string[] = []
       const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
 
@@ -176,7 +190,7 @@ export const ReadTool = Tool.define<
         Effect.catchTag("ReadStop", () => Effect.void),
       )
 
-      return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
+      return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset < 0 ? start + 1 : opts.offset }
     })
 
     const isBinaryFile = (filepath: string, bytes: Uint8Array) => {
@@ -263,9 +277,9 @@ export const ReadTool = Tool.define<
 
       if (stat.type === "Directory") {
         const items = yield* list(filepath)
-        const limit = params.limit ?? DEFAULT_READ_LIMIT
-        const offset = params.offset || 1
-        const start = offset - 1
+        const limit = params.limit ?? (params.offset !== undefined && params.offset < 0 ? -params.offset : DEFAULT_READ_LIMIT)
+        const offset = params.offset ?? 1
+        const start = offset < 0 ? Math.max(0, items.length + offset) : offset - 1
         const sliced = items.slice(start, start + limit)
         const truncated = start + sliced.length < items.length
 
@@ -328,7 +342,10 @@ export const ReadTool = Tool.define<
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 
-      const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
+      const file = yield* lines(filepath, {
+        limit: params.limit ?? (params.offset !== undefined && params.offset < 0 ? -params.offset : DEFAULT_READ_LIMIT),
+        offset: params.offset ?? 1,
+      })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),

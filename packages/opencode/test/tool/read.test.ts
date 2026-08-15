@@ -414,6 +414,46 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("negative offset reads the tail of a file", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(path.join(dir, "tail.txt"), lines)
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "tail.txt"), offset: -5 })
+      expect(result.output).toMatch(/96: line96/)
+      expect(result.output).toMatch(/100: line100/)
+      expect(result.output).not.toMatch(/95: line95/)
+    }),
+  )
+
+  it.live("negative offset with explicit limit reads the ending window", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n")
+      yield* put(path.join(dir, "window.txt"), lines)
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "window.txt"), offset: -10, limit: 3 })
+      expect(result.output).toMatch(/91: line91/)
+      expect(result.output).toMatch(/93: line93/)
+      expect(result.output).not.toMatch(/94: line94/)
+    }),
+  )
+
+  it.live("negative offset reads the tail of a directory listing", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "a.txt"), "")
+      yield* put(path.join(dir, "b.txt"), "")
+      yield* put(path.join(dir, "c.txt"), "")
+
+      const result = yield* exec(dir, { filePath: dir, offset: -2 })
+      expect(result.output).toContain("b.txt")
+      expect(result.output).toContain("c.txt")
+      expect(result.output).not.toContain("a.txt")
+    }),
+  )
+
   it.live("throws when offset is beyond end of file", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
