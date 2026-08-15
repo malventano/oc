@@ -208,6 +208,8 @@ function fake(
 
     loopGuardFired: false,
     loopGuardHit: null,
+    loopGuardChannel: null,
+    loopTrimAt: null,
     stallText: "",
     stallHadToolCall: false,
     stallFired: false,

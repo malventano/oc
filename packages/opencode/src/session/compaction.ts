@@ -77,6 +77,16 @@ const truncate = (value: string) =>
   value.length <= TOOL_OUTPUT_MAX_CHARS ? value : `${value.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[truncated]`
 
 const serialize = (message: SessionV1.WithParts) => {
+  // Loop-guard-dropped messages are pure garbage: summarizing them poisons
+  // the summary turn (it loops on the garbage - witnessed 2026-08-16: a
+  // ▀-spam context made the summary turn loop unguarded for 42s) and wastes
+  // context. Stall/trim-marked messages are clean content - kept.
+  if (message.info.role === "assistant" && message.info.error) {
+    const err = message.info.error as { name?: string; data?: { message?: string } }
+    const loopDropped =
+      err.name === "UnknownError" && typeof err.data?.message === "string" && err.data.message.startsWith("Loop guard interrupted")
+    if (loopDropped) return ""
+  }
   if (message.info.role === "user") {
     const text = message.parts
       .filter((part): part is SessionV1.TextPart => part.type === "text" && !part.ignored)
@@ -209,6 +219,7 @@ export interface Interface {
     model: { providerID: ProviderV2.ID; modelID: ModelV2.ID; variant?: string }
     auto: boolean
     overflow?: boolean
+    guard?: boolean
   }) => Effect.Effect<void>
   // "Virtual" compaction: drops the oldest retained pre-compaction turn
   // instead of running a new summary turn. Only eligible when the last
@@ -584,7 +595,9 @@ TimeContext.stampUserMessages(msgs)
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+              (compactionPart?.guard
+                ? "The previous turn was interrupted by the loop guard and the conversation was compacted. The user's original request is still pending - complete it now: answer the question or perform the task. Do not stop, ask for clarification, or restate the summary."
+                : "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.")
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: continueMsg.id,
@@ -840,7 +853,9 @@ TimeContext.stampUserMessages(msgs)
             // can distinguish them from manual post-compaction user prompts.
             metadata: { compaction_continue: true },
             synthetic: true,
-            text: "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+            text: compactionPart.guard
+              ? "The previous turn was interrupted by the loop guard and the conversation was compacted. The user's original request is still pending - complete it now: answer the question or perform the task. Do not stop, ask for clarification, or restate the summary."
+              : "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
             time: {
               start: Date.now(),
               end: Date.now(),
@@ -858,6 +873,7 @@ TimeContext.stampUserMessages(msgs)
       model: { providerID: ProviderV2.ID; modelID: ModelV2.ID; variant?: string }
       auto: boolean
       overflow?: boolean
+      guard?: boolean
     }) {
       const msg = yield* session.updateMessage({
         id: MessageID.ascending(),
@@ -874,6 +890,7 @@ TimeContext.stampUserMessages(msgs)
         type: "compaction",
         auto: input.auto,
         overflow: input.overflow,
+        guard: input.guard,
       })
     })
 
