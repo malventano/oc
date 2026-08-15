@@ -57,12 +57,12 @@ describe("LoopGuard verbatim tail-repeat", () => {
   test("detects back-to-back unit repetition at 180+ chars", () => {
     const guard = LoopGuard.make()
     const unit = "obsolete content repeating itself "
-    let hit: string | null = null
+    let hit: LoopGuard.LoopHit | null = null
     for (let i = 0; i < 6; i++) {
       hit = guard.pushText(unit)
     }
-    expect(hit).toContain('repeated "obsolete')
-    expect(hit).toContain("6x")
+    expect(hit?.hit).toContain('repeated "obsolete')
+    expect(hit?.hit).toContain("6x")
   })
 
   test("does not fire on short or non-repeating tails", () => {
@@ -76,11 +76,11 @@ describe("LoopGuard verbatim tail-repeat", () => {
 describe("LoopGuard near-duplicate segments", () => {
   test("detects a cluster of near-identical segments within the window", () => {
     const guard = LoopGuard.make()
-    let hit: string | null = null
+    let hit: LoopGuard.LoopHit | null = null
     for (const segment of NEAR_DUP_SEQUENCE) {
       hit = guard.pushText(segment + SEP)
     }
-    expect(hit).toContain("near-identical segments")
+    expect(hit?.hit).toContain("near-identical segments")
   })
 
   test("does not fire on distinct paragraphs", () => {
@@ -94,11 +94,11 @@ describe("LoopGuard near-duplicate segments", () => {
 describe("LoopGuard lexical stall", () => {
   test("detects low-novelty segments recycling recent wording", () => {
     const guard = LoopGuard.make()
-    let hit: string | null = null
+    let hit: LoopGuard.LoopHit | null = null
     for (let i = 0; i < 9; i++) {
       hit = guard.pushText(shuffled() + SEP)
     }
-    expect(hit).toContain("low-information segments")
+    expect(hit?.hit).toContain("low-information segments")
   })
 })
 
@@ -107,20 +107,18 @@ describe("LoopGuard channels and disarm", () => {
     const guard = LoopGuard.make()
     const unit = "obsolete content repeating itself "
     for (let i = 0; i < 6; i++) guard.pushText(unit)
-    expect(guard.pushText(unit)).toContain("repeated")
+    expect(guard.pushText(unit)?.hit).toContain("repeated")
     expect(guard.pushReasoning(unit)).toBeNull()
-
   })
 
   test("fires on a reasoning-channel near-dup loop (GLM pool case)", () => {
     const guard = LoopGuard.make()
-    let hit: string | null = null
+    let hit: LoopGuard.LoopHit | null = null
     for (const segment of NEAR_DUP_SEQUENCE) {
       hit = guard.pushReasoning(segment + SEP)
     }
-    expect(hit).toContain("near-identical segments")
+    expect(hit?.hit).toContain("near-identical segments")
   })
-
 
   test("reset clears all state", () => {
 
@@ -133,3 +131,42 @@ describe("LoopGuard channels and disarm", () => {
     }
   })
 })
+
+describe("LoopGuard new signatures (2026-08-15 evidence)", () => {
+  test("fires on a symbol-only tail (U+2580 block loop, evidence case 1)", () => {
+    const guard = LoopGuard.make()
+    const hit = guard.pushText("\u2580".repeat(250))
+    expect(hit?.hit).toContain("distinct characters")
+    expect(hit?.trimAt).toBe(0)
+  })
+
+  test("fires on a U+FFFD decode-garbage burst (evidence case 2)", () => {
+    const guard = LoopGuard.make()
+    const hit = guard.pushText("\uFFFD".repeat(100))
+    expect(hit?.hit).toContain("replacement characters")
+  })
+
+  test("whitespace-collapse: newline inside an ok-run still fires verbatim", () => {
+    const guard = LoopGuard.make()
+    const run = "ok ".repeat(40) + "\n" + "ok ".repeat(46)
+    const hit = guard.pushText(run)
+    expect(hit?.hit).toContain('repeated "ok"')
+  })
+
+  test("trimAt points at the loop start when the run fills the tail window", () => {
+    const guard = LoopGuard.make()
+    const prefix = "real analysis about the prompt bar and the duplicated answer text. ".repeat(3)
+    const hit = guard.pushText(prefix + "\u2580".repeat(250))
+    expect(hit?.hit).toContain("distinct characters")
+    expect(hit?.trimAt).toBe(prefix.length)
+  })
+
+  test("does not fire on diverse prose tails", () => {
+    const guard = LoopGuard.make()
+    for (let i = 0; i < 12; i++) {
+      expect(guard.pushText(distinctParagraph(i) + SEP)).toBeNull()
+    }
+  })
+})
+
+

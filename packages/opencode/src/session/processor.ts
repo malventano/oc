@@ -51,6 +51,8 @@ export interface Handle {
 
   readonly loopGuardFired: boolean
   readonly loopGuardHit: string | null
+  readonly loopGuardChannel: "reasoning" | "text" | "tool-input" | null
+  readonly loopTrimAt: number | null
   readonly stallText: string
   readonly stallHadToolCall: boolean
   readonly stallFired: boolean
@@ -90,6 +92,9 @@ interface ProcessorContext extends Input {
   loopGuardEnabled: boolean
   loopGuardFired: boolean
   loopGuardHit: string | null
+  loopGuardChannel: "reasoning" | "text" | "tool-input" | null
+  loopTrimAt: number | null
+  toolInputDetector: ReturnType<typeof LoopGuard.makeDetector> | undefined
   stallText: string
   stallHadToolCall: boolean
   stallFired: boolean
@@ -139,6 +144,9 @@ const layer = Layer.effect(
         loopGuardEnabled: input.loopGuardEnabled ?? true,
         loopGuardFired: false,
         loopGuardHit: null,
+        loopGuardChannel: null,
+        loopTrimAt: null,
+        toolInputDetector: undefined,
         stallText: "",
         stallHadToolCall: false,
         stallFired: false,
@@ -341,7 +349,9 @@ const layer = Layer.effect(
               const hit = ctx.loopGuard.pushReasoning(value.text)
               if (hit) {
                 ctx.loopGuardFired = true
-                ctx.loopGuardHit = hit
+                ctx.loopGuardHit = hit.hit
+                ctx.loopGuardChannel = "reasoning"
+                ctx.loopTrimAt = hit.trimAt
               }
             }
             return
@@ -365,15 +375,28 @@ const layer = Layer.effect(
             // tool-call turn, not a stall).
             ctx.stallHadToolCall = true
             ctx.loopGuard.reset()
+            // Per-call detector on the argument stream: the model can loop
+            // INSIDE a tool call's argument text. Fresh detector per call.
+            ctx.toolInputDetector = LoopGuard.makeDetector()
             return
 
 
           case "tool-input-delta":
             yield* ensureToolCall(value)
+            if (ctx.loopGuardEnabled && ctx.toolInputDetector) {
+              const hit = ctx.toolInputDetector.push(value.text)
+              if (hit) {
+                ctx.loopGuardFired = true
+                ctx.loopGuardHit = hit.hit
+                ctx.loopGuardChannel = "tool-input"
+                ctx.loopTrimAt = hit.trimAt
+              }
+            }
             return
 
           case "tool-input-end": {
             yield* ensureToolCall(value)
+            ctx.toolInputDetector = undefined
             return
           }
 
@@ -384,6 +407,7 @@ const layer = Layer.effect(
             yield* ensureToolCall(value)
 
             ctx.loopGuard.reset()
+            ctx.toolInputDetector = undefined
             const input = isRecord(value.input) ? value.input : { value: value.input }
             yield* updateToolCall(value.id, (match) => ({
               ...match,
@@ -581,7 +605,9 @@ const layer = Layer.effect(
               const hit = ctx.loopGuard.pushText(value.text)
               if (hit) {
                 ctx.loopGuardFired = true
-                ctx.loopGuardHit = hit
+                ctx.loopGuardHit = hit.hit
+                ctx.loopGuardChannel = "text"
+                ctx.loopTrimAt = hit.trimAt
               }
             }
             // Accumulate the step's full text for the stall guard: the last
@@ -715,6 +741,9 @@ const layer = Layer.effect(
         ctx.loopGuard.reset()
         ctx.loopGuardFired = false
         ctx.loopGuardHit = null
+        ctx.loopGuardChannel = null
+        ctx.loopTrimAt = null
+        ctx.toolInputDetector = undefined
         ctx.stallText = ""
         ctx.stallHadToolCall = false
         ctx.stallFired = false
@@ -794,6 +823,12 @@ const layer = Layer.effect(
         },
         get loopGuardHit() {
           return ctx.loopGuardHit
+        },
+        get loopGuardChannel() {
+          return ctx.loopGuardChannel
+        },
+        get loopTrimAt() {
+          return ctx.loopTrimAt
         },
         get stallText() {
           return ctx.stallText
