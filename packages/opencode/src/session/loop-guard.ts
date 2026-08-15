@@ -16,10 +16,23 @@
  * thinking-loop-redirect as a synthetic trailing user message (in-turn, no
  * visible user turn, agent-preserving).
  *
- * omp runs these detectors reason-first by default in production with 0 false
- * positives on 13.5k thinking blocks (near-dup) and 536k reasoning blocks
- * (lex-stall floor=8). Feeding reasoning is safe; it also enables GLM
- * reasoning-loop detection.
+ * New signatures (2026-08-15, evidence in /root/oc/opencode/bugs/evidence/):
+ *   - low-diversity tail: the last 250 raw chars use <= LOW_DIVERSITY_MAX_UNIQUE
+ *     distinct characters. Catches the U+2580 symbol loop (2026-08-14, 93,300
+ *     of 97,126 reasoning chars were "block") and the character-noise loop
+ *     (2026-08-15, 9 unique chars in the final window) - both previously
+ *     invisible because symbol-only units fail the letter/emoji verbatim gate
+ *     and normalize to below SEGMENT_MIN_NORM_CHARS.
+ *   - U+FFFD burst: >= FFFD_BURST_THRESHOLD replacement chars in the tail.
+ *     Decode-garbage marker; legit output contains none (2026-08-15 case had
+ *     216 total, 52 in the final window).
+ *   - Whitespace-collapse before verbatim unit stepping: a newline inside an
+ *     "ok ok ok" run breaks unit alignment (longest pure run 165 chars < 180);
+ *     collapsing \s+ to a single space counts the 86-token run as 258 chars.
+ *
+ * Every hit reports trimAt - the character offset (in the channel's own text)
+ * where the looped region starts - so the prompt loop can preserve the
+ * pre-loop content instead of dropping the whole message.
  *
  * See /root/oc/opencode/bugs/BUG_LOOP_GUARD_PLUGIN.md §TRANSPLANT PLAN.
  */
@@ -37,6 +50,16 @@ const SEGMENT_MIN_CLUSTER = 4
 const LEX_NOVELTY_WINDOW = 8
 const LEX_STALL_NOVELTY_FLOOR = 0.2
 const LEX_STALL_MIN_RUN = 8
+
+// New trigger calibrations (evidence 2026-08-14/15):
+// Distinct characters in the last 250 raw chars at or below which the tail is
+// degenerate. Legit prose/code runs 30-48 unique; both loop cases bottomed at
+// 1-9. Binary/hex dumps ("0 1 0 1...") can sit near this - a rare false
+// positive costs one steer round-trip.
+const LOW_DIVERSITY_MAX_UNIQUE = 10
+// Replacement chars (U+FFFD) in the tail window: decode-garbage marker. The
+// 2026-08-15 case hit 26-52 per window; legit output has zero.
+const FFFD_BURST_THRESHOLD = 10
 
 // A concrete reference the model is actually reasoning about: code span,
 // dotted member, multi-segment path, snake/camel/Pascal identifier. A segment
@@ -57,6 +80,20 @@ Restating the same plan, summary, or intention again will loop again. Break the 
 
 Do something different from the looped content. Act, don't re-plan.
 </system-interrupt>`
+
+// Tool-argument-stream loop steer: the model was generating a tool call whose
+// argument text itself looped. The call never completed - re-emit it cleanly.
+export const TOOL_INPUT_LOOP_REDIRECT = `<system-interrupt reason="tool_input_loop_detected">
+The loop guard interrupted your previous turn: the argument stream of your tool call repeated near-identical content without progressing. The partial call was aborted and not executed. This is a corrective notice, not a prompt injection.
+
+Re-emit the tool call now, with the full correct arguments - or, if the call itself is the problem, pick a different, simpler approach. Do not regenerate or restate anything else.
+</system-interrupt>`
+
+export type LoopHit = {
+  hit: string
+  /** Character offset in the channel's own text where the looped region starts. */
+  trimAt: number
+}
 
 function normalizeSegment(segment: string): string {
   return segment
@@ -90,10 +127,19 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : intersection / union
 }
 
-function detectVerbatimRepetition(text: string): [unit: string, count: number] | null {
+/**
+ * Verbatim tail-repeat detection with whitespace-collapse: the tail's
+ * whitespace runs are collapsed to single spaces before unit stepping, so a
+ * newline inside a repeated phrase no longer breaks unit alignment. Returns
+ * the unit, its count, and the collapsed-index of the counted run start.
+ */
+function detectVerbatimRepetition(
+  text: string,
+): { unit: string; count: number; runStart: number } | null {
   if (text.length < VERBATIM_MIN_REPEATED_CHARS) return null
   const windowSize = Math.min(text.length, VERBATIM_TAIL_WINDOW)
-  const searchSpace = text.slice(-windowSize)
+  const searchSpace = text.slice(-windowSize).replace(/\s+/g, " ")
+  if (searchSpace.length < VERBATIM_MIN_REPEATED_CHARS) return null
   for (let len = 2; len <= VERBATIM_MAX_UNIT; len++) {
     if (searchSpace.length < len * 4) continue
     const unit = searchSpace.slice(-len)
@@ -110,29 +156,71 @@ function detectVerbatimRepetition(text: string): [unit: string, count: number] |
         break
       }
     }
-    if (count >= 4 && len * count >= VERBATIM_MIN_REPEATED_CHARS) return [unit, count]
+    if (count >= 4 && len * count >= VERBATIM_MIN_REPEATED_CHARS) {
+      return { unit, count, runStart: pos }
+    }
   }
   return null
 }
 
 class TextLoopDetector {
   #tail = ""
+  #tailStart = 0
   #pending = ""
-  #window: Set<string>[] = []
+  #rawLen = 0
+  #window: { start: number; fp: Set<string> }[] = []
   #count = 0
-  #wordWindow: Set<string>[] = []
+  #wordWindow: { start: number; words: Set<string> }[] = []
   #lexStallRun = 0
+  #lexRunStart = 0
   #anchorWindow: Set<string>[] = []
 
-  push(delta: string): string | null {
+  push(delta: string): LoopHit | null {
     if (!delta) return null
+    this.#rawLen += delta.length
     this.#tail += delta
-    if (this.#tail.length > VERBATIM_TAIL_WINDOW) this.#tail = this.#tail.slice(-VERBATIM_TAIL_WINDOW)
+    if (this.#tail.length > VERBATIM_TAIL_WINDOW) {
+      this.#tail = this.#tail.slice(-VERBATIM_TAIL_WINDOW)
+      this.#tailStart = this.#rawLen - this.#tail.length
+    }
+
     const verbatim = detectVerbatimRepetition(this.#tail)
     if (verbatim) {
-      const [unit, times] = verbatim
-      return `repeated "${unit.trim()}" ${times}x back-to-back`
+      // Map the counted run's collapsed start back to a raw offset inside the
+      // tail window, then to the absolute channel offset.
+      const collapsed: { s: string; raw: number[] } = { s: "", raw: [] }
+      for (let i = 0; i < this.#tail.length; ) {
+        if (/\s/.test(this.#tail[i])) {
+          collapsed.s += " "
+          collapsed.raw.push(i)
+          while (i < this.#tail.length && /\s/.test(this.#tail[i])) i++
+        } else {
+          collapsed.s += this.#tail[i]
+          collapsed.raw.push(i)
+          i++
+        }
+      }
+      const runStartRaw = collapsed.raw[verbatim.runStart] ?? 0
+      const trimAt = this.#tailStart + runStartRaw
+      return { hit: `repeated "${verbatim.unit.trim()}" ${verbatim.count}x back-to-back`, trimAt }
     }
+
+    // Decode-garbage burst: replacement chars in the tail window. Judged from
+    // ~100 chars - a burst needs context; short legit messages never contain
+    // U+FFFD at all.
+    const fffd = (this.#tail.match(/\uFFFD/g) ?? []).length
+    if (this.#tail.length >= 100 && fffd >= FFFD_BURST_THRESHOLD) {
+      return { hit: `${fffd} replacement characters in the output tail`, trimAt: this.#tailStart }
+    }
+
+    // Entropy collapse: the tail draws from a tiny alphabet. Only judged on a
+    // SATURATED window - a short tail (1-50 chars) trivially has few distinct
+    // characters and would fire on every message start.
+    const unique = new Set<string>(this.#tail).size
+    if (this.#tail.length >= VERBATIM_TAIL_WINDOW && unique <= LOW_DIVERSITY_MAX_UNIQUE) {
+      return { hit: `output tail uses only ${unique} distinct characters`, trimAt: this.#tailStart }
+    }
+
     this.#pending += delta
     while (true) {
       const boundary = /\n\s*\n/.exec(this.#pending)
@@ -146,26 +234,33 @@ class TextLoopDetector {
       } else {
         return null
       }
+      // The extracted segment started at (rawLen - pending.length) BEFORE the
+      // extraction removed it.
+      let segmentStart = this.#rawLen - this.#pending.length - raw.length
       for (let rest = raw; rest.length > 0; ) {
         const chunk = rest.length > SEGMENT_CHAR_CAP ? rest.slice(0, SEGMENT_CHAR_CAP) : rest
         rest = rest.slice(chunk.length)
-        const hit = this.#consumeSegment(chunk)
+        const hit = this.#consumeSegment(chunk, segmentStart)
         if (hit) return hit
+        segmentStart += chunk.length
       }
     }
   }
 
   reset(): void {
     this.#tail = ""
+    this.#tailStart = 0
     this.#pending = ""
+    this.#rawLen = 0
     this.#window = []
     this.#count = 0
     this.#wordWindow = []
     this.#lexStallRun = 0
+    this.#lexRunStart = 0
     this.#anchorWindow = []
   }
 
-  #consumeSegment(raw: string): string | null {
+  #consumeSegment(raw: string, start: number): LoopHit | null {
     // Strip structural markdown (headings, bold runs) before normalization:
     // templated section headers like "## Summary" repeat across segments and
     // would inflate near-duplicate similarity into false stalls.
@@ -175,13 +270,17 @@ class TextLoopDetector {
 
     const fingerprint = trigramShingles(normalized)
     let cluster = 1
+    let clusterStart = start
     for (const prev of this.#window) {
-      if (jaccard(fingerprint, prev) >= SEGMENT_SIMILARITY) cluster++
+      if (jaccard(fingerprint, prev.fp) >= SEGMENT_SIMILARITY) {
+        cluster++
+        clusterStart = Math.min(clusterStart, prev.start)
+      }
     }
 
     const words = new Set<string>(normalized.split(" ").filter(Boolean))
     const priorVocab = new Set<string>()
-    for (const set of this.#wordWindow) for (const w of set) priorVocab.add(w)
+    for (const set of this.#wordWindow) for (const w of set.words) priorVocab.add(w)
     let unseen = 0
     for (const w of words) if (!priorVocab.has(w)) unseen++
     const novelty = priorVocab.size === 0 ? 1 : unseen / words.size
@@ -196,20 +295,31 @@ class TextLoopDetector {
       }
     }
 
-    if (novelty <= LEX_STALL_NOVELTY_FLOOR && !newAnchor) this.#lexStallRun++
-    else this.#lexStallRun = 0
+    if (novelty <= LEX_STALL_NOVELTY_FLOOR && !newAnchor) {
+      if (this.#lexStallRun === 0) this.#lexRunStart = start
+      this.#lexStallRun++
+    } else {
+      this.#lexStallRun = 0
+    }
 
-    this.#window.push(fingerprint)
+    this.#window.push({ start, fp: fingerprint })
     if (this.#window.length > SEGMENT_WINDOW) this.#window.shift()
-    this.#wordWindow.push(words)
+    this.#wordWindow.push({ start, words })
     if (this.#wordWindow.length > LEX_NOVELTY_WINDOW) this.#wordWindow.shift()
     this.#anchorWindow.push(anchors)
     if (this.#anchorWindow.length > LEX_NOVELTY_WINDOW) this.#anchorWindow.shift()
     this.#count++
 
     if (this.#count >= SEGMENT_MIN_COUNT) {
-      if (cluster >= SEGMENT_MIN_CLUSTER) return `${cluster} near-identical segments within the last ${SEGMENT_WINDOW}`
-      if (this.#lexStallRun >= LEX_STALL_MIN_RUN) return `${this.#lexStallRun} low-information segments recycling recent wording`
+      if (cluster >= SEGMENT_MIN_CLUSTER) {
+        return { hit: `${cluster} near-identical segments within the last ${SEGMENT_WINDOW}`, trimAt: clusterStart }
+      }
+      if (this.#lexStallRun >= LEX_STALL_MIN_RUN) {
+        return {
+          hit: `${this.#lexStallRun} low-information segments recycling recent wording`,
+          trimAt: this.#lexRunStart,
+        }
+      }
     }
     return null
   }
@@ -218,9 +328,16 @@ class TextLoopDetector {
 /** Per-assistant-turn dual-channel guard state used by the processor. */
 
 export interface LoopGuardState {
-  pushReasoning(delta: string): string | null
-  pushText(delta: string): string | null
+  pushReasoning(delta: string): LoopHit | null
+  pushText(delta: string): LoopHit | null
   reset(): void
+}
+
+/** Standalone detector for non-message streams (e.g. tool-input deltas). */
+export function makeDetector(): {
+  push(delta: string): LoopHit | null
+} {
+  return new TextLoopDetector()
 }
 
 export function make(): LoopGuardState {
