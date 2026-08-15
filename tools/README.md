@@ -8,7 +8,7 @@ Custom opencode plugin tools used by the oc build. Copy the files into your open
 
 | File | What it does |
 |------|--------------|
-| `tmux.js` | tmux pane lifecycle: run, poll, keys, capture, wait, manage. Works only when opencode runs inside tmux (`TMUX_PANE` set); errors cleanly otherwise. |
+| `tmux.js` | tmux pane lifecycle: 10 ops (manage/run/keys/poll/capture/wait/waitFor/probe/style/log), keys fixes (single specials, leader sequences, enter:false), spawn layout param, pane guard (reminder on `\| tail`/`\| head` pipes - use the `lines` param instead). Works only when opencode runs inside tmux (`TMUX_PANE` set); errors cleanly otherwise. |
 
 Prerequisites:
 - Runtime is Bun (bundled with opencode). `bun:sqlite` and node builtins work as-is.
