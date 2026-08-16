@@ -301,7 +301,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
       const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
       const defaultAgent = yield* agentSvc.defaultAgent()
-      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+      const lastUserMessage = messages.findLast((message) => message.info.role === "user")
+      const currentAgent = lastUserMessage?.info.agent ?? defaultAgent
 
       const virtual = yield* compactSvc.virtual({ sessionID: ctx.params.sessionID, messages })
       if (virtual !== "ineligible") return virtual
@@ -312,7 +313,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         model: {
           providerID: ctx.payload.providerID,
           modelID: ctx.payload.modelID,
-          variant: ctx.payload.variant,
+          // ACP and other callers omit the variant - fall back to the
+          // session's last user message variant so compaction runs with
+          // the session's level, not base options. The TUI always sends
+          // the field (local.model.variant.current()), so its behavior
+          // is unchanged.
+          variant: ctx.payload.variant ?? lastUserMessage?.info.model?.variant,
         },
         auto: ctx.payload.auto ?? false,
       })
