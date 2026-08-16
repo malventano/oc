@@ -2665,6 +2665,13 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
   const segLang = (op: { delim: string; quote?: string }, body: string) =>
     HEREDOC_LANG[op.delim.toUpperCase()] ?? EVAL_LANG[op.delim] ?? sniffFiletype(body, 0) ?? "bash"
   for (const op of opens) {
+    // Skip opens already consumed by a previous open's body: the body
+    // text can legitimately contain the opener patterns (a manifest
+    // entry mentioning "bun -e '...' python3 <<< '...'" - witnessed
+    // live 2026-08-16, four phantom "1" gutter rows). The cursor sits
+    // past the previous open's closer, so any open ending before it is
+    // inside that body.
+    if (op.end < cursor) continue
     // The whole opening line (cat > f << 'PY', ... && bun -e ') is
     // shell. No newline after it yet = the opener is still streaming -
     // everything stays bash.
