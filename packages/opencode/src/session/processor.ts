@@ -383,6 +383,22 @@ const layer = Layer.effect(
 
           case "tool-input-delta":
             yield* ensureToolCall(value)
+            // Forward the raw tool-call JSON to the client (part state.raw,
+            // via the delta channel) so the TUI can render large inputs
+            // (write file content) live as they stream. Broadcast-only -
+            // nothing is persisted until the tool-call event lands.
+            {
+              const match = yield* readToolCall(value.id)
+              if (match) {
+                yield* session.updatePartDelta({
+                  sessionID: match.part.sessionID,
+                  messageID: match.part.messageID,
+                  partID: match.part.id,
+                  field: "state.raw",
+                  delta: value.text,
+                })
+              }
+            }
             if (ctx.loopGuardEnabled && ctx.toolInputDetector) {
               const hit = ctx.toolInputDetector.push(value.text)
               if (hit) {

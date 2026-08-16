@@ -23,7 +23,7 @@ import { useSync } from "../../context/sync"
 import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
-import { Spinner } from "../../component/spinner"
+import { SPINNER_FRAMES, Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
@@ -41,7 +41,7 @@ import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import { useSDK, setStreamBatchWindow, STREAM_BATCH_MIN_MS, setStreamLoadHintMs, STREAM_BATCH_MAX_MS } from "../../context/sdk"
+import { useSDK, setStreamBatchWindow, STREAM_BATCH_MIN_MS } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
@@ -1788,27 +1788,6 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
 
-  // Slow the SDK flush window as the streaming reasoning body grows, so the tree-sitter
-  // worker (which re-highlights the growing body on each delta) can keep up without the
-  // highlight lag/toggle. Hint folds into the adaptive controller as extra render load.
-  createEffect(
-    on(
-      () => (isDone() ? "" : content()),
-      (c) => {
-        if (!c) {
-          setStreamLoadHintMs(0)
-          return
-        }
-        const body = summary().body?.length ?? 0
-        // Load hint kicks in past ~4KB of reasoning body and scales ~1ms
-        // per KB (capped at the batch max): below the threshold the worker
-        // keeps up anyway, so the hint stays off.
-        setStreamLoadHintMs(body < 4096 ? 0 : Math.min(STREAM_BATCH_MAX_MS, body / 1024))
-      },
-    ),
-  )
-  onCleanup(() => setStreamLoadHintMs(0))
-
   const toggle = () => {
     if (!inMinimal()) return
     setExpanded((prev) => !prev)
@@ -2022,7 +2001,6 @@ function GenericTool(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
-
   return (
     <Show
       when={props.output && ctx.showGenericToolOutput()}
@@ -2261,10 +2239,15 @@ function BlockTool(props: {
 }
 
 function Shell(props: ToolProps) {
-  const { theme } = useTheme()
+  const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
+  const stream = useToolStream(props, {
+    bodyKey: "command",
+    title: () => undefined,
+  })
+  const command = createMemo(() => stringValue(props.input.command) ?? "")
   const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
@@ -2283,23 +2266,78 @@ function Shell(props: ToolProps) {
     return formatted
   })
 
+  // The gutter only makes sense for multi-line commands - a lone "1"
+  // against a one-liner reads as noise. Single-line commands instead get
+  // the spinner inline next to the colored command; multi-line commands
+  // get it in the block title (it can't span the gutter).
+  const gutter = createMemo(() => command().includes("\n"))
   const title = createMemo(() => {
+    if (isRunning() && gutter()) {
+      const wd = workdirDisplay()
+      return wd ? `# Running in ${wd}` : "# Running"
+    }
     const wd = workdirDisplay()
     if (!wd) return
     return `# Running in ${wd}`
   })
+  const commandBlock = () => {
+    const code = (
+      <code
+        filetype="bash"
+        syntaxStyle={syntax()}
+        content={command()}
+        conceal={ctx.conceal()}
+        fg={theme.text}
+      />
+    )
+    return gutter() ? (
+      <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+        {code}
+      </line_number>
+    ) : (
+      code
+    )
+  }
 
   return (
     <Switch>
+      {/* Live view: the command streams in as it is typed (bash grammar
+          colors keywords, strings, variables as they land). */}
+      <Match when={stream.streaming()}>
+        <LiveToolStream
+          part={props.part}
+          title={stream.title()}
+          streaming={true}
+          content={stream.display()}
+          filetype="bash"
+          gutter={stream.display().includes("\n")}
+        />
+      </Match>
       <Match when={stringValue(props.metadata.output) !== undefined}>
+        {/* Running: multi-line commands get the spinner in the block title
+            (it can't span the gutter); single-line commands get it inline
+            next to the colored command - the command stays colored either
+            way while it executes. */}
         <BlockTool
           title={title()}
           part={props.part}
+          spinner={isRunning() && gutter()}
           onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
         >
           <box gap={1}>
-            <Show when={isRunning()} fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}>
-              <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
+            <Show when={isRunning() && !gutter()} fallback={commandBlock()}>
+              <box flexDirection="row" gap={1}>
+                <spinner frames={SPINNER_FRAMES} interval={80} color={theme.textMuted} />
+                <code
+                  flexGrow={1}
+                  flexShrink={1}
+                  filetype="bash"
+                  syntaxStyle={syntax()}
+                  content={command()}
+                  conceal={ctx.conceal()}
+                  fg={theme.text}
+                />
+              </box>
             </Show>
             <Show when={output()}>
               <text fg={theme.text}>{limited()}</text>
@@ -2311,46 +2349,262 @@ function Shell(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="$" pending="Writing command..." complete={stringValue(props.input.command)} part={props.part}>
-          {stringValue(props.input.command)}
+        <InlineTool icon="$" pending="Writing command..." complete={command()} part={props.part}>
+          {command()}
         </InlineTool>
       </Match>
     </Switch>
   )
 }
 
+// Best-effort extraction of a top-level string key from a partially streamed
+// JSON tool input (the accumulating raw tool call). String VALUES have their
+// quotes escaped (\" ), so an unescaped `"key":` can only be the key itself;
+// the value tail is returned JSON-unescaped for display. Mid-stream, escape
+// sequences at the cut point may be incomplete - display-only, the tail can
+// flicker a character as the next delta lands.
+function streamedJsonValue(raw: string, key: string): string | undefined {
+  const marker = `"${key}":`
+  const start = raw.indexOf(marker)
+  if (start === -1) return undefined
+  let i = start + marker.length
+  while (i < raw.length && /\s/.test(raw[i]!)) i++
+  if (raw[i] !== '"') return undefined
+  const tail = raw.slice(i + 1)
+  let out = ""
+  for (let j = 0; j < tail.length; j++) {
+    const c = tail[j]!
+    if (c !== "\\" || j + 1 >= tail.length) {
+      out += c
+      continue
+    }
+    const n = tail[j + 1]!
+    switch (n) {
+      case "n":
+        out += "\n"
+        break
+      case "t":
+        out += "\t"
+        break
+      case "r":
+        out += "\r"
+        break
+      case '"':
+        out += '"'
+        break
+      case "\\":
+        out += "\\"
+        break
+      case "/":
+        out += "/"
+        break
+      case "b":
+        out += "\b"
+        break
+      case "f":
+        out += "\f"
+        break
+      case "u": {
+        const hex = tail.slice(j + 2, j + 6)
+        if (hex.length === 4 && /^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16))
+          j += 4
+        } else {
+          out += "\\u"
+        }
+        break
+      }
+      default:
+        out += n
+    }
+    j++
+  }
+  return out
+}
+
+// Shared live-streaming view for tool calls: while the model generates a
+// tool's JSON arguments (message.part.delta -> state.raw), extract the body
+// text and the live title arg, and slow the SDK flush window so the
+// tree-sitter worker can re-highlight the growing body per delta (same
+// mechanism as the reasoning part, with an 8ms FLOOR so the adaptive
+// controller widens the window from the very start). Completed views
+// (parsed metadata) take over once the tool lands.
+function useToolStream(
+  props: ToolProps,
+  opts: {
+    bodyKey: string
+    title: (livePath: string | undefined) => string | undefined
+    pathKey?: string
+  },
+) {
+  const status = createMemo(() => props.part.state.status)
+  const raw = createMemo(() => ("raw" in props.part.state ? props.part.state.raw : ""))
+  const streaming = createMemo(() => status() === "pending" && raw().length > 0)
+  const liveBody = createMemo(() => streamedJsonValue(raw(), opts.bodyKey) ?? "")
+  const livePath = createMemo(() => (opts.pathKey ? streamedJsonValue(raw(), opts.pathKey) : undefined))
+  // The body shown in the live block: the unescaped stream while the input
+  // is pending, the full parsed input once the call lands.
+  const display = createMemo(() => (streaming() ? liveBody() : stringValue(props.input[opts.bodyKey]) ?? ""))
+
+  return {
+    status,
+    streaming,
+    display,
+    livePath,
+    showContent: createMemo(() => display().length > 0),
+    title: createMemo(() => opts.title(streaming() ? livePath() : undefined)),
+  }
+}
+
+// The live-streaming block itself: reasoning-style code element (conceal
+// from the app state + muted fg so the per-flush highlight applies - the
+// conceal={false} + fg={theme.text} combo suppressed it, verified by
+// bisect 2026-08-16) with a gutter, so nothing pops in at completion.
+// Content-language sniffing for the write live view: when the filePath arg
+// hasn't streamed in yet (some models emit it last), guess the language
+// from the first lines of the body so code writes stream colored instead
+// of plain. Heuristic only - the authoritative filetype applies once the
+// path lands, and a wrong guess flips silently at the end.
+function sniffFiletype(content: string): string | undefined {
+  if (content.length < 60) return undefined
+  const head = content.slice(0, 600)
+  const firstLine = head.split("\n", 1)[0] ?? ""
+  const shebang = /^#!\s*(\S+)/.exec(firstLine)
+  if (shebang) {
+    const p = shebang[1]!
+    if (/python/i.test(p)) return "python"
+    if (/(?:ba|da|k)?sh$|bash/i.test(p)) return "bash"
+    if (/node/i.test(p)) return "javascript"
+    if (/ruby/i.test(p)) return "ruby"
+    if (/perl/i.test(p)) return "perl"
+  }
+  if (/^<\?xml/.test(head)) return "xml"
+  if (/^<!DOCTYPE html|<html[\s>]/i.test(head)) return "html"
+  if (/^export (?:function|const|class|interface|type|default)\b|^interface \w+\s*\{/m.test(head)) return "typescript"
+  if (/^import .* from ['"]/m.test(head) && /:\s*(?:string|number|boolean|Record|Array|Promise|Map)</m.test(head)) return "typescript"
+  if (/^(?:export )?(?:function|const|let|var)\b.*=>/m.test(head)) return "typescript"
+  if (/^module\.exports|require\(['"]/m.test(head)) return "javascript"
+  if (/^package main\b|^func \w+\(/m.test(head)) return "go"
+  if (/^fn (?:main|\w+)\(|^use std::|^impl\b/m.test(head)) return "rust"
+  if (/^def \w+\(|^class \w+:|^from \w+ import|^import \w+(?: as \w+)?$/m.test(head)) return "python"
+  if (/^public (?:static )?(?:class|void|final)\b|^class \w+ \{$/m.test(head)) return "java"
+  if (/^fun main|^fun \w+\(/m.test(head)) return "kotlin"
+  if (/^#include <(?:iostream|vector|string|map|algorithm)>/m.test(head)) return "cpp"
+  if (/^#include <(?:stdio|stdlib)\.h>/m.test(head)) return "c"
+  if (/^import Foundation|^import SwiftUI/m.test(head)) return "swift"
+  if (/^main :: IO \(\)/m.test(head)) return "haskell"
+  if (/^require ['"]/m.test(head)) return "ruby"
+  if (/^local function\b/m.test(head)) return "lua"
+  if (/^\{/.test(firstLine) && /"\w+"\s*:/.test(head)) return "json"
+  return undefined
+}
+
+function LiveToolStream(props: {
+  part: ToolPart
+  title?: string
+  streaming: boolean
+  content: string
+  filetype?: string
+  gutter?: boolean
+}) {
+  const { theme, syntax } = useTheme()
+  const ctx = use()
+  const code = (
+    <code
+      {...(props.filetype ? { filetype: props.filetype } : {})}
+      drawUnstyledText={false}
+      streaming={true}
+      syntaxStyle={syntax()}
+      content={props.content}
+      conceal={ctx.conceal()}
+      fg={theme.textMuted}
+    />
+  )
+  return (
+    <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
+      <Show when={props.content.length > 0}>
+        {props.gutter === false ? (
+          code
+        ) : (
+          <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+            {code}
+          </line_number>
+        )}
+      </Show>
+    </BlockTool>
+  )
+}
+
 function Write(props: ToolProps) {
+  const ctx = use()
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
+  const status = createMemo(() => props.part.state.status)
+  const path = createMemo(() => stringValue(props.input.filePath) ?? "")
   const code = createMemo(() => {
     return stringValue(props.input.content) ?? ""
+  })
+  const diagnostics = createMemo(() => props.metadata.diagnostics)
+  const stream = useToolStream(props, {
+    bodyKey: "content",
+    pathKey: "filePath",
+    title: (live) => `# Writing ${pathFormatter.format(live ?? path())}`,
+  })
+  const title = createMemo(() => `# Wrote ${pathFormatter.format(path())}`)
+  // The target file's language for the streaming view: the LIVE path while
+  // the args are still streaming (the landed input is empty until running),
+  // the full arg path once the call lands. Before the path arrives (some
+  // models emit the content argument first, so the path can be the last
+  // thing to stream): sniff the language from the content's first lines,
+  // falling back to markdown (correct for prose files; the flip to the
+  // file's real language happens when the path lands and at completion).
+  const liveFiletype = createMemo(() => {
+    const p = stream.livePath() ?? path()
+    if (p) return filetype(p)
+    return sniffFiletype(stream.display()) ?? "markdown"
   })
 
   return (
     <Switch>
-      <Match when={props.metadata.diagnostics !== undefined}>
-        <BlockTool title={"# Wrote " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
-          <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-            <code
-              conceal={false}
-              fg={theme.text}
-              filetype={filetype(stringValue(props.input.filePath))}
-              syntaxStyle={syntax()}
-              content={code()}
-            />
-          </line_number>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool
-          icon="←"
-          pending="Preparing write..."
-          complete={stringValue(props.input.filePath)}
-          part={props.part}
-        >
-          Write {pathFormatter.format(stringValue(props.input.filePath))}
+      <Match when={status() === "error"}>
+        <InlineTool icon="←" pending="Preparing write..." complete={path()} part={props.part}>
+          Write {pathFormatter.format(path())}
         </InlineTool>
+      </Match>
+      {/* Live view: the input is still streaming (state.raw) or just landed
+          (running) - the content block grows in place as deltas arrive.
+          Colored with the target file's own language (plain until the
+          filePath arg streams in) so the streaming and completed views
+          share one grammar - no color snap at completion. */}
+      <Match when={stream.streaming() || stream.status() === "running"}>
+        <LiveToolStream
+          part={props.part}
+          title={stream.title()}
+          streaming={stream.streaming()}
+          content={stream.display()}
+          filetype={liveFiletype()}
+        />
+      </Match>
+      {/* Completed: same gutter layout as the live view, so a batched
+          provider (whole content in one delta) has no visible layout flip
+          at completion; diagnostics when present. */}
+      <Match when={true}>
+        <BlockTool title={title()} part={props.part}>
+          <Show when={code().length > 0}>
+            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+              <code
+                conceal={false}
+                fg={theme.text}
+                filetype={filetype(path())}
+                syntaxStyle={syntax()}
+                content={code()}
+              />
+            </line_number>
+          </Show>
+          <Show when={diagnostics() !== undefined}>
+            <Diagnostics diagnostics={diagnostics()} filePath={path()} />
+          </Show>
+        </BlockTool>
       </Match>
     </Switch>
   )
@@ -2663,6 +2917,19 @@ function Edit(props: ToolProps) {
     return ctx.width > 120 ? "split" : "unified"
   })
 
+  const stream = useToolStream(props, {
+    bodyKey: "input",
+    pathKey: "filePath",
+    title: (live) => (live ? `← Editing ${pathFormatter.format(live)}` : "← Editing..."),
+  })
+  // The fence content lines are the target file's code, so color them with
+  // the FIRST section's language (the section the model is currently
+  // typing) once its [PATH] header streams in; plain text before that.
+  const liveFiletype = createMemo(() => {
+    const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]/m.exec(stream.display())
+    return match ? filetype(match[1]) : undefined
+  })
+
   const fileDiffs = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
   function fileTitle(file: { type: string; relativePath: string; filePath: string; movePath?: string }) {
@@ -2731,6 +2998,19 @@ function Edit(props: ToolProps) {
           </box>
           <Diagnostics diagnostics={props.metadata.diagnostics} filePath={editPaths()[0] ?? ""} />
         </BlockTool>
+      </Match>
+      {/* Live view: the patch text streams in place while the model
+          generates it (content lines colored as the first section's
+          language - same combo as the write live view). Swaps to the
+          parsed per-file diff once the edit completes and metadata lands. */}
+      <Match when={stream.streaming() || stream.status() === "running"}>
+        <LiveToolStream
+          part={props.part}
+          title={stream.title()}
+          streaming={stream.streaming()}
+          content={stream.display()}
+          filetype={liveFiletype()}
+        />
       </Match>
       <Match when={true}>
         <InlineTool icon="←" pending="Preparing edit..." complete={title()} part={props.part}>

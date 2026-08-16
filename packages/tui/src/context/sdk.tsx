@@ -23,18 +23,35 @@ export function getStreamBatchWindow() {
   return streamBatchWindow()
 }
 
-// Reasoning highlight load hint (ms). Reasoning renders via <code> CodeRenderable +
-// tree-sitter on a worker thread; the worker re-highlights the growing body per delta,
-// so fast streaming can overwhelm it (visible lag / highlight toggle). The ReasoningPart
-// sets this proportional to body size while streaming; the adaptive controller folds it
-// into its widen decision (treats it like extra render load) so the SDK flush window
-// widens and streaming slows enough for the highlight worker to keep up.
-let streamLoadHintMs = 0
-export function setStreamLoadHintMs(ms: number) {
-  streamLoadHintMs = Math.max(0, Math.min(STREAM_BATCH_MAX_MS, ms))
+// Widen slack: the controller widens when the measured load comes within this much of
+// the flush window, so the window lands slightly ABOVE the worker's per-update time -
+// the flush cadence must be at least the worker's processing time plus slack for the
+// per-flush highlight to complete before the next flush supersedes it.
+export const STREAM_WIDEN_MARGIN_MS = 2
+
+// Measured tree-sitter highlight update time (ms): every colored renderable (reasoning,
+// tool streams, diffs, markdown) highlights through the shared TreeSitterClient's
+// highlightOnce - app.tsx wraps that call and samples its round-trip duration (worker
+// parse+query + message latency) here. Tracked only while highlights arrive in a
+// sustained burst (>= 3 within the freshness window) so a one-off render can't spike
+// the window; reads 0 once the burst goes cold, so the window narrows back toward
+// baseline after streaming settles. One source for every highlighted surface - no
+// per-view size heuristics.
+const STREAM_HIGHLIGHT_FRESH_MS = 2 * STREAM_BATCH_MAX_MS
+const STREAM_HIGHLIGHT_MIN_BURST = 3
+let lastHighlightAt = 0
+let highlightDurations: number[] = []
+export function onStreamHighlight(now: number, durationMs: number) {
+  lastHighlightAt = now
+  if (durationMs <= STREAM_HIGHLIGHT_FRESH_MS) {
+    highlightDurations.push(durationMs)
+    if (highlightDurations.length > STREAM_HIGHLIGHT_MIN_BURST) highlightDurations.shift()
+  }
 }
-export function getStreamLoadHintMs() {
-  return streamLoadHintMs
+export function getStreamHighlightMs(now: number): number {
+  if (now - lastHighlightAt > STREAM_HIGHLIGHT_FRESH_MS) return 0
+  if (highlightDurations.length < STREAM_HIGHLIGHT_MIN_BURST) return 0
+  return Math.min(STREAM_BATCH_MAX_MS, highlightDurations[highlightDurations.length - 1]!)
 }
 
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
