@@ -2276,18 +2276,32 @@ function Shell(props: ToolProps) {
   // sniffed from the body, else bash) - the shell parts stay bash.
   const commandSegments = createMemo(() => heredocSegments(command()))
   const commandBlock = () => {
+    // line_number only accepts a code element as its target (lineInfo/
+    // lineCount/virtualLineCount/scrollY) - a wrapper box is silently
+    // dropped (the 0138-revealed bug: heredoc commands lost the command
+    // in the completed block). Gutter EACH segment instead; the numbers
+    // restart per segment.
     const code = commandSegments() ? (
       <box flexDirection="column">
-        {commandSegments()!.map((seg, i) => (
-          <code
-            // key-less: opentui CodeProps has no key field; segments re-render in place
-            filetype={seg.lang}
-            syntaxStyle={syntax()}
-            content={seg.text}
-            conceal={ctx.conceal()}
-            fg={theme.text}
-          />
-        ))}
+        {commandSegments()!.map((seg, i) => {
+          const el = (
+            <code
+              // key-less: opentui CodeProps has no key field; segments re-render in place
+              filetype={seg.lang}
+              syntaxStyle={syntax()}
+              content={seg.text}
+              conceal={ctx.conceal()}
+              fg={theme.text}
+            />
+          )
+          return gutter() ? (
+            <line_number key={i} fg={theme.textMuted} minWidth={3} paddingRight={1}>
+              {el}
+            </line_number>
+          ) : (
+            el
+          )
+        })}
       </box>
     ) : (
       <code
@@ -2298,13 +2312,7 @@ function Shell(props: ToolProps) {
         fg={theme.text}
       />
     )
-    return gutter() ? (
-      <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-        {code}
-      </line_number>
-    ) : (
-      code
-    )
+    return code
   }
 
   return (
@@ -2607,20 +2615,32 @@ function LiveToolStream(props: {
 }) {
   const { theme, syntax } = useTheme()
   const ctx = use()
+  // line_number only accepts a code element target - a wrapper box is
+  // silently dropped, so segments are guttered individually (numbers
+  // restart per segment).
   const code = props.segments ? (
     <box flexDirection="column">
-      {props.segments.map((seg, i) => (
-        <code
-          // key-less: opentui CodeProps has no key field; segments re-render in place
-          filetype={seg.lang}
-          drawUnstyledText={false}
-          streaming={true}
-          syntaxStyle={syntax()}
-          content={seg.text}
-          conceal={ctx.conceal()}
-          fg={theme.textMuted}
-        />
-      ))}
+      {props.segments.map((seg, i) => {
+        const el = (
+          <code
+            // key-less: opentui CodeProps has no key field; segments re-render in place
+            filetype={seg.lang}
+            drawUnstyledText={false}
+            streaming={true}
+            syntaxStyle={syntax()}
+            content={seg.text}
+            conceal={ctx.conceal()}
+            fg={theme.textMuted}
+          />
+        )
+        return props.gutter === false ? (
+          el
+        ) : (
+          <line_number key={i} fg={theme.textMuted} minWidth={3} paddingRight={1}>
+            {el}
+          </line_number>
+        )
+      })}
     </box>
   ) : (
     <code
@@ -2635,15 +2655,7 @@ function LiveToolStream(props: {
   )
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
-      <Show when={props.content.length > 0}>
-        {props.gutter === false ? (
-          code
-        ) : (
-          <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-            {code}
-          </line_number>
-        )}
-      </Show>
+      <Show when={props.content.length > 0}>{code}</Show>
     </BlockTool>
   )
 }
