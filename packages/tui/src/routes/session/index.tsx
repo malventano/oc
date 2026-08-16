@@ -3104,7 +3104,7 @@ function Edit(props: ToolProps) {
         <For each={fileDiffs()}>
           {(file) => (
           <BlockTool title={fileTitle(file)} part={props.part} gap={file.changed ? 1 : 0}>
-          <Show when={file.changed} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : undefined}>
+          <Show when={file.changed} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : <text fg={theme.error}>no change - content already matches</text>}>
                 <box paddingLeft={1}>
                   <diff
                     diff={file.patch}
@@ -3134,28 +3134,38 @@ function Edit(props: ToolProps) {
       </Match>
       <Match when={stringValue(props.metadata.diff) !== undefined}>
         <BlockTool title={"← " + title()} part={props.part}>
-          <box paddingLeft={1}>
-            <diff
-              diff={stringValue(props.metadata.diff) ?? ""}
-              view={view()}
-              filetype={filetype(editPaths()[0] ?? "")}
-              syntaxStyle={syntax()}
-              showLineNumbers={true}
-              width="100%"
-              wrapMode={ctx.diffWrapMode()}
-              fg={theme.text}
-              addedBg={theme.diffAddedBg}
-              removedBg={theme.diffRemovedBg}
-              contextBg={theme.diffContextBg}
-              addedSignColor={theme.diffHighlightAdded}
-              removedSignColor={theme.diffHighlightRemoved}
-              lineNumberFg={theme.diffLineNumber}
-              lineNumberBg={theme.diffContextBg}
-              addedLineNumberBg={theme.diffAddedLineNumberBg}
-              removedLineNumberBg={theme.diffRemovedLineNumberBg}
-            />
-          </box>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={editPaths()[0] ?? ""} />
+          {/* All-plans noop: the server strips empty patches from
+              metadata.files (edit.ts), so this block falls through with an
+              EMPTY metadata.diff - without this line the "Patched" title
+              would be the only feedback. Same red line as the per-file
+              fallback above. */}
+          <Show when={numberValue(props.metadata.noop) === 1}>
+            <text fg={theme.error}>no change - content already matches</text>
+          </Show>
+          <Show when={numberValue(props.metadata.noop) !== 1}>
+            <box paddingLeft={1}>
+              <diff
+                diff={stringValue(props.metadata.diff) ?? ""}
+                view={view()}
+                filetype={filetype(editPaths()[0] ?? "")}
+                syntaxStyle={syntax()}
+                showLineNumbers={true}
+                width="100%"
+                wrapMode={ctx.diffWrapMode()}
+                fg={theme.text}
+                addedBg={theme.diffAddedBg}
+                removedBg={theme.diffRemovedBg}
+                contextBg={theme.diffContextBg}
+                addedSignColor={theme.diffHighlightAdded}
+                removedSignColor={theme.diffHighlightRemoved}
+                lineNumberFg={theme.diffLineNumber}
+                lineNumberBg={theme.diffContextBg}
+                addedLineNumberBg={theme.diffAddedLineNumberBg}
+                removedLineNumberBg={theme.diffRemovedLineNumberBg}
+              />
+            </box>
+            <Diagnostics diagnostics={props.metadata.diagnostics} filePath={editPaths()[0] ?? ""} />
+          </Show>
         </BlockTool>
       </Match>
       {/* Live view: the patch text streams in place while the model
