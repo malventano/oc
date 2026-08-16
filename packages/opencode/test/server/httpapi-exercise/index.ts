@@ -1586,11 +1586,58 @@ const scenarios: Scenario[] = [
       200,
       (body, ctx) =>
         Effect.gen(function* () {
-          check(body === true, "summarize should return true")
+          check(body === "compacted", "summarize should return compacted")
           const messages = yield* ctx.messages(ctx.state.id)
           check(
             messages.some((message) => message.info.role === "assistant" && message.info.summary === true),
             "summarize should create a summary assistant message",
+          )
+          yield* ctx.llmWait(1)
+        }),
+      "status",
+    ),
+  http.protected
+    .post("/session/{sessionID}/summarize", "session.summarize")
+    .preserveDatabase()
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Summarize variant fallback" })
+        yield* ctx.message(session.id, {
+          text: "summarize with the session variant",
+          model: { providerID: "test", modelID: "test-model", variant: "max" },
+        })
+        const summary = [
+          "## Objective",
+          "- Exercise summarize variant fallback.",
+          "",
+          "## Next Move",
+          "1. (none)",
+        ].join("\n")
+        yield* ctx.llmText(summary)
+        yield* ctx.llmText(summary)
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/summarize", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      // NO variant in the body - ACP-style caller. The handler must fall
+      // back to the last user message's model.variant (0135).
+      body: { providerID: "test", modelID: "test-model", auto: false },
+    }))
+    .jsonEffect(
+      200,
+      (body, ctx) =>
+        Effect.gen(function* () {
+          check(body === "compacted", "summarize should return compacted")
+          const messages = yield* ctx.messages(ctx.state.id)
+          const summary = messages.find(
+            (message) => message.info.role === "assistant" && message.info.summary === true,
+          )
+          check(
+            summary?.info.variant === "max",
+            "summarize without variant falls back to the last user message variant",
           )
           yield* ctx.llmWait(1)
         }),
