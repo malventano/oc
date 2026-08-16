@@ -9,7 +9,7 @@ import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
-import { createCliRenderer, MouseButton } from "@opentui/core"
+import { createCliRenderer, getTreeSitterClient, MouseButton } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
 import {
   Switch,
@@ -32,7 +32,15 @@ import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
-import { SDKProvider, useSDK, setStreamBatchWindow, getStreamBatchWindow, getStreamLoadHintMs } from "./context/sdk"
+import {
+  SDKProvider,
+  useSDK,
+  setStreamBatchWindow,
+  getStreamBatchWindow,
+  onStreamHighlight,
+  getStreamHighlightMs,
+  STREAM_WIDEN_MARGIN_MS,
+} from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
@@ -210,6 +218,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         (renderer) =>
           Effect.sync(() => {
             destroyRenderer(renderer)
+            treeSitterClient.highlightOnce = originalHighlightOnce
           }),
       )
       // Adaptive streaming batch window. The SDK flushes SSE deltas on a short window
@@ -223,23 +232,41 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         renderStartMs = performance.now()
         return Promise.resolve()
       })
+      // Measured highlight-worker load: every colored renderable (reasoning, tool
+      // streams, diffs, markdown) highlights through the shared TreeSitterClient
+      // singleton's highlightOnce (one-shot worker round trip) - wrap it and sample
+      // the per-update duration (worker parse+query + latency) to feed the flush-window
+      // controller. The per-view size heuristics are gone - one mechanism everywhere.
+      const treeSitterClient = getTreeSitterClient()
+      const originalHighlightOnce = treeSitterClient.highlightOnce.bind(treeSitterClient)
+      treeSitterClient.highlightOnce = (async (content: string, filetype: string) => {
+        const start = performance.now()
+        const result = await originalHighlightOnce(content, filetype)
+        onStreamHighlight(performance.now(), performance.now() - start)
+        return result
+      }) as typeof treeSitterClient.highlightOnce
       {
-        // Window-relative thresholds: widen when a render pass can't keep up with the
-        // current flush cadence (renderMs > window), narrow back when a render is cheap
-        // relative to the window (renderMs < window/4). Lowering the baseline window
-        // (STREAM_BATCH_MIN_MS) makes us hit the widen condition sooner, so the adaptive
-        // ramp is visible during streaming even at small content sizes.
+        // Window-relative thresholds: widen when the measured load (render pass +
+        // highlight worker update time) comes within slack of the current flush
+        // window (load > window - slack), so the window lands slightly above the
+        // worker's time and each flush's highlight completes before the next flush
+        // supersedes it; narrow back when a render is cheap relative to the window
+        // (load < window/4). Lowering the baseline window (STREAM_BATCH_MIN_MS) makes
+        // us hit the widen condition sooner, so the adaptive ramp is visible during
+        // streaming even at small content sizes.
         const WIDEN_STREAK = 3
         const NARROW_STREAK = 25
         let wideStreak = 0
         let narrowStreak = 0
         renderer.addPostProcessFn(() => {
+          const now = performance.now()
           const windowMs = getStreamBatchWindow()
-          // Reasoning highlight is worker-based (invisible to main-thread renderMs); fold
-          // the ReasoningPart's load hint in so streaming slows when the worker is under
-          // pressure, keeping normal highlighting (drawUnstyledText=false) in sync.
-          const renderMs = Math.max(performance.now() - renderStartMs, getStreamLoadHintMs())
-          if (renderMs > windowMs) {
+          // Highlight updates run on the worker thread (invisible to main-thread
+          // renderMs): the measured gap between consecutive worker responses equals
+          // the worker's per-update parse+query time while it is the binding
+          // constraint, so streaming slows enough for the highlight to stay in sync.
+          const renderMs = Math.max(now - renderStartMs, getStreamHighlightMs(now))
+          if (renderMs > windowMs - STREAM_WIDEN_MARGIN_MS) {
             wideStreak += 1
             narrowStreak = 0
             if (wideStreak >= WIDEN_STREAK) {

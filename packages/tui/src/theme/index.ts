@@ -746,9 +746,12 @@ function getSyntaxRules(theme: Theme) {
       },
     },
     {
+      // Builtins in error-red read as failures (bash `cd`/`echo`, python
+      // `print` are all builtins) - keyword purple keeps them distinct
+      // without the alarm connotation.
       scope: ["variable.builtin", "type.builtin", "function.builtin", "module.builtin", "constant.builtin"],
       style: {
-        foreground: theme.error,
+        foreground: theme.syntaxKeyword,
       },
     },
     {

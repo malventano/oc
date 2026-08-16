@@ -218,8 +218,8 @@
       "light": "lightStep9"
     },
     "syntaxVariable": {
-      "dark": "darkRed",
-      "light": "lightRed"
+      "dark": "darkSecondary",
+      "light": "lightStep9"
     },
     "syntaxString": {
       "dark": "darkGreen",
