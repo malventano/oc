@@ -2335,14 +2335,14 @@ function Shell(props: ToolProps) {
           content={stream.display()}
           filetype="bash"
           gutter={stream.display().includes("\n")}
-          // segments={undefined}: the segmented branch mounts per-segment
-          // code elements; a mount paints its buffer at the pre-layout
-          // width (0), wrapping content to 1-char lines - the mid-stream
-          // '1 p'/'1 d' collapse. The streaming content setter only
-          // requestRenders (no buffer write), so the collapsed buffer
-          // persists until the last highlight lands. Stream as a single
-          // bash element (stable, colored); the completed view below
-          // switches to the segmented render.
+          // segments={undefined} (0143): the segmented branch's per-segment
+          // code elements are RECREATED per delta (the component body
+          // re-runs when it reads reactive props - the createMemo slots
+          // traced this live: 122 new elements per heredoc) and each mount
+          // paints a w=1 transient before the layout settles - the
+          // '1 p'/'1 d' flicker (BUG_STREAMING_FLICKER.md). Stream as a
+          // single bash element (stable, colored); the completed view
+          // below switches to the segmented render.
           segments={undefined}
         />
       </Match>
@@ -2687,19 +2687,30 @@ function LiveToolStream(props: {
       })}
     </box>
   ) : (
-    <code
-      {...(props.filetype ? { filetype: props.filetype } : {})}
-      // drawUnstyledText={false} + streaming: colored-as-it-streams (the
-      // buffer keeps the last landed highlight, one flush behind) - same
-      // as the segment branch and the reasoning part. The empty first
-      // frame is fixed in opentui (0142), not by flipping this flag.
-      drawUnstyledText={false}
-      streaming={true}
-      syntaxStyle={syntax()}
-      content={props.content}
-      conceal={ctx.conceal()}
+    // The single streaming element keeps a continuous line_number gutter
+    // when multi-line (numbers run 1..N over the whole command; the
+    // completed view below re-splits into per-segment gutters).
+    <line_number
       fg={theme.textMuted}
-    />
+      minWidth={3}
+      paddingRight={1}
+      style={props.gutter === false ? { display: "none" } : undefined}
+    >
+      <code
+        {...(props.filetype ? { filetype: props.filetype } : {})}
+        // drawUnstyledText={false} + streaming: colored-as-it-streams
+        // (the buffer keeps the last landed highlight, one flush
+        // behind) - same as the segment branch and the reasoning part.
+        // The empty first frame is fixed in opentui (0142), not by
+        // flipping this flag.
+        drawUnstyledText={false}
+        streaming={true}
+        syntaxStyle={syntax()}
+        content={props.content}
+        conceal={ctx.conceal()}
+        fg={theme.textMuted}
+      />
+    </line_number>
   )
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
