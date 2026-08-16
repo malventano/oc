@@ -2282,6 +2282,18 @@ function Shell(props: ToolProps) {
   })
   // Heredoc bodies get their own language colors (delimiter-named, else
   // sniffed from the body, else bash) - the shell parts stay bash.
+  // The heredoc body-language detection for the STREAMING view (0147):
+  // once the opener (`<< 'EOF'`) completes, the body's language resolves
+  // (delimiter-named, else the 0137 sniffer) - the single streaming
+  // element then renders with the BODY's grammar (write-style streaming:
+  // the element persists and the filetype flips IN PLACE via the adapter
+  // - no segments branch, no recreation, no flicker). The opener/closer
+  // lines render with the body's grammar during streaming; the completed
+  // view below re-splits into the proper per-segment grammars.
+  const liveFiletype = createMemo(() => {
+    const segs = heredocSegments(stream.display().replace(/\n+$/, ""))
+    return segs && segs.length > 1 ? segs[1]!.lang : "bash"
+  })
   const commandSegments = createMemo(() => heredocSegments(command()))
   const commandBlock = () => {
     // line_number only accepts a code element as its target (lineInfo/
@@ -2351,7 +2363,7 @@ function Shell(props: ToolProps) {
           // Trim the display's trailing newlines (display-only) so the
           // streaming view matches the completed view's width/rows.
           content={stream.display().replace(/\n+$/, "")}
-          filetype="bash"
+          filetype={liveFiletype()}
           gutter={stream.display().replace(/\n+$/, "").includes("\n")}
           // segments={undefined} (0143): the segmented branch's per-segment
           // code elements are RECREATED per delta (the component body
@@ -2611,17 +2623,51 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
     MD: "markdown",
     MARKDOWN: "markdown",
   }
-  const opens: { delim: string; end: number }[] = []
+  // The -e/-c quoted-code form (bun -e '...', python -c "...", node -e):
+  // the interpreter names the language, the quoted body is the code, and
+  // the closing quote + the rest of its line is a shell tail. Falls back
+  // to the write-tool sniffer when the interpreter is not a code runner.
+  const EVAL_LANG: Record<string, string> = {
+    bun: "javascript",
+    node: "javascript",
+    deno: "javascript",
+    tsx: "javascript",
+    python: "python",
+    python3: "python",
+    ruby: "ruby",
+    perl: "perl",
+    php: "php",
+    sqlite3: "sql",
+    psql: "sql",
+  }
+  const opens: { delim: string; end: number; quote?: string }[] = []
   const openRe = /(?:^|[\s;&|(])<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/g
   let m: RegExpExecArray | null
   while ((m = openRe.exec(text))) opens.push({ delim: m[1]!, end: m.index + m[0].length })
+  const evalRe = /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\s+-[ec]\s*(['"])/g
+  while ((m = evalRe.exec(text))) opens.push({ delim: m[1]!, end: m.index + m[0].length, quote: m[2]! })
+  // The here-string form (python3 <<< 'code'): the interpreter names the
+  // language, the quoted body is the code - same quote-based branch as
+  // -e/-c. Single-line here-strings keep the code bash-colored with the
+  // opener line; multi-line ones split like -e/-c.
+  const hereStringRe = /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\s+<<<\s*(['"])/g
+  while ((m = hereStringRe.exec(text))) opens.push({ delim: m[1]!, end: m.index + m[0].length, quote: m[2]! })
+  opens.sort((a, b) => a.end - b.end)
   if (!opens.length) return undefined
 
   const segs: { text: string; lang: string }[] = []
   let cursor = 0
+  // The language resolution is ONE chain for every opener kind: the
+  // delimiter/interpreter name wins (HEREDOC_LANG for heredoc delimiters,
+  // EVAL_LANG for interpreters), then the write-tool sniffer on the body,
+  // then bash. Heredoc delimiters are conventionally uppercase (PY, JS)
+  // so the map key is case-insensitive; interpreter names are lowercase.
+  const segLang = (op: { delim: string; quote?: string }, body: string) =>
+    HEREDOC_LANG[op.delim.toUpperCase()] ?? EVAL_LANG[op.delim] ?? sniffFiletype(body, 0) ?? "bash"
   for (const op of opens) {
-    // The whole opening line (cat > f << 'PY') is shell. No newline after
-    // it yet = the opener is still streaming - everything stays bash.
+    // The whole opening line (cat > f << 'PY', ... && bun -e ') is
+    // shell. No newline after it yet = the opener is still streaming -
+    // everything stays bash.
     const lineEnd = text.indexOf("\n", op.end)
     if (lineEnd === -1) break
     // Trim the trailing newline from each segment: a code element whose
@@ -2629,19 +2675,61 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
     // shows one extra number (the "2" under a 1-line opener, the "50"
     // under a 49-line body). The segments are separate code elements, so
     // the newline carries no layout information - drop it.
-    segs.push({ text: text.slice(cursor, lineEnd), lang: "bash" })
+    if (op.quote) {
+      // -e/-c/<<<: the quoted code. The closing quote is the first
+      // UNESCAPED one after the opening quote (the code itself must avoid
+      // the shell's quoting char - same constraint as running it). A
+      // closing quote before the line end = the single-line form
+      // (bun -e 'one-liner') - the whole line stays bash with the opener.
+      // Otherwise the opener is the line UP TO the opening quote (a
+      // here-string starts its code on the opener line - "<<< 'code"
+      // - while -e usually starts it on the next line), the body is the
+      // quoted code (leading newlines are the line break after the
+      // opening quote), and the tail = the closing quote + the rest of
+      // its line (shell syntax stays bash).
+      let close = -1
+      for (let i = op.end; i < text.length; i++) {
+        if (text[i] === op.quote && text[i - 1] !== "\\") {
+          close = i
+          break
+        }
+      }
+      if (close !== -1 && close < lineEnd) {
+        segs.push({ text: text.slice(cursor, lineEnd), lang: "bash" })
+        cursor = lineEnd + 1
+      } else {
+        segs.push({ text: text.slice(cursor, op.end), lang: "bash" })
+        const body = text.slice(op.end, close === -1 ? text.length : close).replace(/^\n+/, "")
+        if (body.length > 0) {
+          segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body) })
+        }
+        if (close === -1) {
+          // The closing quote is still streaming - the body is the open
+          // tail (the single-element live view colors it as the language).
+          cursor = text.length
+        } else {
+          const tailEnd = text.indexOf("\n", close)
+          const tailText = text.slice(close, tailEnd === -1 ? text.length : tailEnd + 1)
+          segs.push({
+            text: tailText.endsWith("\n") ? tailText.slice(0, -1) : tailText,
+            lang: "bash",
+          })
+          cursor = tailEnd === -1 ? text.length : tailEnd + 1
+        }
+      }
+      if (cursor >= text.length) break
+      continue
+    }
+    const openerText = text.slice(cursor, lineEnd)
+    if (openerText.length > 0) segs.push({ text: openerText, lang: "bash" })
     const closer = new RegExp(`^${op.delim}(?=[\\s;]|$)`, "gm")
     closer.lastIndex = op.end
     const close = closer.exec(text)
     const bodyEnd = close ? close.index : text.length
     if (bodyEnd > lineEnd + 1) {
       const body = text.slice(lineEnd + 1, bodyEnd)
-      const lang =
-        HEREDOC_LANG[op.delim.toUpperCase()] ??
-        sniffFiletype(body, 0) ??
-        "bash"
       // bodyEnd is the closer line's start, so the body ends with "\n".
-      segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang })
+      segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body) })
     }
     if (close) {
       // The closing delimiter line is shell syntax - render it as bash.
@@ -2679,6 +2767,32 @@ function LiveToolStream(props: {
 }) {
   const { theme, syntax } = useTheme()
   const ctx = use()
+  // The gutter must FOLLOW the streamed content: the Shell's gutter prop
+  // is a frozen first-render value (the first delta rarely carries a
+  // newline), so the numbers would never appear for heredoc streams.
+  // Compute the decision here from the reactive content - the ternary
+  // flips once when the first newline lands (heredoc bodies get their
+  // numbers mid-stream; single-line commands never flip - no '1' noise,
+  // no width change, no judder).
+  const showGutter = createMemo(() => props.gutter !== false && props.content.includes("\n"))
+  // The single streaming code element - the SAME object in both gutter
+  // branches (see below), so the line_number mount never recreates it.
+  const singleEl = (
+    <code
+      {...(props.filetype ? { filetype: props.filetype } : {})}
+      // drawUnstyledText={false} + streaming: colored-as-it-streams
+      // (the buffer keeps the last landed highlight, one flush
+      // behind) - same as the segment branch and the reasoning part.
+      // The empty first frame is fixed in opentui (0142), not by
+      // flipping this flag.
+      drawUnstyledText={false}
+      streaming={true}
+      syntaxStyle={syntax()}
+      content={props.content}
+      conceal={ctx.conceal()}
+      fg={theme.textMuted}
+    />
+  )
   // line_number only accepts a code element target - a wrapper box is
   // silently dropped, so segments are guttered individually (numbers
   // restart per segment).
@@ -2715,47 +2829,20 @@ function LiveToolStream(props: {
         )
       })}
     </box>
-  ) : props.gutter === false ? (
-    // Single-line commands render the plain code element - NO line_number
-    // (a lone '1' against a one-liner reads as noise, and the gutter
-    // column narrows the code, shifting the wrap boundary and juddering
-    // boundary-length commands by one row between the views). The
-    // display:none style does NOT work (opentui ignores it - the '1'
-    // still rendered and the width was still reserved).
-    <code
-      {...(props.filetype ? { filetype: props.filetype } : {})}
-      // drawUnstyledText={false} + streaming: colored-as-it-streams
-      // (the buffer keeps the last landed highlight, one flush
-      // behind) - same as the segment branch and the reasoning part.
-      // The empty first frame is fixed in opentui (0142), not by
-      // flipping this flag.
-      drawUnstyledText={false}
-      streaming={true}
-      syntaxStyle={syntax()}
-      content={props.content}
-      conceal={ctx.conceal()}
-      fg={theme.textMuted}
-    />
   ) : (
-    // Multi-line commands get a continuous line_number gutter (numbers
-    // run 1..N over the whole command; the completed view below
-    // re-splits into per-segment gutters).
-    <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-      <code
-        {...(props.filetype ? { filetype: props.filetype } : {})}
-        // drawUnstyledText={false} + streaming: colored-as-it-streams
-        // (the buffer keeps the last landed highlight, one flush
-        // behind) - same as the segment branch and the reasoning part.
-        // The empty first frame is fixed in opentui (0142), not by
-        // flipping this flag.
-        drawUnstyledText={false}
-        streaming={true}
-        syntaxStyle={syntax()}
-        content={props.content}
-        conceal={ctx.conceal()}
-        fg={theme.textMuted}
-      />
-    </line_number>
+    // The line_number appears as soon as the streamed content exceeds
+    // one line (Show = a reactive memo, so it flips mid-stream - the
+    // body's ternary is frozen at the first render). The code element
+    // is the SAME object in both branches - the gutter mount does not
+    // recreate it, the buffer and colors persist. Single-line commands
+    // never flip (no '1' noise, no width change, no judder). Numbers
+    // run continuously 1..N over the whole command; the completed view
+    // below re-splits into per-segment gutters.
+    <Show when={showGutter()} fallback={singleEl}>
+      <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+        {singleEl}
+      </line_number>
+    </Show>
   )
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
