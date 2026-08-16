@@ -38,8 +38,13 @@ const GUARDED = [
   { re: />>\s*(?!\/dev\/null|\/tmp\/opencode)[^\s|;]+/, hint: "append into a file - the edit tool's append mode (OLD with no lines) does this" },
   { re: />\s*(?!\/dev\/null|\/tmp\/opencode|&)[^\s|;]+\s*$/, hint: "redirect into a file - the write tool does this" },
   { re: />\s*(?!\/dev\/null|\/tmp\/opencode|&)[^\s|;]+(\s*<<\s*['\"]?(EOF|PY)['\"]?)?$/, hint: "redirect into a file - the write tool does this" },
-  { re: /python3?\s+-\s*<<\s*['\"]?(EOF|PY)['\"]?[\s\S]*open\([^)]*['\"]w/, hint: "python heredoc writing a file - the write/edit tools do this" },
-  { re: /python3?\s+-c\s+['\"][\s\S]*\bopen\([^)]*['\"]w/, hint: "python writing a file - the write/edit tools do this" },
+  // Script writes (python -/-c/heredoc, node/deno/tsx -e/-/eval): any
+  // write-mode open() (w/a/x/r+/wb...), .write() family call, Path/fs/Deno
+  // write or delete method, os./shutil. file op. Pure reads NEVER fire
+  // (open('f').read(), print(open(..)), fs.readFileSync, os.path.join).
+  { re: /python3?\s+(?:-\s*)?<<\s*['\"]?(EOF|PY)['\"]?[\s\S]*(?:open\([^)]*(?:['\"][waxb]|['\"]r\+['\"])|\.write(?:lines)?\(|\.write_text\(|\.write_bytes\(|\.unlink\(|\.mkdir\(|\.rmdir\(|\.touch\(|os\.(?:remove|unlink|rename|replace|rmdir|makedirs|mkdir)|shutil\.(?:copy|copyfile|copy2|move|rmtree))/, hint: "python writing a file - the write/edit tools do this (the edit tool matches exactly once - no assert needed)" },
+  { re: /python3?\s+-c\s+['\"][\s\S]*(?:open\([^)]*(?:['\"][waxb]|['\"]r\+['\"])|\.write(?:lines)?\(|\.write_text\(|\.write_bytes\(|\.unlink\(|\.mkdir\(|\.rmdir\(|\.touch\(|os\.(?:remove|unlink|rename|replace|rmdir|makedirs|mkdir)|shutil\.(?:copy|copyfile|copy2|move|rmtree))/, hint: "python writing a file - the write/edit tools do this (the edit tool matches exactly once - no assert needed)" },
+  { re: /\b(node|deno|tsx)\s+(?:-\s*<<\s*['\"]?(?:EOF|PY)['\"]?|-e\s+['\"]|eval\s+['\"])[\s\S]*(?:\.write(?:lines)?\(|fs\.(?:writeFile|appendFile|rm|rename|cp|mkdir|unlink)(?:Sync)?\(|Deno\.write(?:Text)?File)/, hint: "js writing a file - the write/edit tools do this" },
   { re: /\bdd\s+[^\s|;]*\s*of=(?!\/dev\/null)[^\s|;]+/, hint: "writing a file - the write tool does this" },
 
   // --- reads (read/grep tools) ---
