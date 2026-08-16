@@ -26,3 +26,35 @@ index 0ddf03bf666a05f50c66bef32af65b1403ed0192..0a588048641713df6e233f79b95ab7f2
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
+diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
+index e5e5874f758a2e8c622ca8e9301f20c60c245546..1d9fa8ef1b0c655d70a47b32c04e6e6df2bf0d0c 100644
+--- a/chunk-bun-tkm837n2.js
++++ b/chunk-bun-tkm837n2.js
+@@ -3310,7 +3310,10 @@ class CodeRenderable extends TextBufferRenderable {
+     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
+     if (this._streaming && !isInitialContent) {
+       this._shouldRenderTextBuffer = true;
+-    } else if (shouldDrawUnstyledNow) {
++    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
++      // streaming initial content: render the raw text immediately (no
++      // EMPTY first frame while the async highlight is in flight - the
++      // flicker's collapse half); the highlight colors it when it lands.
+       if (this._initialStyledText) {
+         this.textBuffer.setStyledText(this._initialStyledText);
+       } else {
+diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
+index 4a2cb78..7c5acef 100644
+--- a/chunk-node-51kpf0mz.js
++++ b/chunk-node-51kpf0mz.js
+@@ -3309,7 +3309,10 @@ class CodeRenderable extends TextBufferRenderable {
+     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
+     if (this._streaming && !isInitialContent) {
+       this._shouldRenderTextBuffer = true;
+-    } else if (shouldDrawUnstyledNow) {
++    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
++      // streaming initial content: render the raw text immediately (no
++      // EMPTY first frame while the async highlight is in flight - the
++      // flicker's collapse half); the highlight colors it when it lands.
+       if (this._initialStyledText) {
+         this.textBuffer.setStyledText(this._initialStyledText);
+       } else {
