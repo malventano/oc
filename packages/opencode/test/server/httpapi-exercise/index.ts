@@ -1636,7 +1636,7 @@ const scenarios: Scenario[] = [
             (message) => message.info.role === "assistant" && message.info.summary === true,
           )
           check(
-            summary?.info.variant === "max",
+            summary?.info.role === "assistant" && summary.info.variant === "max",
             "summarize without variant falls back to the last user message variant",
           )
           yield* ctx.llmWait(1)

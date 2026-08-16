@@ -204,7 +204,14 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
       curPasteRows = []
       continue
     }
-    if (trimmed === "OLD:") {
+    // The model sometimes leaks the patch envelope's "*** " prefix onto
+    // the block markers ("*** NEW:" instead of "NEW:"). Tolerate exactly
+    // that form; anything else marker-like fails loudly (it used to be
+    // silently absorbed into the open block, producing a never-matching
+    // OLD - the 2026-08-16 failure class, 32/32 failed edits).
+    const oldM = /^(\*\*\*\s+)?OLD:$/.exec(trimmed)
+    const newM = /^(\*\*\*\s+)?NEW:$/.exec(trimmed)
+    if (oldM) {
       if (curNew !== null) {
         resolvePair(i)
         if (errors.length > 0) return { ok: false, errors }
@@ -218,7 +225,7 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
       curNew = null
       continue
     }
-    if (trimmed === "NEW:") {
+    if (newM) {
       if (curOld === null) {
         fail(i, line, "NEW: without a preceding OLD: block")
         return { ok: false, errors }
@@ -241,6 +248,13 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
       continue
     }
     // Content rows: raw, verbatim (no markers, no separator conventions).
+    // A marker-LOOKING line that the tolerant regexes above did not consume
+    // (e.g. "**NEW:", "***NEW:") is a malformed marker, not content - fail
+    // loudly (silent absorption produced the 43-line-OLD failure class).
+    if (curNew === null && curOld !== null && /^\*{1,3}\s*(?:OLD|NEW):\s*$/.test(trimmed)) {
+      fail(i, line, "unrecognized block marker - use plain OLD:/NEW: (or the *** envelope form)")
+      return { ok: false, errors }
+    }
     if (curNew !== null) curNew.push(line)
     else if (curOld !== null) curOld.push(line)
     else {
