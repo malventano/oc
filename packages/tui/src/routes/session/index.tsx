@@ -2350,9 +2350,11 @@ function Shell(props: ToolProps) {
           // re-runs when it reads reactive props - the createMemo slots
           // traced this live: 122 new elements per heredoc) and each mount
           // paints a w=1 transient before the layout settles - the
-          // '1 p'/'1 d' flicker (BUG_STREAMING_FLICKER.md). Stream as a
-          // single bash element (stable, colored); the completed view
-          // below switches to the segmented render.
+          // '1 p'/'1 d' flicker (BUG_STREAMING_FLICKER.md, video-confirmed
+          // 0146: 1-char collapses recur per delta + the gutter-width
+          // jitter between 1- and 2-digit segments). Stream as a single
+          // bash element (stable, colored); the completed view below
+          // switches to the segmented render.
           segments={undefined}
         />
       </Match>
