@@ -47,6 +47,9 @@ export type StreamInput = {
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
+  /** Most recent provider-reported context (last finished message's
+   *  tokens.total). Caps max_tokens to the window's remaining budget. */
+  currentContextTokens?: number
 }
 
 export type StreamRequest = StreamInput & {
