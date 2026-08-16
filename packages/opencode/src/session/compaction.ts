@@ -487,6 +487,10 @@ TimeContext.stampUserMessages(msgs)
         sessionID: input.sessionID,
         model,
       })
+      const lastFinished = input.messages.findLast(
+        (m): m is SessionV1.WithParts & { info: SessionV1.Assistant } =>
+          m.info.role === "assistant" && !!m.info.finish && !m.info.error,
+      )
       const result = yield* processor.process({
         user: userMessage,
         agent,
@@ -510,6 +514,10 @@ TimeContext.stampUserMessages(msgs)
           },
         ],
         model,
+        // Same remaining-budget cap as the main turn: the trimmed head
+        // still sits near the trigger threshold, so the summary request
+        // must not ask for the full output limit.
+        currentContextTokens: lastFinished?.info.tokens?.total,
       })
 
       if (result === "compact") {
