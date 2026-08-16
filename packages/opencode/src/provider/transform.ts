@@ -1476,8 +1476,22 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
   return { [key]: normalized }
 }
 
-export function maxOutputTokens(model: Provider.Model, outputTokenMax = OUTPUT_TOKEN_MAX): number {
-  return model.limit.output || outputTokenMax
+export function maxOutputTokens(
+  model: Provider.Model,
+  outputTokenMax = OUTPUT_TOKEN_MAX,
+  currentContextTokens = 0,
+): number {
+  const max = model.limit.output || outputTokenMax
+  // Cap the completion budget to the model window's REMAINING room: the
+  // endpoint rejects a request whose prompt + max_tokens exceeds the
+  // window, so a full-context session must not ask for the full output
+  // limit (BUG_STREAMING issue: prompt 655,360 + max 393,216 > 1M). The
+  // currentContext is the most recent provider-reported context (the
+  // last finished message's tokens.total); 5% of the window stays as an
+  // endpoint margin at the tail.
+  if (!model.limit.context || currentContextTokens <= 0) return max
+  const margin = Math.floor(model.limit.context * 0.05)
+  return Math.max(0, Math.min(max, model.limit.context - margin - currentContextTokens))
 }
 
 type JsonRecord = Record<string, unknown>
