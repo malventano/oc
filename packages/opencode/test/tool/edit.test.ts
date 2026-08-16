@@ -411,6 +411,101 @@ describe("tool.edit", () => {
     )
   })
 
+  describe("fallback matching (fragments + tolerance ladder)", () => {
+    it.instance("matches a partial-line fragment within a long line", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "long.txt")
+        const line = "This is a very long line containing a unique fragment inside it, plus a lot of other text that makes the line long enough to be risky to reproduce."
+        yield* put(filepath, line + "\n")
+        const result = yield* run({
+          input: fence([{ path: filepath, ops: [{ old: ["unique fragment"], new: ["unique replacement"] }] }]),
+        })
+        expect(yield* load(filepath)).toBe(
+          "This is a very long line containing a unique replacement inside it, plus a lot of other text that makes the line long enough to be risky to reproduce.\n",
+        )
+        // The ladder-fire echo must tell the agent what happened
+        expect(result.output).toContain("Matched with tolerance")
+        expect(result.output).toContain("at line 1")
+        expect(result.output).toContain("Applied change")
+      }),
+    )
+
+    it.instance("absorbs whole-line transcription drift via the ladder", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "drift.txt")
+        yield* put(filepath, "const alpha = compute(1)\nconst beta = 2\n")
+        // The model reproduced line 1 with a drifted double space
+        yield* run({
+          input: fence([
+            { path: filepath, ops: [{ old: ["const  alpha = compute(1)"], new: ["const alpha = compute(2)"] }] },
+          ]),
+        })
+        expect(yield* load(filepath)).toBe("const alpha = compute(2)\nconst beta = 2\n")
+      }),
+    )
+
+    it.instance("rejects an ambiguous fragment with the fence's ambiguity error", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "amb.txt")
+        yield* put(filepath, "shared fragment line one\nshared fragment line two\n")
+        const err = yield* fail({
+          input: fence([{ path: filepath, ops: [{ old: ["shared fragment"], new: ["X"] }] }]),
+        })
+        expect(err.message).toMatch(/multiple matches|Could not find|ambiguous/i)
+      }),
+    )
+
+    it.instance("cuts a partial-line fragment (char-level splice, matched text captured)", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "cutfrag.txt")
+        yield* put(filepath, "line with a removable fragment here\n")
+        yield* run({
+          input: "*** Begin Patch\n" + `[${filepath}]\nCUT @f:\nremovable fragment\n` + "*** End Patch",
+        })
+        // The fragment is spliced out of its line; the surrounding text
+        // keeps its own spacing (the model includes the space in the block
+        // if it wants a clean join).
+        expect(yield* load(filepath)).toBe("line with a  here\n")
+      }),
+    )
+
+    it.instance("pastes after the LINE containing a context fragment", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "pastefrag.txt")
+        yield* put(filepath, "alpha\nbeta line with unique marker\n")
+        yield* run({
+          input:
+            "*** Begin Patch\n" +
+            `[${filepath}]\nCUT @x:\nalpha\n\n` +
+            `[${filepath}]\nPASTE @x AFTER:\nunique marker\n` +
+            "*** End Patch",
+        })
+        // The fragment identifies the second line; the insertion lands after
+        // that LINE (not at the fragment's char position)
+        expect(yield* load(filepath)).toBe("beta line with unique marker\nalpha\n")
+      }),
+    )
+
+    it.instance("reports the changed line ranges on the exact path too", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "terse.txt")
+        yield* put(filepath, "line one\nexact line\nline three\n")
+        const result = yield* run({
+          input: fence([{ path: filepath, ops: [{ old: ["exact line"], new: ["exact line edited"] }] }]),
+        })
+        expect(result.output).toContain("Edit applied successfully")
+        expect(result.output).toContain("Changed lines: 2 (+1/-1)")
+        expect(result.output).not.toContain("Matched with tolerance")
+      }),
+    )
+  })
+
   describe("register moves (CUT/PASTE)", () => {
     it.instance("cuts and pastes a block within one file", () =>
       Effect.gen(function* () {

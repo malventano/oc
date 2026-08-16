@@ -254,9 +254,9 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
       "type": "integer",
     },
     "offset": {
-      "description": "The line number to start reading from (1-indexed)",
+      "description": "The line number to start reading from (1-indexed). Negative = tail semantics: offset -50 reads the LAST 50 lines (limit defaults to the tail size in that case)",
       "maximum": 9007199254740991,
-      "minimum": 0,
+      "minimum": -9007199254740991,
       "type": "integer",
     },
   },
