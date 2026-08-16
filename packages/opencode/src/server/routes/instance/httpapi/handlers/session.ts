@@ -303,6 +303,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const defaultAgent = yield* agentSvc.defaultAgent()
       const lastUserMessage = messages.findLast((message) => message.info.role === "user")
       const currentAgent = lastUserMessage?.info.agent ?? defaultAgent
+      // Info is a role-discriminated union: only the User member carries the
+      // nested model object - narrow via the role check before reading it.
+      const lastUserVariant = lastUserMessage?.info.role === "user" ? lastUserMessage.info.model.variant : undefined
 
       const virtual = yield* compactSvc.virtual({ sessionID: ctx.params.sessionID, messages })
       if (virtual !== "ineligible") return virtual
@@ -318,7 +321,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           // the session's level, not base options. The TUI always sends
           // the field (local.model.variant.current()), so its behavior
           // is unchanged.
-          variant: ctx.payload.variant ?? lastUserMessage?.info.model?.variant,
+          variant: ctx.payload.variant ?? lastUserVariant,
         },
         auto: ctx.payload.auto ?? false,
       })
