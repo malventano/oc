@@ -28,6 +28,7 @@ export function testProviderConfig(llmUrl: string) {
             limit: { context: 100_000, output: 10_000 },
             cost: { input: 0, output: 0 },
             options: {},
+            variants: { max: { temperature: 0.7 } },
           },
         },
         options: { apiKey: "test-key", baseURL: llmUrl },
