@@ -169,6 +169,36 @@ describe("grammar-fence parser", () => {
     expect(parsed.files[0].rename).toBe("b.txt")
   })
 
+  test("envelope-prefixed markers are tolerated (0138)", () => {
+    // The model leaks the "*** " envelope prefix onto the block markers;
+    // "*** NEW:" used to be silently absorbed into the OLD block (43-line
+    // OLD, zero-line NEW - the 2026-08-16 failure class).
+    const parsed = parseFencePatch(
+      "*** Begin Patch\n[a.txt]\nOLD:\nx\n*** NEW:\ny\n*** End Patch",
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.files[0].ops).toEqual([{ kind: "replace", old: ["x"], new: ["y"] }])
+  })
+
+  test("envelope-prefixed OLD: is tolerated (0138)", () => {
+    const parsed = parseFencePatch(
+      "*** Begin Patch\n[a.txt]\n*** OLD:\nx\nNEW:\ny\n*** End Patch",
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.files[0].ops).toEqual([{ kind: "replace", old: ["x"], new: ["y"] }])
+  })
+
+  test("malformed marker-looking lines fail loudly instead of being absorbed (0138)", () => {
+    for (const bad of ["**NEW:", "***NEW:"]) {
+      const parsed = parseFencePatch(`*** Begin Patch\n[a.txt]\nOLD:\nx\n${bad}\ny\n*** End Patch`)
+      expect(parsed.ok).toBe(false)
+      if (parsed.ok) continue
+      expect(parsed.errors[0]).toContain("unrecognized block marker")
+    }
+  })
+
   test("blank lines inside blocks are real content", () => {
     const parsed = parseFencePatch(
       "*** Begin Patch\n[a.txt]\nOLD:\na\n\nb\nNEW:\nA\n\nB\n*** End Patch",

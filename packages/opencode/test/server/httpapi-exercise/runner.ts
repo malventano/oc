@@ -155,7 +155,13 @@ function withContext<A, E>(
                 model: {
                   providerID: ProviderV2.ID.opencode,
                   modelID: ModelV2.ID.make("test"),
-                  ...input?.model,
+                  ...(input?.model
+                    ? {
+                        providerID: ProviderV2.ID.make(input.model.providerID ?? "test"),
+                        modelID: ModelV2.ID.make(input.model.modelID ?? "test-model"),
+                        ...(input.model.variant ? { variant: input.model.variant } : {}),
+                      }
+                    : {}),
                 },
               }
               const part: SessionV1.TextPart = {
