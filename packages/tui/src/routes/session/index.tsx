@@ -2288,6 +2288,12 @@ function Shell(props: ToolProps) {
             <code
               // key-less: opentui CodeProps has no key field; segments re-render in place
               filetype={seg.lang}
+              // drawUnstyledText={false}: the completed element's FIRST
+              // paint would be the raw text (the 1-frame WHITE flash at
+              // the running->completed transition - video captured). With
+              // it false the buffer defers to the async highlight, so the
+              // command stays colored through the transition.
+              drawUnstyledText={false}
               syntaxStyle={syntax()}
               content={seg.text}
               conceal={ctx.conceal()}
@@ -2306,6 +2312,9 @@ function Shell(props: ToolProps) {
     ) : (
       <code
         filetype="bash"
+        // drawUnstyledText={false}: no raw white first frame at the
+        // running->completed transition (see the segment branch).
+        drawUnstyledText={false}
         syntaxStyle={syntax()}
         content={command()}
         conceal={ctx.conceal()}
@@ -2324,9 +2333,18 @@ function Shell(props: ToolProps) {
           part={props.part}
           title={stream.title()}
           streaming={true}
-          content={stream.display()}
+          // The streaming display keeps the model's trailing newline (the
+          // raw tool-call content ends with "\n"); the landed command
+          // input strips it. The trailing "\n" flips the gutter on
+          // mid-stream, the gutter column narrows the code, and a
+          // boundary-length command wraps/unwraps between the streaming
+          // and completed states - the 1-line vertical judder (video
+          // captured: a '1' appears in front of the streaming line).
+          // Trim the display's trailing newlines (display-only) so the
+          // streaming view matches the completed view's width/rows.
+          content={stream.display().replace(/\n+$/, "")}
           filetype="bash"
-          gutter={stream.display().includes("\n")}
+          gutter={stream.display().replace(/\n+$/, "").includes("\n")}
           // segments={undefined} (0143): the segmented branch's per-segment
           // code elements are RECREATED per delta (the component body
           // re-runs when it reads reactive props - the createMemo slots
@@ -2338,7 +2356,11 @@ function Shell(props: ToolProps) {
           segments={undefined}
         />
       </Match>
-      <Match when={stringValue(props.metadata.output) !== undefined}>
+      {/* The running state must keep the BlockTool: a FAST command's
+          output stays undefined until completion, and without this the
+          TRUE-match InlineTool shows for a frame (the '$' + the block
+          vanishing - the vertical judder's second half). */}
+      <Match when={stringValue(props.metadata.output) !== undefined || isRunning()}>
         {/* Running: multi-line commands get the spinner in the block title
             (it can't span the gutter); single-line commands get it inline
             next to the colored command - the command stays colored either
@@ -2357,6 +2379,11 @@ function Shell(props: ToolProps) {
                   flexGrow={1}
                   flexShrink={1}
                   filetype="bash"
+                  // drawUnstyledText={false}: the spinner-row element mounts
+                  // fresh at the streaming->running transition - its first
+                  // paint would be the raw WHITE text (video captured at
+                  // the spinner's start frame).
+                  drawUnstyledText={false}
                   syntaxStyle={syntax()}
                   content={command()}
                   conceal={ctx.conceal()}
@@ -2678,16 +2705,32 @@ function LiveToolStream(props: {
         )
       })}
     </box>
-  ) : (
-    // The single streaming element keeps a continuous line_number gutter
-    // when multi-line (numbers run 1..N over the whole command; the
-    // completed view below re-splits into per-segment gutters).
-    <line_number
+  ) : props.gutter === false ? (
+    // Single-line commands render the plain code element - NO line_number
+    // (a lone '1' against a one-liner reads as noise, and the gutter
+    // column narrows the code, shifting the wrap boundary and juddering
+    // boundary-length commands by one row between the views). The
+    // display:none style does NOT work (opentui ignores it - the '1'
+    // still rendered and the width was still reserved).
+    <code
+      {...(props.filetype ? { filetype: props.filetype } : {})}
+      // drawUnstyledText={false} + streaming: colored-as-it-streams
+      // (the buffer keeps the last landed highlight, one flush
+      // behind) - same as the segment branch and the reasoning part.
+      // The empty first frame is fixed in opentui (0142), not by
+      // flipping this flag.
+      drawUnstyledText={false}
+      streaming={true}
+      syntaxStyle={syntax()}
+      content={props.content}
+      conceal={ctx.conceal()}
       fg={theme.textMuted}
-      minWidth={3}
-      paddingRight={1}
-      style={props.gutter === false ? { display: "none" } : undefined}
-    >
+    />
+  ) : (
+    // Multi-line commands get a continuous line_number gutter (numbers
+    // run 1..N over the whole command; the completed view below
+    // re-splits into per-segment gutters).
+    <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
       <code
         {...(props.filetype ? { filetype: props.filetype } : {})}
         // drawUnstyledText={false} + streaming: colored-as-it-streams
@@ -2772,6 +2815,10 @@ function Write(props: ToolProps) {
                 conceal={false}
                 fg={theme.text}
                 filetype={filetype(path())}
+                // drawUnstyledText={false}: same as the bash command block -
+                // the completed element's first paint would be the raw
+                // WHITE text at the streaming->completed transition.
+                drawUnstyledText={false}
                 syntaxStyle={syntax()}
                 content={code()}
               />
