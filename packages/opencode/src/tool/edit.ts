@@ -370,10 +370,38 @@ export const EditTool = Tool.define(
                   }
                   const first = op.old[0]
                   const similar = work.findIndex((l) => l === first)
+                  if (similar >= 0) {
+                    // The first line matched but the full block did not.
+                    // Distinguish the two mechanisms: STALE content (the
+                    // file changed since the block was current - the quoted
+                    // lines no longer exist at/after the match) vs DRIFT
+                    // (the lines exist but differ by whitespace or bytes
+                    // invisible in the read display). The guidance differs:
+                    // stale -> re-read and quote the CURRENT content;
+                    // drift -> copy byte-exact or shorten.
+                    const i = op.old.findIndex((l, idx) => l !== work[similar + idx])
+                    const mismatch = i >= 0 ? i : 0
+                    const fileLine = work[similar + mismatch]
+                    const oldLine = op.old[mismatch]!
+                    if (fileLine === undefined) {
+                      throw new Error(
+                        `no match for the OLD block - line ${mismatch + 1} extends past the end of the file (line ${similar + mismatch + 1} does not exist); the file changed since this content was current - re-read or quote the current content`,
+                      )
+                    }
+                    if (oldLine.trim() === fileLine.trim()) {
+                      throw new Error(
+                        `no match for the OLD block - line ${mismatch + 1} differs from file line ${similar + mismatch + 1} by whitespace only; trailing spaces/tabs are invisible in the read output - copy it byte-exact, or use a shorter unique block`,
+                      )
+                    }
+                    const elsewhere = work.findIndex((l) => l === oldLine)
+                    throw new Error(
+                      elsewhere >= 0
+                        ? `no match for the OLD block - line ${mismatch + 1} of your block is at file line ${elsewhere + 1}, not ${similar + mismatch + 1}; the file changed since this content was current - re-read or quote the current content`
+                        : `no match for the OLD block - line ${mismatch + 1} of your block is not in the file; the file changed since this content was current - re-read or quote the current content`,
+                    )
+                  }
                   throw new Error(
-                    similar >= 0
-                      ? `no match for the OLD block - the first line matches line ${similar + 1} but the full block does not; copy the OLD block byte-exact from the read output (strip the \`N:\` prefix)`
-                      : `no match for \`${first.slice(0, 60)}\` in the file - copy the OLD block byte-exact from the read output (the file may have changed - re-read first)`,
+                    `no match for \`${first.slice(0, 60)}\` in the file - copy the OLD block byte-exact from the read output (the file may have changed - re-read first)`,
                   )
                 }
               }
