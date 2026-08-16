@@ -2272,8 +2272,24 @@ function Shell(props: ToolProps) {
     if (!wd) return
     return `# Running in ${wd}`
   })
+  // Heredoc bodies get their own language colors (delimiter-named, else
+  // sniffed from the body, else bash) - the shell parts stay bash.
+  const commandSegments = createMemo(() => heredocSegments(command()))
   const commandBlock = () => {
-    const code = (
+    const code = commandSegments() ? (
+      <box flexDirection="column">
+        {commandSegments()!.map((seg, i) => (
+          <code
+            // key-less: opentui CodeProps has no key field; segments re-render in place
+            filetype={seg.lang}
+            syntaxStyle={syntax()}
+            content={seg.text}
+            conceal={ctx.conceal()}
+            fg={theme.text}
+          />
+        ))}
+      </box>
+    ) : (
       <code
         filetype="bash"
         syntaxStyle={syntax()}
@@ -2303,6 +2319,7 @@ function Shell(props: ToolProps) {
           content={stream.display()}
           filetype="bash"
           gutter={stream.display().includes("\n")}
+          segments={heredocSegments(stream.display())}
         />
       </Match>
       <Match when={stringValue(props.metadata.output) !== undefined}>
@@ -2457,11 +2474,15 @@ function useToolStream(
 // from the first lines of the body so code writes stream colored instead
 // of plain. Heuristic only - the authoritative filetype applies once the
 // path lands, and a wrong guess flips silently at the end.
-function sniffFiletype(content: string): string | undefined {
-  if (content.length < 60) return undefined
-  const head = content.slice(0, 600)
+function sniffFiletype(content: string, minLength = 60): string | undefined {
+  if (content.length < minLength) return undefined
+  // 1500-char window: comment-headed files (license/doc headers) put their
+  // first code line well past 600 chars - the window must reach it.
+  const head = content.slice(0, 1500)
   const firstLine = head.split("\n", 1)[0] ?? ""
-  const shebang = /^#!\s*(\S+)/.exec(firstLine)
+  // Full-line capture: env-style shebangs ("#!/usr/bin/env python3") put
+  // the interpreter on the second token - (\S+) stops at "/usr/bin/env".
+  const shebang = /^#!\s*(.+)/.exec(firstLine)
   if (shebang) {
     const p = shebang[1]!
     if (/python/i.test(p)) return "python"
@@ -2475,6 +2496,7 @@ function sniffFiletype(content: string): string | undefined {
   if (/^export (?:function|const|class|interface|type|default)\b|^interface \w+\s*\{/m.test(head)) return "typescript"
   if (/^import .* from ['"]/m.test(head) && /:\s*(?:string|number|boolean|Record|Array|Promise|Map)</m.test(head)) return "typescript"
   if (/^(?:export )?(?:function|const|let|var)\b.*=>/m.test(head)) return "typescript"
+  if (/^const \w+:\s*[\w<>, |\[\]]+\s*=\s*/m.test(head)) return "typescript"
   if (/^module\.exports|require\(['"]/m.test(head)) return "javascript"
   if (/^package main\b|^func \w+\(/m.test(head)) return "go"
   if (/^fn (?:main|\w+)\(|^use std::|^impl\b/m.test(head)) return "rust"
@@ -2487,8 +2509,91 @@ function sniffFiletype(content: string): string | undefined {
   if (/^main :: IO \(\)/m.test(head)) return "haskell"
   if (/^require ['"]/m.test(head)) return "ruby"
   if (/^local function\b/m.test(head)) return "lua"
+  // Plain JS idioms (no type annotations): comment-headed .js files whose
+  // export/module lines sit beyond the window still get javascript from
+  // their first declarations. TS-typed forms matched above win first; a
+  // wrong guess flips to the real language when the filePath arg lands.
+  if (/^import .* from ['"]/m.test(head)) return "javascript"
+  if (/^(?:const|let|var)\s+\w+\s*=\s*[\[\{\/\'"`(]/m.test(head)) return "javascript"
+  if (/^function \w+\(/m.test(head)) return "javascript"
   if (/^\{/.test(firstLine) && /"\w+"\s*:/.test(head)) return "json"
   return undefined
+}
+
+// Heredoc body language resolution for the bash streaming view: a command
+// containing heredocs is split into segments - the shell parts stay bash,
+// each heredoc body is colored with the language its delimiter names
+// (PY/PYTHON -> python, JS/MJS -> javascript, ...), falling back to the
+// write-tool content sniffer for non-language delimiters (EOF etc.), and
+// to bash (current behavior) when nothing matches. While the closing
+// delimiter is still streaming, the body is the open tail. Best-effort
+// visual only - the completed command keeps its own single-bash render.
+function heredocSegments(text: string): { text: string; lang: string }[] | undefined {
+  const HEREDOC_LANG: Record<string, string> = {
+    PY: "python",
+    PYTHON: "python",
+    SH: "bash",
+    BASH: "bash",
+    JS: "javascript",
+    MJS: "javascript",
+    NODE: "javascript",
+    TS: "typescript",
+    TSX: "typescript",
+    JSON: "json",
+    RB: "ruby",
+    RUBY: "ruby",
+    PL: "perl",
+    PERL: "perl",
+    SQL: "sql",
+    GO: "go",
+    RS: "rust",
+    YAML: "yaml",
+    YML: "yaml",
+    MD: "markdown",
+    MARKDOWN: "markdown",
+  }
+  const opens: { delim: string; end: number }[] = []
+  const openRe = /(?:^|[\s;&|(])<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/g
+  let m: RegExpExecArray | null
+  while ((m = openRe.exec(text))) opens.push({ delim: m[1]!, end: m.index + m[0].length })
+  if (!opens.length) return undefined
+
+  const segs: { text: string; lang: string }[] = []
+  let cursor = 0
+  for (const op of opens) {
+    // The whole opening line (cat > f << 'PY') is shell. No newline after
+    // it yet = the opener is still streaming - everything stays bash.
+    const lineEnd = text.indexOf("\n", op.end)
+    if (lineEnd === -1) break
+    segs.push({ text: text.slice(cursor, lineEnd + 1), lang: "bash" })
+    const closer = new RegExp(`^${op.delim}(?=[\\s;|]|$)`, "gm")
+    closer.lastIndex = op.end
+    const close = closer.exec(text)
+    const bodyEnd = close ? close.index : text.length
+    if (bodyEnd > lineEnd + 1) {
+      const body = text.slice(lineEnd + 1, bodyEnd)
+      const lang =
+        HEREDOC_LANG[op.delim.toUpperCase()] ??
+        sniffFiletype(body, 0) ??
+        "bash"
+      segs.push({ text: body, lang })
+    }
+    if (close) {
+      // The closing delimiter line is shell syntax - render it as bash.
+      const closeLineEnd = text.indexOf("\n", close.index)
+      segs.push({
+        text: text.slice(close.index, closeLineEnd === -1 ? text.length : closeLineEnd + 1),
+        lang: "bash",
+      })
+      cursor = closeLineEnd === -1 ? text.length : closeLineEnd + 1
+    } else {
+      cursor = text.length
+    }
+    if (cursor === 0) cursor = text.length
+    if (cursor >= text.length) break
+  }
+  if (cursor < text.length) segs.push({ text: text.slice(cursor), lang: "bash" })
+  return segs
 }
 
 function LiveToolStream(props: {
@@ -2498,10 +2603,26 @@ function LiveToolStream(props: {
   content: string
   filetype?: string
   gutter?: boolean
+  segments?: { text: string; lang: string }[]
 }) {
   const { theme, syntax } = useTheme()
   const ctx = use()
-  const code = (
+  const code = props.segments ? (
+    <box flexDirection="column">
+      {props.segments.map((seg, i) => (
+        <code
+          // key-less: opentui CodeProps has no key field; segments re-render in place
+          filetype={seg.lang}
+          drawUnstyledText={false}
+          streaming={true}
+          syntaxStyle={syntax()}
+          content={seg.text}
+          conceal={ctx.conceal()}
+          fg={theme.textMuted}
+        />
+      ))}
+    </box>
+  ) : (
     <code
       {...(props.filetype ? { filetype: props.filetype } : {})}
       drawUnstyledText={false}
