@@ -20,6 +20,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
 import { parseFencePatch } from "./grammar-fence"
+import { resolveSpan } from "./string-match"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -63,6 +64,36 @@ function findMatches(haystack: string[], needle: string[]): number[] {
     hits.push(idx)
   }
   return hits
+}
+
+// Rebuild the work array from a content string produced by the fallback
+// matchers (which work on the joined string): the work invariant is "no
+// trailing empty element" (splitLines drops it for the file's own trailing
+// newline; the fallbacks must too, or an empty element would append a
+// phantom "\n" to the output).
+function toWork(content: string): string[] {
+  if (content === "") return []
+  const lines = content.split("\n")
+  if (lines[lines.length - 1] === "") lines.pop()
+  return lines
+}
+
+// 1-based line number of a character index within a content string.
+function lineOf(index: number, content: string): number {
+  return content.slice(0, index).split("\n").length
+}
+
+// Insertion index after the LINE that contains `from` (the position after
+// that line's trailing newline, or content.length for the last line).
+function lineEndIdx(content: string, from: number): number {
+  const nl = content.indexOf("\n", from)
+  return nl === -1 ? content.length : nl + 1
+}
+
+// Insertion index before the LINE that contains `from` (0, or the position
+// right after the previous line's newline).
+function lineStartIdx(content: string, from: number): number {
+  return content.lastIndexOf("\n", Math.max(0, from - 1)) + 1
 }
 
 // Re-exported for write.ts compatibility (upstream exports; ours keeps the
@@ -120,6 +151,9 @@ type Plan = {
   additions: number
   deletions: number
   noop: boolean
+  // Ladder-fire echo: entries recorded when a fallback tier matched (not
+  // byte-exact) - the agent must see what actually happened.
+  fallbackNotes: string[]
 }
 
 export const EditTool = Tool.define(
@@ -208,6 +242,7 @@ export const EditTool = Tool.define(
                 additions: 0,
                 deletions: 0,
                 noop: false,
+                fallbackNotes: [],
               })
               continue
             }
@@ -226,7 +261,8 @@ export const EditTool = Tool.define(
               : yield* Bom.readFile(afs, sourcePath)
             const { lines, trailing } = splitLines(source.text)
 
-            const work = [...lines]
+            let work = [...lines]
+            const fallbackNotes: string[] = []
             for (const op of section.ops) {
               if (op.kind === "append") {
                 work.push(...op.text)
@@ -235,9 +271,28 @@ export const EditTool = Tool.define(
               if (op.kind === "cut") {
                 const hits = findMatches(work, op.block)
                 if (hits.length === 0) {
-                  throw new Error(
-                    `CUT @${op.register}: no match for \`${(op.block[0] ?? "").slice(0, 60)}\` - copy the block byte-exact from the read output`,
-                  )
+                  // Fallback tier: string matching on the joined content
+                  // (fragments + tolerance ladder) - the register captures
+                  // the ACTUAL matched text, not the model's copy.
+                  try {
+                    const joined = work.join("\n")
+                    const span = resolveSpan(joined, op.block.join("\n"))
+                    const matched = joined.slice(span.index, span.index + span.length)
+                    registers.set(op.register, matched.split("\n"))
+                    work = toWork(joined.slice(0, span.index) + joined.slice(span.index + span.length))
+                    fallbackNotes.push(`CUT @${op.register} matched via ${span.tier} at line ${lineOf(span.index, joined)} - captured ${matched.split("\n").length} lines`)
+                    continue
+                  } catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e)
+                    if (msg.toLowerCase().includes("multiple matches")) {
+                      throw new Error(
+                        `CUT @${op.register}: the block fragment matches several places - extend it with surrounding text to disambiguate`,
+                      )
+                    }
+                    throw new Error(
+                      `CUT @${op.register}: no match for \`${(op.block[0] ?? "").slice(0, 60)}\` - copy the block byte-exact from the read output`,
+                    )
+                  }
                 }
                 if (hits.length > 1) {
                   throw new Error(
@@ -258,9 +313,28 @@ export const EditTool = Tool.define(
                 }
                 const hits = findMatches(work, op.context)
                 if (hits.length === 0) {
-                  throw new Error(
-                    `PASTE @${op.register}: no match for the context block \`${(op.context[0] ?? "").slice(0, 60)}\` - copy it byte-exact from the read output`,
-                  )
+                  // Fallback tier for the context anchor (fragments +
+                  // tolerance ladder). The anchor maps to the LINE containing
+                  // the span: "PASTE AFTER: <fragment>" means after that
+                  // line, not after the fragment's char position.
+                  try {
+                    const joined = work.join("\n")
+                    const span = resolveSpan(joined, op.context.join("\n"))
+                    const lineIdx = lineOf(span.index, joined) - 1
+                    work.splice(op.after ? lineIdx + 1 : lineIdx, 0, ...content)
+                    fallbackNotes.push(`PASTE @${op.register} context matched via ${span.tier} at line ${lineIdx + 1} - inserted ${content.length} lines`)
+                    continue
+                  } catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e)
+                    if (msg.toLowerCase().includes("multiple matches")) {
+                      throw new Error(
+                        `PASTE @${op.register}: the context fragment matches several places - extend it with surrounding text to disambiguate`,
+                      )
+                    }
+                    throw new Error(
+                      `PASTE @${op.register}: no match for the context block \`${(op.context[0] ?? "").slice(0, 60)}\` - copy it byte-exact from the read output`,
+                    )
+                  }
                 }
                 if (hits.length > 1) {
                   throw new Error(
@@ -275,13 +349,33 @@ export const EditTool = Tool.define(
               }
               const hits = findMatches(work, op.old)
               if (hits.length === 0) {
-                const first = op.old[0]
-                const similar = work.findIndex((l) => l === first)
-                throw new Error(
-                  similar >= 0
-                    ? `no match for the OLD block - the first line matches line ${similar + 1} but the full block does not; copy the OLD block byte-exact from the read output (strip the \`N:\` prefix)`
-                    : `no match for \`${first.slice(0, 60)}\` in the file - copy the OLD block byte-exact from the read output (the file may have changed - re-read first)`,
-                )
+                // Fallback tier: string matching on the joined content -
+                // partial-line fragments (the kv-offload class) and
+                // transcription drift (the tolerance ladder) both resolve
+                // here. Fail-closed: unique candidates only.
+                try {
+                  const joined = work.join("\n")
+                  const span = resolveSpan(joined, op.old.join("\n"))
+                  const before = joined.slice(0, span.index)
+                  const after = joined.slice(span.index + span.length)
+                  work = toWork(before + op.new.join("\n") + after)
+                  fallbackNotes.push(`OLD matched via ${span.tier} at line ${lineOf(span.index, joined)}`)
+                  continue
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e)
+                  if (msg.toLowerCase().includes("multiple matches")) {
+                    throw new Error(
+                      `ambiguous - the OLD block fragment matches several places; extend it with surrounding text to disambiguate`,
+                    )
+                  }
+                  const first = op.old[0]
+                  const similar = work.findIndex((l) => l === first)
+                  throw new Error(
+                    similar >= 0
+                      ? `no match for the OLD block - the first line matches line ${similar + 1} but the full block does not; copy the OLD block byte-exact from the read output (strip the \`N:\` prefix)`
+                      : `no match for \`${first.slice(0, 60)}\` in the file - copy the OLD block byte-exact from the read output (the file may have changed - re-read first)`,
+                  )
+                }
               }
               if (hits.length > 1) {
                 throw new Error(
@@ -309,6 +403,7 @@ export const EditTool = Tool.define(
               additions: 0,
               deletions: 0,
               noop: false,
+              fallbackNotes: [...fallbackNotes],
             })
           }
 
@@ -436,6 +531,57 @@ export const EditTool = Tool.define(
           yield* ctx.metadata({ metadata })
 
           let output = "Edit applied successfully."
+          // Location echo on EVERY path: the changed line ranges derived from
+          // the diff hunks, so the agent knows what actually changed even on
+          // byte-exact matches (where the fallback echo does not fire). The
+          // one-line summary is the cheap close of the exact-path feedback
+          // gap (upstream's feedback is the TUI + the next read; the model
+          // sees only the output text).
+          // Changed-position walk over the actual line diff (the patch
+          // hunks carry diff context - a small file renders as one whole-
+          // file hunk, which would misreport the ranges).
+          const changedPositions = (plan: Plan): string[] => {
+            const ranges: string[] = []
+            let pos = 1 // current line position in the NEW file
+            let start: number | null = null
+            let end = 0
+            for (const change of diffLines(plan.before, plan.after)) {
+              const count = change.count ?? 1
+              if (change.added) {
+                if (start === null) start = pos
+                end = pos + count - 1
+                pos += count
+              } else {
+                if (start !== null) {
+                  ranges.push(start === end ? `${start}` : `${start}-${end}`)
+                  start = null
+                }
+                if (!change.removed) pos += count // context advances the position
+              }
+            }
+            if (start !== null) ranges.push(start === end ? `${start}` : `${start}-${end}`)
+            return ranges
+          }
+          const lineSummary = (plan: Plan): string => {
+            const ranges = changedPositions(plan)
+            const rel = path.relative(instance.worktree, plan.targetPath)
+            const label = ranges.join(", ")
+            return ranges.length > 0 ? `${rel}: ${label} (+${plan.additions}/-${plan.deletions})` : `${rel}: no change`
+          }
+          const changedPlansOut = plans.filter((p) => !p.deleted && p.diff.length > 0)
+          if (changedPlansOut.length > 0) {
+            // Single-file edits omit the path (the title carries it)
+            const summaries = changedPlansOut.map(lineSummary)
+            output += "\nChanged lines: " + (changedPlansOut.length > 1 ? summaries.join("; ") : summaries[0].split(": ")[1])
+          }
+          // Ladder-fire echo: when any fallback tier matched (not byte-exact),
+          // the agent must also see the tier + the applied change - so a
+          // tolerated match on the wrong span is immediately visible and
+          // correctable.
+          const fallbacks = plans.flatMap((p) => p.fallbackNotes)
+          if (fallbacks.length > 0) {
+            output += `\nMatched with tolerance (not byte-exact): ${fallbacks.join("; ")}.\nApplied change:\n${diffs.join("\n")}`
+          }
           const touched = plans.filter((p) => !p.deleted)
           for (const plan of touched) {
             yield* lsp.touchFile(plan.targetPath, "document")
