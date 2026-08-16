@@ -112,20 +112,53 @@ describe("epoch helpers", () => {
     ]
     expect(findLastSummaryId(noSummary)).toBeNull()
     const withSummary = [
-      { info: { role: "assistant" as const, id: "msg_a", summary: true, time: { created: 100 } } as SessionV1.Assistant, parts: [] },
-      { info: { role: "assistant" as const, id: "msg_b", summary: true, time: { created: 200 } } as SessionV1.Assistant, parts: [] },
+      {
+        info: { role: "assistant" as const, id: "msg_a", summary: true, finish: "stop", time: { created: 100 } } as SessionV1.Assistant,
+        parts: [],
+      },
+      {
+        info: { role: "assistant" as const, id: "msg_b", summary: true, finish: "stop", time: { created: 200 } } as SessionV1.Assistant,
+        parts: [],
+      },
       { info: { role: "assistant" as const, id: "msg_c", time: { created: 300 } } as SessionV1.Assistant, parts: [] },
     ]
     expect(findLastSummaryId(withSummary)).toBe("msg_b")
   })
 
+  test("findLastSummaryId: an aborted summary (error, no finish) is not a boundary", () => {
+    const aborted = {
+      info: {
+        role: "assistant" as const,
+        id: "s_aborted",
+        summary: true,
+        error: { name: "MessageAbortedError" },
+        time: { created: 300 },
+      } as SessionV1.Assistant,
+      parts: [],
+    }
+    const completed = {
+      info: {
+        role: "assistant" as const,
+        id: "s_completed",
+        summary: true,
+        finish: "stop",
+        time: { created: 200 },
+      } as SessionV1.Assistant,
+      parts: [],
+    }
+    // The aborted finalize is chronologically NEWER than the completed
+    // summary: it must not win the boundary scan.
+    expect(findLastSummaryId([aborted, completed])).toBe("s_completed")
+    expect(findLastSummaryId([aborted])).toBeNull()
+  })
+
   test("findLastSummaryId: newest by created time wins regardless of array order", () => {
     const oldSummary = {
-      info: { role: "assistant" as const, id: "s_old", summary: true, time: { created: 100 } } as SessionV1.Assistant,
+      info: { role: "assistant" as const, id: "s_old", summary: true, finish: "stop", time: { created: 100 } } as SessionV1.Assistant,
       parts: [],
     }
     const newSummary = {
-      info: { role: "assistant" as const, id: "s_new", summary: true, time: { created: 200 } } as SessionV1.Assistant,
+      info: { role: "assistant" as const, id: "s_new", summary: true, finish: "stop", time: { created: 200 } } as SessionV1.Assistant,
       parts: [],
     }
     // Rendered-chain shape: [compaction pair at the front, ...tail with an
