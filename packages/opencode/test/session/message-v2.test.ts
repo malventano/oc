@@ -1795,6 +1795,51 @@ describe("session.message-v2.filterCompacted epochs", () => {
     expect(hasDelta(out)).toBe(true)
   })
 
+  test("an aborted summary does not advance the epoch-delta strip boundary", () => {
+    const { tailWithDelta, compactionUser, summaryAssistant, continueUser } = makeChain()
+    // A live-epoch delta rides a user message AFTER the last completed
+    // summary but BEFORE an aborted finalize (summary:true + error, no
+    // finish - the user cancelled the retain selection). The aborted
+    // finalize must not move the boundary past the delta: counting it
+    // strips the delta mid-chain and the request diverges from the cached
+    // prefix (full prefix miss on the next compaction prompt submission).
+    const deltaUser: SessionV1.WithParts = {
+      info: { ...userInfo("msg_epoch_delta_user"), time: { created: 350 } },
+      parts: [
+        { ...basePart("msg_epoch_delta_user", "p1"), type: "text", text: "mid" } as SessionV1.Part,
+        {
+          ...basePart("msg_epoch_delta_user", "pd"),
+          type: "text",
+          text: "<system-reminder>\nSystem context drift: instructions (AGENTS.md) changed\n</system-reminder>",
+          synthetic: true,
+          metadata: { epochDelta: true },
+        } as SessionV1.Part,
+      ],
+    }
+    const abortedSummary: SessionV1.WithParts = {
+      info: {
+        ...assistantInfo(MessageID.make("msg_epoch_aborted"), C),
+        time: { created: 450 },
+        summary: true,
+        error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+      } as SessionV1.Assistant,
+      parts: [],
+    }
+    const out = MessageV2.filterCompacted([
+      abortedSummary,
+      continueUser,
+      deltaUser,
+      summaryAssistant,
+      compactionUser,
+      tailWithDelta,
+    ])
+    expect(
+      out
+        .find((m) => m.info.id === "msg_epoch_delta_user")!
+        .parts.some((p) => p.type === "text" && p.metadata?.epochDelta),
+    ).toBe(true)
+  })
+
   test("undo past the compaction restores the delta parts (boundary reverts)", () => {
     const { tailWithDelta, continueUser } = makeChain()
     const out = MessageV2.filterCompacted([continueUser, tailWithDelta])
