@@ -1499,6 +1499,11 @@ TimeContext.stampUserMessages(msgs)
               tools,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
+              // Cap max_tokens to the window's remaining budget: at the
+              // auto-compaction trigger the context sits at window - output
+              // limit, so an uncapped summary turn (full output budget)
+              // exceeds the endpoint and falls back to the legacy method.
+              currentContextTokens: lastFinished?.tokens?.total,
             })
 
 
