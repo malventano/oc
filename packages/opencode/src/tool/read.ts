@@ -26,7 +26,9 @@ class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 // Schema output is identical (`type: "number"`), so the LLM view is
 // unchanged; purely CLI-facing uses must now send numbers rather than strings.
 export const Parameters = Schema.Struct({
-  filePath: Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
+  filePath: Schema.String.annotate({
+    description: "The path to the file or directory to read (absolute, or relative to the current project directory)",
+  }),
   offset: Schema.optional(Schema.Int).annotate({
     description:
       "The line number to start reading from (1-indexed). Negative = tail semantics: offset -50 reads the LAST 50 lines (limit defaults to the tail size in that case)",

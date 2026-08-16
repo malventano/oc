@@ -226,6 +226,39 @@ const fragmentFailureLLM = Layer.succeed(
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
 
+const streamingWriteLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolInputStart({ id: "call-1", name: "write" }),
+        LLMEvent.toolInputDelta({ id: "call-1", name: "write", text: '{"filePath":"/tmp/x.txt","' }),
+        LLMEvent.toolInputDelta({ id: "call-1", name: "write", text: 'content":"hello\\nworld"}' }),
+        LLMEvent.toolInputEnd({ id: "call-1", name: "write" }),
+        LLMEvent.toolCall({
+          id: "call-1",
+          name: "write",
+          input: { filePath: "/tmp/x.txt", content: "hello\nworld" },
+          providerExecuted: true,
+        }),
+        LLMEvent.toolResult({
+          id: "call-1",
+          name: "write",
+          result: { type: "text", value: "" },
+          providerExecuted: true,
+        }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ),
+  }),
+)
+const streamingWriteEnv = LayerNode.compile(
+  LayerNode.group([root, LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })]),
+  [...replacements, [LLM.node, streamingWriteLLM]],
+)
+const itStreamingWrite = testEffect(streamingWriteEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -865,6 +898,63 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
         expect(call.state.metadata).toEqual({ source: "test" })
         expect(call.state.time.start).toBeDefined()
         expect(call.state.time.end).toBeDefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+itStreamingWrite.live("session.processor effect tests stream raw tool input deltas to the client", () =>
+  provideTmpdirServer(
+    ({ dir }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+
+        // The raw tool-call JSON must reach the client as state.raw deltas
+        // (message.part.delta) so the TUI can render large inputs live.
+        const parts: string[] = []
+        const fields: string[] = []
+        const off = yield* events.listen((evt) => {
+          if (evt.type !== MessageV2.Event.PartDelta.type) return Effect.void
+          const data = evt.data as typeof MessageV2.Event.PartDelta.data.Type
+          fields.push(data.field)
+          parts.push(data.delta)
+          return Effect.void
+        })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "write a file")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "write a file" }],
+          tools: {},
+        })
+
+        yield* off
+
+        expect(value).toBe("continue")
+        expect(parts.length).toBe(2)
+        expect(fields).toStrictEqual(["state.raw", "state.raw"])
+        expect(parts.join("")).toBe('{"filePath":"/tmp/x.txt","content":"hello\\nworld"}')
       }),
     { config: (url) => providerCfg(url) },
   ),

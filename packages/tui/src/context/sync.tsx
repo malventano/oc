@@ -386,10 +386,16 @@ export const {
             "part",
             event.properties.messageID,
             produce((draft) => {
-              const part = draft[result.index]
-              const field = event.properties.field as keyof typeof part
-              const existing = part[field] as string | undefined
-              ;(part[field] as string) = (existing ?? "") + event.properties.delta
+              // Dotted fields target nested state (e.g. "state.raw" for
+              // streamed tool-call JSON); plain fields hit the top level.
+              const segments = event.properties.field.split(".")
+              let target: Record<string, unknown> = draft[result.index]
+              for (let i = 0; i < segments.length - 1; i++) {
+                target = target[segments[i]!] as Record<string, unknown>
+              }
+              const last = segments[segments.length - 1]!
+              const existing = target[last] as string | undefined
+              target[last] = (existing ?? "") + event.properties.delta
             }),
           )
           break
