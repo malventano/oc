@@ -1,0 +1,28 @@
+diff --git a/index.bun.js b/index.bun.js
+index 815856bd386617571e24bda7b45da694c731cd04..04618dbf142fd1f3dbea61871faf3bf4c4007a1d 100644
+--- a/index.bun.js
++++ b/index.bun.js
+@@ -5665,7 +5665,8 @@
+         lineNumberOffset: 0,
+         hideLineNumbers,
+         width,
+-        height: "100%"
++        height: "100%",
++        paddingRight: 2,
+       });
+       newSide.showLineNumbers = this._showLineNumbers;
+       super.add(newSide);
+diff --git a/index.node.js b/index.node.js
+index 0ddf03bf666a05f50c66bef32af65b1403ed0192..0a588048641713df6e233f79b95ab7f2b7f7de86 100644
+--- a/index.node.js
++++ b/index.node.js
+@@ -5664,7 +5664,8 @@
+         lineNumberOffset: 0,
+         hideLineNumbers,
+         width,
+-        height: "100%"
++        height: "100%",
++        paddingRight: 2,
+       });
+       newSide.showLineNumbers = this._showLineNumbers;
+       super.add(newSide);
