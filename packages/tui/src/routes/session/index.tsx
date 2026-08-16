@@ -2581,8 +2581,13 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
     // it yet = the opener is still streaming - everything stays bash.
     const lineEnd = text.indexOf("\n", op.end)
     if (lineEnd === -1) break
-    segs.push({ text: text.slice(cursor, lineEnd + 1), lang: "bash" })
-    const closer = new RegExp(`^${op.delim}(?=[\\s;|]|$)`, "gm")
+    // Trim the trailing newline from each segment: a code element whose
+    // content ends in "\n" renders a phantom EMPTY line, and its gutter
+    // shows one extra number (the "2" under a 1-line opener, the "50"
+    // under a 49-line body). The segments are separate code elements, so
+    // the newline carries no layout information - drop it.
+    segs.push({ text: text.slice(cursor, lineEnd), lang: "bash" })
+    const closer = new RegExp(`^${op.delim}(?=[\\s;]|$)`, "gm")
     closer.lastIndex = op.end
     const close = closer.exec(text)
     const bodyEnd = close ? close.index : text.length
@@ -2592,13 +2597,15 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
         HEREDOC_LANG[op.delim.toUpperCase()] ??
         sniffFiletype(body, 0) ??
         "bash"
-      segs.push({ text: body, lang })
+      // bodyEnd is the closer line's start, so the body ends with "\n".
+      segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang })
     }
     if (close) {
       // The closing delimiter line is shell syntax - render it as bash.
       const closeLineEnd = text.indexOf("\n", close.index)
+      const closerText = text.slice(close.index, closeLineEnd === -1 ? text.length : closeLineEnd + 1)
       segs.push({
-        text: text.slice(close.index, closeLineEnd === -1 ? text.length : closeLineEnd + 1),
+        text: closerText.endsWith("\n") ? closerText.slice(0, -1) : closerText,
         lang: "bash",
       })
       cursor = closeLineEnd === -1 ? text.length : closeLineEnd + 1
@@ -2608,6 +2615,12 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
     if (cursor === 0) cursor = text.length
     if (cursor >= text.length) break
   }
+  // The opener line was still streaming (no newline yet): no complete
+  // segment exists. Return undefined so the caller falls back to a single
+  // bash code element - an EMPTY array is truthy, and the segments branch
+  // would render an empty box (the block collapses to title-only while
+  // the opener streams in).
+  if (!segs.length) return undefined
   if (cursor < text.length) segs.push({ text: text.slice(cursor), lang: "bash" })
   return segs
 }
@@ -2633,6 +2646,15 @@ function LiveToolStream(props: {
           <code
             // key-less: opentui CodeProps has no key field; segments re-render in place
             filetype={seg.lang}
+            // drawUnstyledText={false} + streaming: the content setter
+            // defers to the async highlight, so the buffer keeps the LAST
+            // LANDED HIGHLIGHT (colored, one flush behind) - the same
+            // colored-as-it-streams behavior as the reasoning part. The
+            // flicker is NOT here: it was the EMPTY first frame on new
+            // segment mounts, fixed in opentui's
+            // ensureVisibleTextBeforeHighlight (0142) - initial streaming
+            // content now renders its raw text immediately instead of
+            // waiting for the first highlight.
             drawUnstyledText={false}
             streaming={true}
             syntaxStyle={syntax()}
@@ -2653,6 +2675,10 @@ function LiveToolStream(props: {
   ) : (
     <code
       {...(props.filetype ? { filetype: props.filetype } : {})}
+      // drawUnstyledText={false} + streaming: colored-as-it-streams (the
+      // buffer keeps the last landed highlight, one flush behind) - same
+      // as the segment branch and the reasoning part. The empty first
+      // frame is fixed in opentui (0142), not by flipping this flag.
       drawUnstyledText={false}
       streaming={true}
       syntaxStyle={syntax()}
