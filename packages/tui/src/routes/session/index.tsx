@@ -2525,6 +2525,12 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
   if (/^(?:const|let|var)\s+\w+\s*=\s*[\[\{\/\'"`(]/m.test(head)) return "javascript"
   if (/^function \w+\(/m.test(head)) return "javascript"
   if (/^\{/.test(firstLine) && /"\w+"\s*:/.test(head)) return "json"
+  // Markdown (heredoc docs with non-language delimiters like EOF, and
+  // prose writes): ATX headings, bullet/numbered lists, code fences,
+  // tables, blockquotes. Checked AFTER the code languages - comment-headed
+  // code still wins its real language (a "#" alone is a bash comment; the
+  // heading must be "##"+ or carry another marker).
+  if (/^(?:#{2,6}\s|[-*+]\s+|\d+\.\s|```|~~~|\|.*\||>\s)/m.test(head)) return "markdown"
   return undefined
 }
 
