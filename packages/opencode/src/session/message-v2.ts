@@ -680,7 +680,23 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   let newestSummaryIndex = -1
   for (let i = 0; i < chronological.length; i++) {
     const m = chronological[i]!
-    if (m.info.role !== "assistant" || m.info.summary !== true) continue
+    // Only a COMPLETED summary advances the boundary (same criteria as the
+    // walk's completed-set): an aborted compaction (cancelled summary turn
+    // or cancelled retain-selection finalize) leaves a summary:true message
+    // with an error and no finish. Counting it would jump the boundary past
+    // user messages that still carry live epoch deltas, stripping them
+    // mid-chain - the request bytes diverge from the cached prefix at that
+    // point and the entire remaining chain re-prefills (full prefix miss on
+    // the next compaction prompt submission, live 2026-08-16: cache.read
+    // dropped from 658K to 8.9K after a cancelled compaction).
+    if (
+      m.info.role !== "assistant" ||
+      m.info.summary !== true ||
+      !m.info.finish ||
+      m.info.error
+    ) {
+      continue
+    }
     if (virtualIds.has(m.info.parentID ?? "")) continue
     newestSummaryIndex = i
   }

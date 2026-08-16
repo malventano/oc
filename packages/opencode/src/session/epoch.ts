@@ -75,7 +75,16 @@ export function findLastSummaryId(msgs: SessionV1.WithParts[]): string | null {
   // after the newest one, which would wake the wrong (stale) epoch record.
   let newest: SessionV1.WithParts | undefined
   for (const m of msgs) {
-    if (m.info.role === "assistant" && m.info.summary === true) {
+    // Completed summaries only: an aborted compaction (cancelled summary
+    // turn or retain-selection finalize) leaves a summary:true message with
+    // an error and no finish - it must not reset the epoch boundary, or
+    // live deltas on user messages after the last real summary go stale.
+    if (
+      m.info.role === "assistant" &&
+      m.info.summary === true &&
+      m.info.finish &&
+      !m.info.error
+    ) {
       if (!newest || isAfter(m.info, newest.info)) newest = m
     }
   }

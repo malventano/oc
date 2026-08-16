@@ -8,7 +8,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
-import { SessionCompaction, hasNewerPrompt } from "../../src/session/compaction"
+import { SessionCompaction, hasAbortedCompaction, hasNewerPrompt } from "../../src/session/compaction"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -2493,5 +2493,49 @@ describe("hasNewerPrompt", () => {
   test("true with mixed later messages including a real prompt", () => {
     const messages = [marker("msg_2"), msg("msg_3", "assistant"), msg("msg_4", "user")]
     expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(true)
+  })
+})
+
+describe("hasAbortedCompaction", () => {
+  const msg = (id: string, role: "user" | "assistant", parts: SessionV1.Part[] = [], extra: Record<string, unknown> = {}) =>
+    ({ info: { id, role, ...extra }, parts }) as unknown as SessionV1.WithParts
+  const marker = (id: string) => msg(id, "user", [{ type: "compaction" } as SessionV1.Part])
+
+  test("false when no compaction marker exists", () => {
+    expect(hasAbortedCompaction([msg("msg_1", "user")])).toBe(false)
+  })
+
+  test("false when the marker completed cleanly (no errored children)", () => {
+    const messages = [
+      marker("msg_m"),
+      msg("msg_s", "assistant", [], { parentID: "msg_m", summary: true, finish: "stop" }),
+    ]
+    expect(hasAbortedCompaction(messages)).toBe(false)
+  })
+
+  test("true when the retain-selection finalize was cancelled (summary:true + error)", () => {
+    const messages = [
+      marker("msg_m"),
+      msg("msg_s", "assistant", [], { parentID: "msg_m", summary: true, error: { name: "MessageAbortedError" } }),
+    ]
+    expect(hasAbortedCompaction(messages)).toBe(true)
+  })
+
+  test("true when the summary turn itself was aborted (errored child, no summary)", () => {
+    const messages = [
+      marker("msg_m"),
+      msg("msg_t", "assistant", [], { parentID: "msg_m", error: { name: "MessageAbortedError" } }),
+    ]
+    expect(hasAbortedCompaction(messages)).toBe(true)
+  })
+
+  test("false when the errored child belongs to an OLDER marker (newest completed)", () => {
+    const messages = [
+      marker("msg_m_old"),
+      msg("msg_s_old", "assistant", [], { parentID: "msg_m_old", error: { name: "MessageAbortedError" } }),
+      marker("msg_m_new"),
+      msg("msg_s_new", "assistant", [], { parentID: "msg_m_new", summary: true, finish: "stop" }),
+    ]
+    expect(hasAbortedCompaction(messages)).toBe(false)
   })
 })

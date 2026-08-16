@@ -43,6 +43,26 @@ export const hasNewerPrompt = (messages: SessionV1.WithParts[], parentID: Messag
     (m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction") && m.info.id > parentID,
   )
 
+// A compaction attempt is ABORTED when the newest compaction marker has an
+// errored child assistant message: the summary turn itself (no summary was
+// produced) or the retain-selection finalize (summary text exists, no tail)
+// was cancelled/interrupted by the user. The cancel is an explicit "do not
+// compact" signal - the auto-compaction trigger must not re-fire on the
+// next loop iteration, or the user is stuck in a cancel/retrigger cascade:
+// the context stays over the threshold (the compaction never completed) and
+// the orphaned summary text lacks the summary flag, so the normal overflow
+// check would recreate a marker every iteration. Live 2026-08-16: three
+// auto-compactions fired in four minutes after one cancelled finalize.
+export function hasAbortedCompaction(messages: SessionV1.WithParts[]): boolean {
+  const newestMarker = messages.findLast(
+    (m) => m.info.role === "user" && m.parts.some((p): p is SessionV1.CompactionPart => p.type === "compaction"),
+  )
+  if (!newestMarker) return false
+  return messages.some(
+    (s) => s.info.role === "assistant" && s.info.error && s.info.parentID === newestMarker.info.id,
+  )
+}
+
 // Appended to the injected summary prompt of the "inject" compaction method.
 // The method runs the summary turn through the normal agent loop with the
 // session's real tool schemas (required for prefix-cache byte identity), so
@@ -346,7 +366,10 @@ const layer = Layer.effect(
         const msg = msgs[msgIndex]
         if (msg.info.role === "user") turns++
         if (turns < 2) continue
-        if (msg.info.role === "assistant" && msg.info.summary) break loop
+        // Completed summaries only: an aborted compaction's summary:true
+        // message carries an error and no finish - it must not stop the
+        // prune scan early (its orphaned tool outputs stay prunable).
+        if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error) break loop
         for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
           const part = msg.parts[partIndex]
           if (part.type !== "tool") continue
