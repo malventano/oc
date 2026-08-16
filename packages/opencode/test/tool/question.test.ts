@@ -1,7 +1,7 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Fiber, Queue } from "effect"
-import { QuestionTool } from "../../src/tool/question"
+import { Effect, Fiber, Queue, Schema } from "effect"
+import { DecodeParameters, QuestionTool } from "../../src/tool/question"
 import { Question } from "../../src/question"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Agent } from "../../src/agent/agent"
@@ -94,6 +94,43 @@ describe("tool.question", () => {
       expect(replied?.answers).toEqual([["Dog"]])
     }),
   )
+
+  test("decodes a stringified questions payload (0134)", () => {
+    const questions = [
+      {
+        question: "What is your favorite color?",
+        header: "Color",
+        options: [
+          { label: "Red", description: "The color of passion" },
+          { label: "Blue", description: "The color of sky" },
+        ],
+        multiple: false,
+      },
+    ]
+    const decode = Schema.decodeUnknownSync(DecodeParameters, { onExcessProperty: "error" })
+    const parsed = decode({ questions: JSON.stringify(questions) })
+    expect(parsed.questions.length).toBe(1)
+    expect(parsed.questions[0]!.question).toBe("What is your favorite color?")
+  })
+
+  test("decodes a native array payload unchanged (0134)", () => {
+    const questions = [
+      {
+        question: "What is your favorite color?",
+        header: "Color",
+        options: [{ label: "Red", description: "The color of passion" }],
+        multiple: false,
+      },
+    ]
+    const decode = Schema.decodeUnknownSync(DecodeParameters, { onExcessProperty: "error" })
+    const parsed = decode({ questions })
+    expect(parsed.questions.length).toBe(1)
+  })
+
+  test("malformed stringified payload fails with the JSON.parse hint (0134)", () => {
+    const decode = Schema.decodeUnknownSync(DecodeParameters, { onExcessProperty: "error" })
+    expect(() => decode({ questions: "{not json" })).toThrow(/failed JSON\.parse/)
+  })
 
   // intentionally removed the zod validation due to tool call errors, hoping prompting is gonna be good enough
   //   test("should throw an Error for header exceeding 30 characters", async () => {

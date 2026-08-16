@@ -244,7 +244,7 @@ exports[`tool parameters JSON Schema (wire shape) read 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "filePath": {
-      "description": "The absolute path to the file or directory to read",
+      "description": "The path to the file or directory to read (absolute, or relative to the current project directory)",
       "type": "string",
     },
     "limit": {
@@ -439,13 +439,13 @@ exports[`tool parameters JSON Schema (wire shape) write 1`] = `
       "type": "string",
     },
     "filePath": {
-      "description": "The absolute path to the file to write (must be absolute, not relative)",
+      "description": "The path to the file to write (absolute, or relative to the current project directory)",
       "type": "string",
     },
   },
   "required": [
-    "content",
     "filePath",
+    "content",
   ],
   "type": "object",
 }
