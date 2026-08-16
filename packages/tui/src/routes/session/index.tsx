@@ -2327,7 +2327,15 @@ function Shell(props: ToolProps) {
           content={stream.display()}
           filetype="bash"
           gutter={stream.display().includes("\n")}
-          segments={heredocSegments(stream.display())}
+          // segments={undefined}: the segmented branch mounts per-segment
+          // code elements; a mount paints its buffer at the pre-layout
+          // width (0), wrapping content to 1-char lines - the mid-stream
+          // '1 p'/'1 d' collapse. The streaming content setter only
+          // requestRenders (no buffer write), so the collapsed buffer
+          // persists until the last highlight lands. Stream as a single
+          // bash element (stable, colored); the completed view below
+          // switches to the segmented render.
+          segments={undefined}
         />
       </Match>
       <Match when={stringValue(props.metadata.output) !== undefined}>
