@@ -299,7 +299,12 @@ export default {
     {
       filetype: "diff",
       aliases: ["udiff", "patch"],
-      wasm: "https://github.com/tree-sitter-grammars/tree-sitter-diff/releases/download/v0.1.0/tree-sitter-diff.wasm",
+      // v0.2.0 (2026-08-14) REQUIRED: the master queries reference nodes
+      // added after v0.1.0 (2025-10-29) - change, comment, dissimilarity,
+      // payload, size, special (binary patches, dissimilarity headers,
+      // normal-diff change markers). v0.1.0 + master queries = query
+      // compile failure -> "initialization error" -> plain-text fallback.
+      wasm: "https://github.com/tree-sitter-grammars/tree-sitter-diff/releases/download/v0.2.0/tree-sitter-diff.wasm",
       queries: {
         highlights: [
           "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-diff/2520c3f934b3179bb540d23e0ef45f75304b5fed/queries/highlights.scm",

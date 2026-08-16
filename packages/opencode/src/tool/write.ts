@@ -18,10 +18,14 @@ import * as Bom from "@/util/bom"
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
 export const Parameters = Schema.Struct({
-  content: Schema.String.annotate({ description: "The content to write to the file" }),
+  // filePath FIRST: models emit tool args in schema order, and the TUI's
+  // live streaming view resolves the target file's language from the
+  // streamed filePath - with content first, the path lands as the last
+  // ~30 chars of the stream and the live highlight can't start until then.
   filePath: Schema.String.annotate({
-    description: "The absolute path to the file to write (must be absolute, not relative)",
+    description: "The path to the file to write (absolute, or relative to the current project directory)",
   }),
+  content: Schema.String.annotate({ description: "The content to write to the file" }),
 })
 
 export const WriteTool = Tool.define(
