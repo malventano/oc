@@ -2974,33 +2974,128 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
 // While a tool call streams, its block must only GROW - transient
 // mid-stream content re-shapes (extraction jitter, heredoc re-split, diff
 // column re-layout) can otherwise SHRINK the block one frame and the whole
-// layout jumps backward. The clamp is the max content ROW COUNT seen so
-// far, a PURE computation from the streamed text - deliberately NOT a
-// renderable-height measurement, which can latch a transiently-tall
-// layout/buffer state as the min and balloon the block (a write once
-// jumped to fill the whole viewport - 0165 rework). On completion
-// (streaming=false) the clamp releases and the final render jumps to the
-// true final height (the allowed transition - the completed view is a
-// fresh block anyway). Rows = a PURE row-count driver computed by the
-// caller: the logical line count for wrapMode="none" content (each line is
-// one row) or a WRAP-AWARE per-line estimate for wrapping content (the
-// edit diff 0174 and the write/bash streaming paths 0178 - a long wrapped
-// line's rendered height exceeds the logical line count, and a
-// logical-only clamp never captured it, so the block shrank mid-stream).
-// The estimate is stable (never a renderable-height measurement), so the
-// clamp holds the max wrapped height and only wrap-width-collapse flashes
-// (0165, the transient width feeding the native measure for one frame) can
-// beat it.
-function GrowOnly(props: { streaming: boolean; rows: number; children: JSX.Element }) {
+// layout jumps backward. On completion (streaming=false) the clamp
+// releases and the final render jumps to the true final height (the
+// allowed transition - the completed view is a fresh block anyway).
+//
+// The rows driver went through three generations:
+//   - 0165: logical line count (a PURE text computation). Held exactly for
+//     wrapMode="none" content but could NOT capture a wrapped line's many
+//     rows - the block shrank mid-stream when the wrap re-flowed.
+//   - 0174/0178: a WRAP-AWARE per-line estimate (ceil(line.length /
+//     codeWidth)) at a width computed from the message width. This tracks
+//     the natural wrapped height within +/-2-7 rows but the word-wrap
+//     natural (breaks only at word boundaries) does NOT equal the char-wrap
+//     estimate, and the estimated width is never exactly the laid-out
+//     width - so the clamp oscillated around the natural: when it latched
+//     an overshoot the block held extra empty lines at the bottom while
+//     streaming (live catch 2026-08-17 - the 3-4 trailing LF's).
+//   - 0179: MEASURE the streaming code element's laid-out height per flush
+//     (getLayoutNode().getComputedLayout()) - the natural wrapped height
+//     exactly - and clamp on the max legitimate observation. A
+//     measurement is legitimate only while the element's laid-out width is
+//     not transiently COLLAPSED (0165: a layout re-flow can briefly shrink
+//     the width toward 1-3 chars and the text wraps into a tall spike; the
+//     element widths here are content-intrinsic up to the fixed 50% column
+//     max, so a legit frame's width never drops sharply). The gate (a
+//     frame's width must not drop below 75% of the previous legitimate
+//     width) skips collapse frames so a flash artifact cannot balloon the
+//     clamp (the 0165 trap); the flash itself (one frame taller than the
+//     clamp) remains the documented OPEN risk.
+function GrowOnly(props: { rows: number; children: JSX.Element }) {
   const [maxRows, setMaxRows] = createSignal(0)
   createEffect(() => {
     if (props.rows > maxRows()) setMaxRows(props.rows)
   })
+  // minHeight is applied for the ENTIRE life of the live view, not only
+  // while streaming (0179): the tool's input stream can end (streaming ->
+  // running) BEFORE the final render lands, and a content re-section at that
+  // boundary (the NEW: marker landing, moving lines from the left to the
+  // right column) settles the natural height below the peak the block
+  // opened at - releasing the clamp there made the block SHRINK before the
+  // completed view replaced it (user's live catch 2026-08-17: "it should
+  // only ever be able to shrink below its initial size at the end of the
+  // turn, when the final render is present"). The clamp holds the peak for
+  // the whole mount and is gone when the live view unmounts (the completed
+  // render is a fresh block anyway).
   return (
-    <box minHeight={props.streaming ? maxRows() : undefined} flexShrink={0}>
+    <box minHeight={maxRows()} flexShrink={0}>
       {props.children}
     </box>
   )
+}
+
+// Measured grow-only rows (0179): read each streaming code element's
+// laid-out height - the natural wrapped height exactly - and return the
+// taller column's current legitimate height. The GrowOnly clamp latches the
+// max over time, so the block tracks the natural without the +/-2-7 row
+// oscillation of the char-wrap estimate (the extra empty lines).
+//
+// getElements() returns a map of side -> code element (mounted once the
+// content exists); trigger() is a reactive value read each flush (the
+// content) so the caller's effect re-runs.
+//
+// SAMPLING is done on TWO paths so the clamp never lags the rendered
+// height (the source of the left->right column-handoff drop the user
+// caught on video): the Solid-effect read runs BEFORE the renderer's layout
+// pass and returns the previous frame's layout (one frame behind the block
+// the user sees), so the peak a transient left-column wrap reached was not
+// latched and the block dropped to the settled content when the NEW: marker
+// re-sectioned the columns. The mount-once 10ms interval samples AFTER a
+// render frame, returning the CURRENT laid-out height - the true rendered
+// peak - and latches it. The returned value is the max observed, so the
+// clamp holds the block at its peak for the whole live view (it can only
+// settle at the final render, when the live view unmounts).
+//
+// The gate (per side): a sample is legitimate only while the element's
+// laid-out width does not DROP below 75% of its previous legitimate width -
+// the transient wrap-width collapse (0165) shrinks the intrinsic width
+// toward 1-3 chars mid re-flow and the text wraps into a tall spike;
+// latching that height would balloon the clamp (the 0165 trap). Legit width
+// changes are content-intrinsic growth, so they never drop sharply. The
+// flash (one frame above the clamp) remains the documented OPEN risk.
+function measuredGrowRows(
+  getElements: () => Record<string, any>,
+  trigger: () => void,
+): { current: () => number; widths: () => Record<string, number> } {
+  const prevWidth: Record<string, number> = {}
+  const widths = {} as Record<string, number>
+  const [rows, setRows] = createSignal(0)
+  const sample = () => {
+    let h = 0
+    for (const side of Object.keys(getElements())) {
+      const el = getElements()[side]
+      let l: any
+      try {
+        l = el?.getLayoutNode?.()?.getComputedLayout?.()
+      } catch {}
+      if (!l || !(l.width > 1) || !(l.height > 0)) continue
+      widths[side] = l.width
+      const prev = prevWidth[side]
+      if (prev === undefined || l.width >= prev * 0.75) {
+        prevWidth[side] = l.width
+        if (l.height > h) h = l.height
+      }
+    }
+    if (h > rows()) setRows(h)
+  }
+  // Solid-effect sampling (content-keyed; the layout read lags a frame but
+  // provides the baseline for the very first frames).
+  createEffect(() => {
+    void trigger()
+    sample()
+  })
+  // Mount-once post-render sampling: runs after render frames, so the
+  // layout read is the CURRENT rendered height - the true peak gets latched
+  // even when a transient wrap (the width settle) was taller than what the
+  // lagged Solid read saw. The interval is NOT content-keyed (a keyed
+  // effect re-runs on every delta and clears the interval before it fires
+  // on a fast local stream).
+  createEffect(() => {
+    const id = setInterval(sample, 10)
+    onCleanup(() => clearInterval(id))
+  })
+  return { current: rows, widths: () => prevWidth }
 }
 
 function LiveToolStream(props: {
@@ -3044,24 +3139,34 @@ function LiveToolStream(props: {
   // split). The estimate is STABLE (no transient layout measurement - the
   // 0165 balloon trap).
   const codeWidth = createMemo(() => Math.max(20, use().width - (showGutter() ? 6 : 2)))
-  // Wrap-aware row count: the grow-only clamp must track the WRAPPED
-  // height, not the logical line count - a long line wraps to many rows,
-  // the wrap re-flows as the content changes, and a logical-only clamp
-  // never captured the wrapped height (the block SHRANK mid-stream - the
-  // same bug the user caught on the edit diff, 2026-08-17, fixed 0174).
-  // With wrapping restored on this path (0178) the wrap-aware driver is
-  // required the same way.
   const wrappedRows = (text: string) => {
     if (text.length === 0) return 0
     return text
       .split("\n")
       .reduce((acc, line) => acc + Math.max(1, Math.ceil(line.length / codeWidth())), 0)
   }
+  // Measured grow-only driver (0179): the clamp tracks the code element's
+  // laid-out height (the natural wrapped height exactly) instead of the
+  // char-wrap estimate (codeWidth/wrappedRows above remain only for the
+  // segments fallback path). The width-collapse gate (measuredGrowRows)
+  // skips the 0165 flash frames so a transient artifact cannot balloon the
+  // clamp. The single element is measured; the unused segments path falls
+  // back to the estimate.
+  const streamEls: { el?: any } = {}
+  const measured = measuredGrowRows(() => streamEls, () => props.content)
+  const rows = () => (props.segments ? wrappedRows(props.content) : measured.current())
   // The single streaming code element - the SAME object in both gutter
   // branches (see below), so the line_number mount never recreates it.
   const singleEl = (
     <code
+      ref={(el: any) => {
+        streamEls.el = el
+      }}
       {...(props.filetype ? { filetype: props.filetype } : {})}
+      // width="100%" (0179): wrap at the block's final width from the first
+      // frame (no content-intrinsic width settle, so the natural height is
+      // monotonic - see the LiveEditDiff note).
+      width="100%"
       // drawUnstyledText={false} + streaming: colored-as-it-streams
       // (the buffer keeps the last landed highlight, one flush
       // behind) - same as the segment branch and the reasoning part.
@@ -3138,7 +3243,7 @@ function LiveToolStream(props: {
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
       <Show when={props.content.length > 0}>
-        <GrowOnly streaming={props.streaming} rows={wrappedRows(props.content)}>
+        <GrowOnly rows={rows()}>
           {code}
         </GrowOnly>
       </Show>
@@ -3566,25 +3671,20 @@ function LiveEditDiff(props: {
   const lang = () => props.filetype
   // The block's height driver is the two columns (the parsed OLD/NEW lines),
   // not the raw patch text - clamp on the taller column. The columns WRAP
-  // (0169) while streaming, so the clamp must track the WRAPPED row count,
-  // not the logical line count: a long line wraps to many rows, the wrap
-  // re-flows as the content changes, and a logical-only clamp never captured
-  // the wrapped height - the block shrank mid-stream (live catch, 2026-08-17,
-  // the manifest edit). Estimate per-line wrapped rows against the column's
-  // code width (the message width from use().width minus the 50/50 split,
-  // gutters and padding); the estimate is stable (no transient layout
-  // measurement - the 0165 balloon trap) and close to the real render, so
-  // the clamp holds the block at its max wrapped height through the stream.
-  // The transient wrap-WIDTH collapse (0165, a ~1-3 char re-flow width) can
-  // still beat the clamp for one frame - the documented open flash risk.
-  const diffColWidth = createMemo(() => Math.max(20, Math.floor((use().width - 12) / 2)))
-  const wrappedRows = (text: string) => {
-    if (text.length === 0) return 0
-    return text
-      .split("\n")
-      .reduce((acc, line) => acc + Math.max(1, Math.ceil(line.length / diffColWidth())), 0)
-  }
-  const rows = createMemo(() => Math.max(wrappedRows(left()), wrappedRows(right())))
+  // (0169) while streaming. Driver generations: the logical line count
+  // (0165) could not capture wrapped rows (the shrink); the char-wrap
+  // per-line estimate (0174/0178) tracked the natural within +/-2-7 rows
+  // but word-wrap does not equal char-wrap and the estimated width is never
+  // exactly the laid-out width - its latched overshoots held extra empty
+  // lines at the bottom of the block while streaming (live catch
+  // 2026-08-17, the 3-4 trailing LF's). 0179 MEASURES the code elements'
+  // laid-out heights (the natural wrapped height exactly) per flush and
+  // clamps on the max legitimate observation (measuredGrowRows gates out
+  // the 0165 transient width-collapse frames so a flash artifact cannot
+  // balloon the clamp).
+  const els: { left?: any; right?: any } = {}
+  const measured = measuredGrowRows(() => els, () => props.content)
+  const rows = createMemo(() => measured.current())
   // STEP 2 ladder: the line arrays + the diff anchor. The anchor is the
   // first index where OLD[i] !== NEW[i] (or the shorter length when one
   // column is a prefix of the other). Only moves forward as the stream
@@ -3614,7 +3714,7 @@ function LiveEditDiff(props: {
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
       <Show when={props.content.length > 0}>
-        <GrowOnly streaming={props.streaming} rows={rows()}>
+        <GrowOnly rows={rows()}>
           <box flexDirection="row">
             <box width="50%" paddingRight={1}>
               {/* Block-relative line numbers (1..N per column; the step-2
@@ -3625,7 +3725,20 @@ function LiveEditDiff(props: {
                   snap at completion. */}
               <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={leftColors()}>
                 <code
+                  ref={(el: any) => {
+                    els.left = el
+                  }}
                   {...(lang() ? { filetype: lang() } : {})}
+                  // width="100%" (0179): the streaming code element must wrap
+                  // at its FINAL column width from the first frame. Without it
+                  // the element's width is content-intrinsic (W6->W31->W80 as
+                  // content lands), so the content wraps at transiently narrow
+                  // widths during the settle and the natural height is
+                  // non-monotonic - the block flashed tall then dropped (the
+                  // left->right column-handoff shrink the user caught on
+                  // video) and the clamp latched the settle peaks as blank
+                  // lines at the bottom. The completed diff uses width="100%".
+                  width="100%"
                   drawUnstyledText={false}
                   streaming={true}
                   syntaxStyle={syntax()}
@@ -3638,7 +3751,11 @@ function LiveEditDiff(props: {
             <box width="50%">
               <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={rightColors()}>
                 <code
+                  ref={(el: any) => {
+                    els.right = el
+                  }}
                   {...(lang() ? { filetype: lang() } : {})}
+                  width="100%"
                   drawUnstyledText={false}
                   streaming={true}
                   syntaxStyle={syntax()}
