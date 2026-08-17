@@ -1642,7 +1642,7 @@ function VirtualCompactionBlock(props: { message: AssistantMessage; parts: Part[
         customBorderChars={SplitBorder.customBorderChars}
         borderColor={theme.backgroundPanel}
       >
-        <box paddingTop={1} paddingBottom={1} paddingLeft={2} backgroundColor={theme.backgroundPanel}>
+        <box paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2} backgroundColor={theme.backgroundPanel}>
           <text fg={theme.textMuted}>{note()}</text>
         </box>
       </box>
@@ -1721,6 +1721,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           paddingTop={1}
           paddingBottom={1}
           paddingLeft={2}
+          paddingRight={2}
           marginTop={1}
           backgroundColor={theme.backgroundPanel}
           customBorderChars={SplitBorder.customBorderChars}
@@ -1880,7 +1881,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
   const { theme, syntax } = useTheme()
   return (
     <Show when={props.part.text.trim()}>
-      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
+      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
         <markdown
           syntaxStyle={syntax()}
           streaming={true}
@@ -3176,7 +3177,7 @@ function Execute(props: ToolProps) {
         {content()}
       </InlineTool>
       <Show when={showOutput()}>
-        <box paddingLeft={3}>
+        <box paddingLeft={3} paddingRight={2}>
           <For each={outputPreview().split("\n")}>
             {(line, index) => (
               <text paddingLeft={3} fg={theme.error}>
