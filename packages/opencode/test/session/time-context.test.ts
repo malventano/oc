@@ -86,7 +86,7 @@ describe("TimeContext.stampSquashHint", () => {
     const output = { output: "x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS + 1) }
     TimeContext.stampSquashHint(output)
     expect(output.output).toMatch(
-      /^x+\n\n<system-reminder>Very large tool output \(\d+ chars, ~\d+ tokens\)\. If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it\.<\/system-reminder>$/,
+      /^x+\n\n<system-reminder>Very large tool output \(\d+ chars, ~\d+ tokens\)\. If you won't reference it again, call squash-output NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it\.<\/system-reminder>$/,
     )
   })
 
