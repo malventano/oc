@@ -21,6 +21,74 @@
    }
    get diff() {
      return this._diff;
+@@ -11436,6 +11437,13 @@
+   _stickyStart;
+   _hasManualScroll = false;
+   _isApplyingStickyScroll = false;
++  // Manual-scroll anchor (0168): while the user is scrolled back, the
++  // viewport top is anchored to the first child overlapping it. When
++  // content ABOVE that child changes height (e.g. a large block above the
++  // viewport registers its real height as it comes into view), scrollTop
++  // is shifted by the child's y-delta so the visible content never jumps.
++  _manualAnchorChild = null;
++  _manualAnchorOffset = 0;
+   scrollAccel;
+   get stickyScroll() {
+     return this._stickyScroll;
+@@ -11624,6 +11632,7 @@
+       orientation: "vertical",
+       onChange: (position) => {
+         this.content.translateY = -position;
++        this._captureManualAnchor(position);
+         this.updateStickyState();
+       }
+     });
+@@ -11929,12 +11938,45 @@
+       return this.autoScrollSpeedSlow;
+     }
+   }
++  _captureManualAnchor(position) {
++    // Reads the yoga computed layout (settled positions) rather than the
++    // lazily-synced renderable .y, so a capture during a layout pass (the
++    // anchor re-capture after a shift) still lands on the current values.
++    const children = this.content.getChildrenSortedByPrimaryAxis();
++    for (let i = 0; i < children.length; i++) {
++      const child = children[i];
++      const layout = child.getLayoutNode().getComputedLayout();
++      if (layout.top + layout.height > position) {
++        this._manualAnchorChild = child;
++        this._manualAnchorOffset = position - layout.top;
++        return;
++      }
++    }
++    this._manualAnchorChild = null;
++  }
+   recalculateBarProps() {
+     const wasApplyingStickyScroll = this._isApplyingStickyScroll;
+     this._isApplyingStickyScroll = true;
+     try {
++      // Block-anchored manual scroll (0168): remember where the anchored
++      // child sat BEFORE the layout that triggered this call, so the shift
++      // below can keep the visible content fixed.
++      const anchor = this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed
++        ? { child: this._manualAnchorChild, offset: this._manualAnchorOffset }
++        : null;
+       this.verticalScrollBar.scrollSize = this.content.height;
+       this.verticalScrollBar.viewportSize = this.viewport.height;
++      if (anchor) {
++        // If content ABOVE the anchor changed height (a large block above
++        // the viewport registered its real height as it came into view),
++        // shift scrollTop by the anchor's y-delta so the viewport content
++        // stays put instead of jumping downward. The scrollPosition setter
++        // re-fires onChange, which re-captures the anchor at the new spot.
++        const target = anchor.child.getLayoutNode().getComputedLayout().top + anchor.offset;
++        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++          this.verticalScrollBar.scrollPosition = target;
++        }
++      }
+       this.horizontalScrollBar.scrollSize = this.content.width;
+       this.horizontalScrollBar.viewportSize = this.viewport.width;
+       if (this._stickyScroll) {
 --- a/index.node.js
 +++ b/index.node.js
 @@ -5664,7 +5664,8 @@
@@ -44,6 +112,74 @@
    }
    get diff() {
      return this._diff;
+@@ -11435,6 +11436,13 @@
+   _stickyStart;
+   _hasManualScroll = false;
+   _isApplyingStickyScroll = false;
++  // Manual-scroll anchor (0168): while the user is scrolled back, the
++  // viewport top is anchored to the first child overlapping it. When
++  // content ABOVE that child changes height (e.g. a large block above the
++  // viewport registers its real height as it comes into view), scrollTop
++  // is shifted by the child's y-delta so the visible content never jumps.
++  _manualAnchorChild = null;
++  _manualAnchorOffset = 0;
+   scrollAccel;
+   get stickyScroll() {
+     return this._stickyScroll;
+@@ -11623,6 +11631,7 @@
+       orientation: "vertical",
+       onChange: (position) => {
+         this.content.translateY = -position;
++        this._captureManualAnchor(position);
+         this.updateStickyState();
+       }
+     });
+@@ -11928,12 +11937,45 @@
+       return this.autoScrollSpeedSlow;
+     }
+   }
++  _captureManualAnchor(position) {
++    // Reads the yoga computed layout (settled positions) rather than the
++    // lazily-synced renderable .y, so a capture during a layout pass (the
++    // anchor re-capture after a shift) still lands on the current values.
++    const children = this.content.getChildrenSortedByPrimaryAxis();
++    for (let i = 0; i < children.length; i++) {
++      const child = children[i];
++      const layout = child.getLayoutNode().getComputedLayout();
++      if (layout.top + layout.height > position) {
++        this._manualAnchorChild = child;
++        this._manualAnchorOffset = position - layout.top;
++        return;
++      }
++    }
++    this._manualAnchorChild = null;
++  }
+   recalculateBarProps() {
+     const wasApplyingStickyScroll = this._isApplyingStickyScroll;
+     this._isApplyingStickyScroll = true;
+     try {
++      // Block-anchored manual scroll (0168): remember where the anchored
++      // child sat BEFORE the layout that triggered this call, so the shift
++      // below can keep the visible content fixed.
++      const anchor = this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed
++        ? { child: this._manualAnchorChild, offset: this._manualAnchorOffset }
++        : null;
+       this.verticalScrollBar.scrollSize = this.content.height;
+       this.verticalScrollBar.viewportSize = this.viewport.height;
++      if (anchor) {
++        // If content ABOVE the anchor changed height (a large block above
++        // the viewport registered its real height as it came into view),
++        // shift scrollTop by the anchor's y-delta so the viewport content
++        // stays put instead of jumping downward. The scrollPosition setter
++        // re-fires onChange, which re-captures the anchor at the new spot.
++        const target = anchor.child.getLayoutNode().getComputedLayout().top + anchor.offset;
++        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++          this.verticalScrollBar.scrollPosition = target;
++        }
++      }
+       this.horizontalScrollBar.scrollSize = this.content.width;
+       this.horizontalScrollBar.viewportSize = this.viewport.width;
+       if (this._stickyScroll) {
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -2986,6 +2986,7 @@
