@@ -403,7 +403,11 @@ export function Session() {
     if (info.role !== "assistant" || !info.time.completed) return
     if (restartFired.has(info.id)) return
     const parts = sync.data.part[info.id] ?? []
-    const tool = parts.find((p) => p.type === "tool" && p.tool === "restart" && p.state.status === "completed")
+    // Type-guard predicate: .find returns the un-narrowed Part union, and
+    // the property access below needs the ToolPart variant.
+    const tool = parts.find(
+      (p): p is ToolPart => p.type === "tool" && p.tool === "restart" && p.state.status === "completed",
+    )
     if (!tool) return
     restartFired.add(info.id)
     const reason = (tool.state.input as { reason?: string } | undefined)?.reason
