@@ -27,6 +27,7 @@ import { SPINNER_FRAMES, Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
+import { formatCount, liveTokensForSteps, turnSteps } from "../../component/prompt/turn-stats"
 import type {
   AssistantMessage,
   Part,
@@ -1743,6 +1744,60 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     return props.message.time.completed - user.time.created
   })
 
+  // Live agent-footer counter for the active turn: the last assistant
+  // message's ▣ line ticks the elapsed time (100ms / tenths) and counts up
+  // the whole turn's reasoning/output tokens (real for completed steps,
+  // streamed-text estimates for the in-flight one). Liveness comes from the
+  // session status ("busy" covers streaming AND tool-execution gaps where no
+  // step is mid-stream), OR'd with this step being in flight so the counter
+  // starts the instant the stream begins. On completion the numbers snap to
+  // the turn's final totals (all steps back to the root user prompt,
+  // including tool calls).
+  const isInFlight = createMemo(() => !props.message.time.completed)
+  const turnActive = createMemo(() => {
+    const status = sync.data.session_status?.[props.message.sessionID]?.type
+    if (status !== undefined && status !== "idle") return true
+    return isInFlight()
+  })
+  const showLive = createMemo(() => turnActive() && props.last)
+  const turnStepsMemo = createMemo(() => turnSteps(messages(), props.message.parentID))
+  const turnLive = createMemo(() => liveTokensForSteps(turnStepsMemo(), (id) => sync.data.part[id]))
+  // Tool call count for the turn, from the DB-loaded parts (same source as the
+  // token counters) - correct for prior turns after a restart.
+  const turnTools = createMemo(() => {
+    let tools = 0
+    for (const step of turnStepsMemo()) {
+      tools += (sync.data.part[step.id] ?? []).filter((p) => p.type === "tool").length
+    }
+    return tools
+  })
+  const [turnNow, setTurnNow] = createSignal(0)
+  createEffect(
+    on(
+      showLive,
+      (live) => {
+        if (!live) return
+        setTurnNow(Date.now())
+        const id = setInterval(() => setTurnNow(Date.now()), 100)
+        onCleanup(() => clearInterval(id))
+      },
+    ),
+  )
+  const userStart = createMemo(() => {
+    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
+    return user?.time.created
+  })
+  const liveElapsed = createMemo(() => {
+    if (!showLive()) return 0
+    const start = userStart()
+    return start ? Math.max(0, turnNow() - start) : 0
+  })
+  const turnTokens = createMemo(() => {
+    const live = turnLive()
+    if (live.reasoning + live.output <= 0) return
+    return live
+  })
+
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
 
@@ -1819,8 +1874,28 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
               </span>{" "}
               <span style={{ fg: theme.text }}>{Locale.titlecase(props.message.mode)}</span>
               <span style={{ fg: theme.textMuted }}> · {model()}</span>
-              <Show when={duration()}>
+              <Show when={showLive()}>
+                <span style={{ fg: theme.textMuted }}> · {Locale.duration(liveElapsed())}</span>
+              </Show>
+              <Show when={!showLive() && duration()}>
                 <span style={{ fg: theme.textMuted }}> · {Locale.duration(duration())}</span>
+              </Show>
+              <Show when={turnTokens()}>
+                <span style={{ fg: theme.textMuted }}>
+                  {" · "}
+                  <span style={{ fg: theme.textMuted }}>{formatCount(turnTokens()!.reasoning)}</span>
+                  {"+"}
+                  <span style={{ fg: theme.text }}>{formatCount(turnTokens()!.output)}</span>
+                  {"="}
+                  <span style={{ fg: theme.warning }}>{formatCount(turnTokens()!.reasoning + turnTokens()!.output)}</span>
+                  {" tok"}
+                </span>
+              </Show>
+              <Show when={turnTools() > 0}>
+                <span style={{ fg: theme.textMuted }}>
+                  {" · "}
+                  {turnTools()} tool{turnTools() > 1 ? "s" : ""}
+                </span>
               </Show>
               <Show when={props.message.error?.name === "MessageAbortedError"}>
                 <span style={{ fg: theme.textMuted }}> · interrupted</span>

@@ -39,6 +39,7 @@ import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
+import { computeTurn, estimateStepTokens, formatCount, settledReport, turnLiveTokens } from "./turn-stats"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -276,35 +277,113 @@ export function Prompt(props: PromptProps) {
     return messages.filter((m, index): m is UserMessage => index > pending && m.role === "user")
   })
 
+  // The current turn: steps rooted at the last assistant message's parent user
+  // message. Tokens/cost land per step end (session.next.step.ended), so the
+  // running totals tick at step boundaries.
+  const turn = createMemo(() => {
+    if (!props.sessionID) return
+    const msg = sync.data.message[props.sessionID] ?? []
+    return computeTurn(msg)
+  })
+  // Turn-liveness: the server's session status ("busy" covers streaming AND
+  // tool-execution gaps where no step is mid-stream), OR'd with a step being
+  // in flight so the counter starts the instant the stream begins.
+  const turnActive = createMemo(() => {
+    if (!props.sessionID) return false
+    const status = sync.data.session_status?.[props.sessionID]?.type
+    if (status !== undefined && status !== "idle") return true
+    return turn()?.active ?? false
+  })
+
+  // Total session+descendant spend (the "spent" semantics, shown at rest).
+  const sessionCost = createMemo(() => {
+    if (!props.sessionID) return 0
+    let cost = 0
+    let stack = [props.sessionID]
+    while (stack.length > 0) {
+      const id = stack.pop()!
+      const s = sync.session.get(id)
+      if (s != null) cost += s.cost ?? 0
+      stack.push(...sync.data.session.filter((x) => x.parentID === id).map((c) => c.id))
+    }
+    return cost
+  })
+
+  // Live reasoning/output for the active turn: real tokens for completed
+  // steps + streamed-text estimates for the in-flight step, so the counters
+  // tick up continuously instead of jumping at step boundaries.
+  const liveTurn = createMemo(() => {
+    if (!turnActive()) return
+    const t = turn()
+    if (!t) return
+    return turnLiveTokens(t, (id) => sync.data.part[id])
+  })
+
+  // Live cost increment for the in-flight step: estimated (reasoning+output)
+  // tokens x the model's output price per 1M tokens (the server's cost
+  // formula, session.ts) - added to the accumulated session total so the
+  // footbar cost counts up as tokens stream instead of replacing the total.
+  const liveCostIncrement = createMemo(() => {
+    if (!turnActive()) return 0
+    const t = turn()
+    if (!t) return 0
+    const inFlight = t.steps.findLast((s) => !s.time.completed)
+    if (!inFlight) return 0
+    const est = estimateStepTokens(inFlight, sync.data.part[inFlight.id])
+    const model = sync.data.provider.find((p) => p.id === inFlight.providerID)?.models[inFlight.modelID]
+    const outputPrice = model?.cost?.output
+    if (!outputPrice) return 0
+    return ((est.reasoning + est.output) * outputPrice) / 1_000_000
+  })
+
+  // The usage slot shows the RUNNING TOTAL CONTEXT of the current view: the
+  // last settled request size (the "starting" number) plus the reasoning and
+  // output streamed so far in the in-flight turn, so it increments additively
+  // while the agent streams and lands on the new total when the turn ends.
+  // At rest it shows the real endpoint report from the turn's final step -
+  // selected by ANY usage (input/output/reasoning), not `output > 0`, so
+  // reasoning-only or tool-call final steps can't leave stale values up.
   const usage = createMemo(() => {
     if (!props.sessionID) return
     const msg = sync.data.message[props.sessionID] ?? []
-    const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
-    if (!last) return
+    const settled = settledReport(msg)
+    const base = settled?.tokens ?? 0
+    const active = turnActive()
+    const live = active ? liveTurn() : undefined
+    const total = active ? base + (live ? live.reasoning + live.output : 0) : base
+    if (total <= 0) return
+    const model = settled
+      ? sync.data.provider.find((item) => item.id === settled.providerID)?.models[settled.modelID]
+      : undefined
+    const pct = model?.limit.context ? `${Math.round((total / model.limit.context) * 100)}%` : undefined
+    // Additive like the context: the accumulated session total (which already
+    // includes completed turn steps) plus the live in-flight token estimate.
+    const costTotal = active ? sessionCost() + liveCostIncrement() : sessionCost()
+    const cost = costTotal > 0 ? money.format(costTotal) : undefined
+    return {
+      context: pct ? `${formatCount(total)} (${pct})` : formatCount(total),
+      cost,
+    }
+  })
 
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    if (tokens <= 0) return
-
-    const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
-    // Subagent turns bill to their own session rows (children via
-    // parentID), so the parent session's `cost` alone undercounts the
-    // spent total - walk the parentID tree and sum every descendant.
-    let cost = 0
-    {
-      let stack = [props.sessionID]
-      while (stack.length > 0) {
-        const id = stack.pop()!
-        const s = sync.session.get(id)
-        if (s != null) cost += s.cost ?? 0
-        stack.push(...sync.data.session.filter((x) => x.parentID === id).map((c) => c.id))
+  // Active subagent tasks (running task tool parts) - the footbar counter,
+  // independent of the main turn's stream state (background subagents keep
+  // running while the parent is idle).
+  const activeSubagents = createMemo(() => {
+    if (!props.sessionID) return 0
+    const messages = sync.data.message[props.sessionID] ?? []
+    let count = 0
+    for (const m of messages) {
+      for (const p of sync.data.part[m.id] ?? []) {
+        if (p.type === "tool" && p.tool === "task" && p.state.status === "running") count++
       }
     }
-    return {
-      context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      cost: cost > 0 ? money.format(cost) : undefined,
-    }
+    return count
+  })
+  const subagentsText = createMemo(() => {
+    const n = activeSubagents()
+    if (n === 0) return
+    return `${n} subagent${n > 1 ? "s" : ""}`
   })
 
   const sessionTitle = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID)?.title : undefined))
@@ -1874,20 +1953,23 @@ export function Prompt(props: PromptProps) {
                         {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
                       </text>
                     </Match>
-                  </Switch>
-                  <text fg={theme.text} wrapMode="none">
-                    <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
-                  </text>
-                </Match>
-                <Match when={store.mode === "shell"}>
-                  <text fg={theme.text}>
-                    esc <span style={{ fg: theme.textMuted }}>cancel</span>
-                  </text>
-                </Match>
-              </Switch>
-              </box>
-            </box>
-          </Show>
+                   </Switch>
+                   <Show when={subagentsText()}>
+                     <text fg={theme.textMuted} wrapMode="none">· {subagentsText()}</text>
+                   </Show>
+                   <text fg={theme.text} wrapMode="none">
+                     <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
+                   </text>
+                 </Match>
+                 <Match when={store.mode === "shell"}>
+                   <text fg={theme.text}>
+                     esc <span style={{ fg: theme.textMuted }}>cancel</span>
+                   </text>
+                 </Match>
+               </Switch>
+               </box>
+             </box>
+           </Show>
         </box>
       </box>
       <Autocomplete
