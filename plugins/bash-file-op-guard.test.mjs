@@ -61,6 +61,8 @@ const POSITIVE = [
   ["echo x >> file.txt && echo y", "append mid-chain"],
   ["tee out.txt", "tee"],
   ["cat > file.txt << EOF", "heredoc write"],
+  ["cat >> file.txt << EOF", "append heredoc (the unanchored >> rule)"],
+  ["cat >> file.txt << 'PY'\nbody line\nPY", "append heredoc body"],
   ["python3 - << 'PY'\nopen('out.txt','w').write('hi')\nPY", "python heredoc write"],
   ["python3 << 'EOF'\nopen('out.txt','w').write('hi')\nEOF", "python heredoc no-dash"],
   ["python3 - << 'PY'\nopen('f','a').write('x')\nPY", "python heredoc append"],
