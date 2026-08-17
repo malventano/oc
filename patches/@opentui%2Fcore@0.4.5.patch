@@ -1,4 +1,4 @@
---- a/index.bun.js	1985-10-26 03:15:00.000000000 -0500
+--- a/index.bun.js
 +++ b/index.bun.js
 @@ -5665,7 +5665,8 @@
          lineNumberOffset: 0,
@@ -21,7 +21,7 @@
    }
    get diff() {
      return this._diff;
---- a/index.node.js	1985-10-26 03:15:00.000000000 -0500
+--- a/index.node.js
 +++ b/index.node.js
 @@ -5664,7 +5664,8 @@
          lineNumberOffset: 0,
@@ -44,7 +44,7 @@
    }
    get diff() {
      return this._diff;
---- a/chunk-bun-tkm837n2.js	1985-10-26 03:15:00.000000000 -0500
+--- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -2986,6 +2986,7 @@
        this.requestRender();
@@ -66,7 +66,25 @@
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
---- a/chunk-node-51kpf0mz.js	1985-10-26 03:15:00.000000000 -0500
+@@ -3319,7 +3323,16 @@
+       this.setRenderedLineSources(undefined);
+       this._shouldRenderTextBuffer = true;
+     } else {
+-      this._shouldRenderTextBuffer = false;
++      // Non-streaming completed views with drawUnstyledText=false (the
++      // write/bash completed elements): the buffer would stay BLANK until
++      // the async highlight lands - the one-frame no-text flicker at the
++      // streaming->completed transition. Render the raw text immediately
++      // (the completed first paint is raw-white for a frame, then the
++      // highlight colors it) - the same treatment as the streaming initial
++      // content above.
++      this.textBuffer.setText(content);
++      this.setRenderedLineSources(undefined);
++      this._shouldRenderTextBuffer = true;
+     }
+   }
+   async startHighlight() {
+--- a/chunk-node-51kpf0mz.js
 +++ b/chunk-node-51kpf0mz.js
 @@ -2985,6 +2985,7 @@
        this.requestRender();
@@ -88,3 +106,21 @@
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
+@@ -3318,7 +3322,16 @@
+       this.setRenderedLineSources(undefined);
+       this._shouldRenderTextBuffer = true;
+     } else {
+-      this._shouldRenderTextBuffer = false;
++      // Non-streaming completed views with drawUnstyledText=false (the
++      // write/bash completed elements): the buffer would stay BLANK until
++      // the async highlight lands - the one-frame no-text flicker at the
++      // streaming->completed transition. Render the raw text immediately
++      // (the completed first paint is raw-white for a frame, then the
++      // highlight colors it) - the same treatment as the streaming initial
++      // content above.
++      this.textBuffer.setText(content);
++      this.setRenderedLineSources(undefined);
++      this._shouldRenderTextBuffer = true;
+     }
+   }
+   async startHighlight() {
