@@ -186,3 +186,123 @@ export function formatCount(num: number): string {
   }
   return num.toString()
 }
+
+/**
+ * Streamed text chars of a step - reasoning + text parts plus the tool-call
+ * payload (the streamed JSON in `raw` while pending, the structured input
+ * after landing), so ANY streaming input counts toward the tokens/s window
+ * regardless of where it is going. Growing for the in-flight step, final for
+ * completed ones; summed across a turn's steps this is the turn's cumulative
+ * streamed text, the source for the live streaming tokens/s.
+ */
+export function streamedChars(parts: Part[] | undefined): number {
+  let chars = 0
+  for (const p of parts ?? []) {
+    if (p.type === "reasoning") chars += p.text.length
+    else if (p.type === "text") chars += p.text.length
+    else if (p.type === "tool") {
+      const s = p.state
+      if (s.status === "pending") chars += s.raw.length
+      else chars += JSON.stringify(s.input ?? {}).length
+    }
+  }
+  return chars
+}
+
+type StreamRateState = {
+  cumulative: number
+  samples: Array<[number, number]>
+  lastRate: number
+  lastTime: number
+  smoothed: number
+  streamKey: string
+}
+
+// EMA time constant for the smoothed tokens/s: the display chases the raw
+// window rate with a ~300ms 63%-converge time of STREAMING (alpha per sample
+// = 1 - exp(-dt/tau), so the smoothing is independent of chunk density).
+// Single-chunk wobble damps; a sustained rate change still moves the display
+// within ~300ms; a stall freezes it (no samples -> no EMA update).
+const STREAM_RATE_TAU_MS = 300
+
+// The streaming-rate window state is SHARED across every footer instance:
+// each mid-turn LLM call is a NEW assistant message with its OWN footer
+// component, and a per-component tracker would reset on every step swap
+// (a fresh tracker anchored at the turn's accumulated chars computes dc=0 and
+// hides the rate through the whole tool call). Keyed by the turn's root user
+// message id (globally unique); the map is insertion-ordered and capped so
+// stale turns prune themselves.
+const streamRateStates = new Map<string, StreamRateState>()
+
+/**
+ * Streaming tokens/s for a turn: a rolling 1-second window over the turn's
+ * streamed text chars (4 chars/token), sampled ONLY when the char count
+ * grows - i.e. while text is actually arriving. Between samples the last
+ * computed rate is returned unchanged, so the display FREEZES during
+ * tool-call and TTFT stalls (no output arriving) instead of decaying. The
+ * freeze is keyed to the STREAMING STATE, not time: each mid-turn LLM call is
+ * one streaming episode (a new assistant message), and passing the current
+ * in-flight step id as `streamKey` means any episode change - a step
+ * completing or a new one beginning - drops the window and freezes the EMA
+ * through the change. The FIRST sample of an episode ANCHORS it (zero
+ * streaming elapsed time for the EMA, no delta for the window) - a new
+ * stream's slow-start raw would otherwise drag the value down with a near-1
+ * alpha over the TTFT. Tracking resumes from the second sample, with real
+ * inter-chunk elapsed time, moving from the frozen value. The EMA spans the
+ * WHOLE agent turn (shared state); only a new turn key starts fresh. The rate
+ * is the tokens received over the trailing ~1s: before the window fills it is
+ * the average since streaming started.
+ */
+export function streamRateFor(
+  turnKey: string,
+  streamKey: string,
+  chars: number,
+  now: number = Date.now(),
+): number {
+  let st = streamRateStates.get(turnKey)
+  if (!st) {
+    st = { cumulative: 0, samples: [], lastRate: 0, lastTime: 0, smoothed: 0, streamKey: "" }
+    streamRateStates.set(turnKey, st)
+    if (streamRateStates.size > 64) streamRateStates.delete(streamRateStates.keys().next().value as string)
+  }
+  // A new streaming episode (a step completed, or a new one began): the old
+  // window belongs to a stream that ended. Drop it and freeze the EMA through
+  // the change - the value holds across tool-call / TTFT gaps regardless of
+  // their length. The next sample anchors the fresh window.
+  if (streamKey !== st.streamKey) {
+    st.streamKey = streamKey
+    st.samples = []
+    st.cumulative = chars
+    st.lastTime = now
+    return st.smoothed
+  }
+  if (chars > st.cumulative) {
+    // The first sample of an episode anchors the window: no delta to measure
+    // and zero streaming elapsed time, so it must not move the value (the new
+    // stream's slow-start raw + near-1 alpha over the TTFT would drag the EMA
+    // down). Tracking resumes on the second sample.
+    if (st.samples.length === 0) {
+      st.samples = [[now, chars]]
+      st.cumulative = chars
+      st.lastTime = now
+      return st.smoothed
+    }
+    st.cumulative = chars
+    st.samples.push([now, chars])
+    const cutoff = now - 1000
+    while (st.samples.length > 2 && st.samples[0][0] <= cutoff) st.samples.shift()
+    const [t0, c0] = st.samples[0]
+    const dt = (now - t0) / 1000
+    const dc = st.cumulative - c0
+    st.lastRate = dt > 0 ? dc / dt / CHARS_PER_TOKEN : 0
+    if (st.smoothed === 0) {
+      // first real measurement of the turn: snap (no cold-start ramp from 0)
+      st.smoothed = st.lastRate
+    } else {
+      const alpha = 1 - Math.exp(-(now - st.lastTime) / STREAM_RATE_TAU_MS)
+      st.smoothed += alpha * (st.lastRate - st.smoothed)
+    }
+    st.lastTime = now
+  }
+  return st.smoothed
+}
