@@ -3467,8 +3467,26 @@ function LiveEditDiff(props: {
   })
   const lang = () => props.filetype
   // The block's height driver is the two columns (the parsed OLD/NEW lines),
-  // not the raw patch text - clamp on the taller column.
-  const rows = createMemo(() => Math.max(left().split("\n").length, right().split("\n").length))
+  // not the raw patch text - clamp on the taller column. The columns WRAP
+  // (0169) while streaming, so the clamp must track the WRAPPED row count,
+  // not the logical line count: a long line wraps to many rows, the wrap
+  // re-flows as the content changes, and a logical-only clamp never captured
+  // the wrapped height - the block shrank mid-stream (live catch, 2026-08-17,
+  // the manifest edit). Estimate per-line wrapped rows against the column's
+  // code width (the message width from use().width minus the 50/50 split,
+  // gutters and padding); the estimate is stable (no transient layout
+  // measurement - the 0165 balloon trap) and close to the real render, so
+  // the clamp holds the block at its max wrapped height through the stream.
+  // The transient wrap-WIDTH collapse (0165, a ~1-3 char re-flow width) can
+  // still beat the clamp for one frame - the documented open flash risk.
+  const diffColWidth = createMemo(() => Math.max(20, Math.floor((use().width - 12) / 2)))
+  const wrappedRows = (text: string) => {
+    if (text.length === 0) return 0
+    return text
+      .split("\n")
+      .reduce((acc, line) => acc + Math.max(1, Math.ceil(line.length / diffColWidth())), 0)
+  }
+  const rows = createMemo(() => Math.max(wrappedRows(left()), wrappedRows(right())))
   // STEP 2 ladder: the line arrays + the diff anchor. The anchor is the
   // first index where OLD[i] !== NEW[i] (or the shorter length when one
   // column is a prefix of the other). Only moves forward as the stream
