@@ -2888,6 +2888,32 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
   return segs
 }
 
+// While a tool call streams, its block must only GROW - transient
+// mid-stream content re-shapes (extraction jitter, heredoc re-split, diff
+// column re-layout) can otherwise SHRINK the block one frame and the whole
+// layout jumps backward. The clamp is the max content ROW COUNT seen so
+// far, a PURE computation from the streamed text - deliberately NOT a
+// renderable-height measurement, which can latch a transiently-tall
+// layout/buffer state as the min and balloon the block (a write once
+// jumped to fill the whole viewport - 0165 rework). On completion
+// (streaming=false) the clamp releases and the final render jumps to the
+// true final height (the allowed transition - the completed view is a
+// fresh block anyway). Rows = the streaming content's line count, the
+// block's height driver (each line is one row at typical block widths;
+// wrapped lines only make the natural height larger, which the clamp never
+// limits).
+function GrowOnly(props: { streaming: boolean; rows: number; children: JSX.Element }) {
+  const [maxRows, setMaxRows] = createSignal(0)
+  createEffect(() => {
+    if (props.rows > maxRows()) setMaxRows(props.rows)
+  })
+  return (
+    <box minHeight={props.streaming ? maxRows() : undefined} flexShrink={0}>
+      {props.children}
+    </box>
+  )
+}
+
 function LiveToolStream(props: {
   part: ToolPart
   title?: string
@@ -2936,6 +2962,19 @@ function LiveToolStream(props: {
       content={props.content}
       conceal={conceal()}
       fg={theme.textMuted}
+      // wrapMode="none" (0165): a streaming code element's wrap width can
+      // transiently collapse to ~1-3 chars during a layout re-flow (the
+      // text renderable wraps at Math.max(1, colWidth - padding)), turning
+      // a long first line into ~30 wrapped rows for ONE frame. The
+      // grow-only guard holds the content LINE COUNT, which can't catch a
+      // wrap artifact (natural height beats the minHeight floor), so the
+      // block flashes tall then snaps back - the "jumped to top" that
+      // escaped the guard. No wrapping makes the streaming height always
+      // equal the line count: the guard holds it exactly, a wrap artifact
+      // is structurally impossible. Long lines truncate at the block edge
+      // for the (transient) streaming view; the completed view wraps
+      // normally.
+      wrapMode="none"
     />
   )
   // line_number only accepts a code element target - a wrapper box is
@@ -2963,6 +3002,7 @@ function LiveToolStream(props: {
             content={seg.text}
             conceal={conceal()}
             fg={theme.textMuted}
+            wrapMode="none"
           />
         )
         return props.gutter === false ? (
@@ -2991,7 +3031,11 @@ function LiveToolStream(props: {
   )
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
-      <Show when={props.content.length > 0}>{code}</Show>
+      <Show when={props.content.length > 0}>
+        <GrowOnly streaming={props.streaming} rows={props.content.split("\n").length}>
+          {code}
+        </GrowOnly>
+      </Show>
     </BlockTool>
   )
 }
@@ -3393,42 +3437,49 @@ function LiveEditDiff(props: {
     setRight(r.join("\n"))
   })
   const lang = () => props.filetype
+  // The block's height driver is the two columns (the parsed OLD/NEW lines),
+  // not the raw patch text - clamp on the taller column.
+  const rows = createMemo(() => Math.max(left().split("\n").length, right().split("\n").length))
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
       <Show when={props.content.length > 0}>
-        <box flexDirection="row">
-          <box width="50%" paddingRight={1}>
-            {/* Block-relative line numbers (1..N per column - real file
-                line numbers need the match ladder, step 2). The gutter
-                width keeps the code's x-position aligned with the
-                completed diff, which is always guttered - no sideways
-                snap at completion. */}
-            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-              <code
-                {...(lang() ? { filetype: lang() } : {})}
-                drawUnstyledText={false}
-                streaming={true}
-                syntaxStyle={syntax()}
-                content={left()}
-                conceal={false}
-                fg={theme.textMuted}
-              />
-            </line_number>
+        <GrowOnly streaming={props.streaming} rows={rows()}>
+          <box flexDirection="row">
+            <box width="50%" paddingRight={1}>
+              {/* Block-relative line numbers (1..N per column - real file
+                  line numbers need the match ladder, step 2). The gutter
+                  width keeps the code's x-position aligned with the
+                  completed diff, which is always guttered - no sideways
+                  snap at completion. */}
+              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+                <code
+                  {...(lang() ? { filetype: lang() } : {})}
+                  drawUnstyledText={false}
+                  streaming={true}
+                  syntaxStyle={syntax()}
+                  content={left()}
+                  conceal={false}
+                  fg={theme.textMuted}
+                  wrapMode="none"
+                />
+              </line_number>
+            </box>
+            <box width="50%">
+              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+                <code
+                  {...(lang() ? { filetype: lang() } : {})}
+                  drawUnstyledText={false}
+                  streaming={true}
+                  syntaxStyle={syntax()}
+                  content={right()}
+                  conceal={false}
+                  fg={theme.textMuted}
+                  wrapMode="none"
+                />
+              </line_number>
+            </box>
           </box>
-          <box width="50%">
-            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-              <code
-                {...(lang() ? { filetype: lang() } : {})}
-                drawUnstyledText={false}
-                streaming={true}
-                syntaxStyle={syntax()}
-                content={right()}
-                conceal={false}
-                fg={theme.textMuted}
-              />
-            </line_number>
-          </box>
-        </box>
+        </GrowOnly>
       </Show>
     </BlockTool>
   )
