@@ -21,7 +21,7 @@
    }
    get diff() {
      return this._diff;
-@@ -11436,6 +11437,13 @@
+@@ -11436,6 +11437,14 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -32,10 +32,11 @@
 +  // is shifted by the child's y-delta so the visible content never jumps.
 +  _manualAnchorChild = null;
 +  _manualAnchorOffset = 0;
++  _manualAnchorHeight = 0;
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11632,7 @@
+@@ -11624,6 +11633,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -43,7 +44,7 @@
          this.updateStickyState();
        }
      });
-@@ -11929,12 +11938,45 @@
+@@ -11929,12 +11939,50 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -58,6 +59,7 @@
 +      if (layout.top + layout.height > position) {
 +        this._manualAnchorChild = child;
 +        this._manualAnchorOffset = position - layout.top;
++        this._manualAnchorHeight = layout.height;
 +        return;
 +      }
 +    }
@@ -67,21 +69,25 @@
      const wasApplyingStickyScroll = this._isApplyingStickyScroll;
      this._isApplyingStickyScroll = true;
      try {
-+      // Block-anchored manual scroll (0168): remember where the anchored
-+      // child sat BEFORE the layout that triggered this call, so the shift
-+      // below can keep the visible content fixed.
++      // Block-anchored manual scroll (0168/0170): remember where the
++      // anchored child sat BEFORE the layout that triggered this call, so
++      // the shift below can keep the visible content fixed.
 +      const anchor = this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed
 +        ? { child: this._manualAnchorChild, offset: this._manualAnchorOffset }
 +        : null;
        this.verticalScrollBar.scrollSize = this.content.height;
        this.verticalScrollBar.viewportSize = this.viewport.height;
 +      if (anchor) {
-+        // If content ABOVE the anchor changed height (a large block above
-+        // the viewport registered its real height as it came into view),
-+        // shift scrollTop by the anchor's y-delta so the viewport content
-+        // stays put instead of jumping downward. The scrollPosition setter
-+        // re-fires onChange, which re-captures the anchor at the new spot.
-+        const target = anchor.child.getLayoutNode().getComputedLayout().top + anchor.offset;
++        // Shift scrollTop so the content BELOW the anchor stays fixed:
++        // (1) content ABOVE the anchor changing height moves the anchor's
++        // top (y-delta), and (2) the ANCHOR block itself changing height
++        // (a culled block registering its real height, 3 -> hundreds of
++        // rows, as it enters the viewport - the traced jump cause, 0170)
++        // extends downward without moving its top, so the height-delta
++        // must be added too. The scrollPosition setter re-fires onChange,
++        // which re-captures the anchor at the new spot.
++        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
++        const target = anchorLayout.top + anchor.offset + (anchorLayout.height - this._manualAnchorHeight);
 +        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
 +          this.verticalScrollBar.scrollPosition = target;
 +        }
@@ -112,7 +118,7 @@
    }
    get diff() {
      return this._diff;
-@@ -11435,6 +11436,13 @@
+@@ -11435,6 +11436,14 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -123,10 +129,11 @@
 +  // is shifted by the child's y-delta so the visible content never jumps.
 +  _manualAnchorChild = null;
 +  _manualAnchorOffset = 0;
++  _manualAnchorHeight = 0;
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11631,7 @@
+@@ -11623,6 +11632,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -134,7 +141,7 @@
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11937,45 @@
+@@ -11928,12 +11938,50 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -149,6 +156,7 @@
 +      if (layout.top + layout.height > position) {
 +        this._manualAnchorChild = child;
 +        this._manualAnchorOffset = position - layout.top;
++        this._manualAnchorHeight = layout.height;
 +        return;
 +      }
 +    }
@@ -167,12 +175,16 @@
        this.verticalScrollBar.scrollSize = this.content.height;
        this.verticalScrollBar.viewportSize = this.viewport.height;
 +      if (anchor) {
-+        // If content ABOVE the anchor changed height (a large block above
-+        // the viewport registered its real height as it came into view),
-+        // shift scrollTop by the anchor's y-delta so the viewport content
-+        // stays put instead of jumping downward. The scrollPosition setter
-+        // re-fires onChange, which re-captures the anchor at the new spot.
-+        const target = anchor.child.getLayoutNode().getComputedLayout().top + anchor.offset;
++        // Shift scrollTop so the content BELOW the anchor stays fixed:
++        // (1) content ABOVE the anchor changing height moves the anchor's
++        // top (y-delta), and (2) the ANCHOR block itself changing height
++        // (a culled block registering its real height, 3 -> hundreds of
++        // rows, as it enters the viewport - the traced jump cause, 0170)
++        // extends downward without moving its top, so the height-delta
++        // must be added too. The scrollPosition setter re-fires onChange,
++        // which re-captures the anchor at the new spot.
++        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
++        const target = anchorLayout.top + anchor.offset + (anchorLayout.height - this._manualAnchorHeight);
 +        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
 +          this.verticalScrollBar.scrollPosition = target;
 +        }
