@@ -1339,6 +1339,17 @@ const layer = Layer.effect(
               providerID: msg.providerID,
               aborted: true,
             })
+            // The interrupted turn IS complete - mark it finished. Without a
+            // finish, the loop's exit invariant (newest finished assistant
+            // parented to the newest user message, prompt.ts loop exit check)
+            // is unsatisfiable: the abort kills the current turn, but any
+            // path that re-enters the loop for the same user message (a new
+            // prompt racing in, the post-join re-loop, a queued-prompt
+            // resume) sees the finish-less aborted message as "not answered"
+            // and re-processes it - a fresh assistant message with NEW
+            // reasoning streams after the interrupted footer
+            // (BUG_INTERRUPT_REASONING_CONTINUES.md, 2026-08-17).
+            msg.finish = "stop"
             msg.time.completed = Date.now()
             yield* sessions.updateMessage(msg)
           })
