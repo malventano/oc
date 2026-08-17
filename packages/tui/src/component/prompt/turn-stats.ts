@@ -118,6 +118,37 @@ export function turnSteps(messages: Array<UserMessage | AssistantMessage>, paren
 }
 
 /**
+ * Estimated tokens of a user message's text parts (the prompt just
+ * submitted) - the input sent to the endpoint the instant the turn starts.
+ */
+export function promptTokenEstimate(
+  prompt: UserMessage | undefined,
+  getParts?: (messageID: string) => Part[] | undefined,
+): number {
+  if (!prompt) return 0
+  let chars = 0
+  for (const p of getParts?.(prompt.id) ?? []) {
+    if (p.type === "text") chars += p.text.length
+  }
+  return Math.round(chars / CHARS_PER_TOKEN)
+}
+
+/**
+ * Estimated tokens of the completed tool results across a turn's steps -
+ * the conversation content added between tool calls that becomes part of the
+ * next request's (assumed cached) input.
+ */
+export function toolResultTokens(steps: AssistantMessage[], getParts?: (messageID: string) => Part[] | undefined): number {
+  let chars = 0
+  for (const step of steps) {
+    for (const p of getParts?.(step.id) ?? []) {
+      if (p.type === "tool" && p.state.status === "completed") chars += p.state.output?.length ?? 0
+    }
+  }
+  return Math.round(chars / CHARS_PER_TOKEN)
+}
+
+/**
  * The settled report for the last turn: the final assistant step with ANY
  * usage (input/output/reasoning). `findLast(tokens.output > 0)` skips
  * reasoning-only or tool-call final steps, leaving stale values on screen -
@@ -130,9 +161,15 @@ export function settledReport(messages: Array<UserMessage | AssistantMessage>) {
     return t.input > 0 || t.output > 0 || t.reasoning > 0
   })
   if (!last) return
-  const t = last.tokens
+  const t = last.tokens!
+  const input = t.input + t.cache.read + t.cache.write
+  const output = t.output + t.reasoning
   return {
-    tokens: t.input + t.output + t.reasoning + t.cache.read + t.cache.write,
+    // The context actually sent to the model (input + cached prefix/writes),
+    // NOT the full request sum (which also includes the generated tokens).
+    input,
+    output,
+    tokens: input + output,
     providerID: last.providerID,
     modelID: last.modelID,
   }
