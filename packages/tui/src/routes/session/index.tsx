@@ -3443,7 +3443,6 @@ function LiveEditDiff(props: {
                   content={left()}
                   conceal={false}
                   fg={theme.textMuted}
-                  wrapMode="none"
                 />
               </line_number>
             </box>
@@ -3457,7 +3456,6 @@ function LiveEditDiff(props: {
                   content={right()}
                   conceal={false}
                   fg={theme.textMuted}
-                  wrapMode="none"
                 />
               </line_number>
             </box>
