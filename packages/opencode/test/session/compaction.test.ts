@@ -1943,7 +1943,9 @@ it.instance(
       sessionID: session.id,
       messages: yield* ssn.messages({ sessionID: session.id }),
     })
-    expect(promptText).toContain("<previous-summary>")
+    // v1.18.18 core buildPrompt reworded the anchored-summary tags from
+    // <previous-summary> to <prior-summary> (and restructured the template).
+    expect(promptText).toContain("<prior-summary>")
     expect(promptText).toContain("OLD SUMMARY")
     expect(promptText).not.toContain("Pre-compaction tail reduced")
   }),
