@@ -2841,6 +2841,7 @@ function LiveToolStream(props: {
   content: string
   filetype?: string
   gutter?: boolean
+  conceal?: boolean
   segments?: { text: string; lang: string }[]
 }) {
   const { theme, syntax } = useTheme()
@@ -2851,8 +2852,20 @@ function LiveToolStream(props: {
   // Compute the decision here from the reactive content - the ternary
   // flips once when the first newline lands (heredoc bodies get their
   // numbers mid-stream; single-line commands never flip - no '1' noise,
-  // no width change, no judder).
+  // no width change, no judder). A caller that passes gutter={true}
+  // (the write tool - its completed view is always guttered) keeps the
+  // line_number from the first frame: no Show flip, no code element
+  // recreation (the flip mounts a fresh instance whose buffer starts
+  // raw-grey and whose first highlight arrives a flush late).
   const showGutter = createMemo(() => props.gutter !== false && props.content.includes("\n"))
+  // The streaming view must match the completed view's conceal choice.
+  // The write completed view renders conceal={false}; if the live view
+  // hides comments (conceal=true), the concealed spans keep their text
+  // in the buffer but LOSE their style span - the comments render with
+  // the element's muted fg, a grey comment block above the colored code
+  // (the 2026-08-17 duplicate-grey-copy report, video-confirmed), and
+  // the colors snap in at completion when the conceal=false block lands.
+  const conceal = createMemo(() => props.conceal ?? ctx.conceal())
   // The single streaming code element - the SAME object in both gutter
   // branches (see below), so the line_number mount never recreates it.
   const singleEl = (
@@ -2867,7 +2880,7 @@ function LiveToolStream(props: {
       streaming={true}
       syntaxStyle={syntax()}
       content={props.content}
-      conceal={ctx.conceal()}
+      conceal={conceal()}
       fg={theme.textMuted}
     />
   )
@@ -2894,7 +2907,7 @@ function LiveToolStream(props: {
             streaming={true}
             syntaxStyle={syntax()}
             content={seg.text}
-            conceal={ctx.conceal()}
+            conceal={conceal()}
             fg={theme.textMuted}
           />
         )
@@ -2977,6 +2990,13 @@ function Write(props: ToolProps) {
           streaming={stream.streaming()}
           content={stream.display()}
           filetype={liveFiletype()}
+          // The write's completed view below is always guttered and never
+          // conceals - the live view must match on both, or the first
+          // newline flips the gutter Show (code element recreation, grey
+          // first frame) and concealed comments render as a grey block
+          // above the colored code (2026-08-17 video-confirmed).
+          gutter={true}
+          conceal={false}
         />
       </Match>
       {/* Completed: same gutter layout as the live view, so a batched

@@ -363,7 +363,22 @@ export const {
           }
           const result = search(parts, event.properties.part.id, (part) => part.id)
           if (result.found) {
-            setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
+            const incoming = event.properties.part
+            const existing = parts[result.index]
+            // The server's tool part never carries the streamed state.raw
+            // (tool-input deltas are broadcast-only, processor.ts) - a
+            // reconcile here would DELETE the client's accumulated raw
+            // (reconcile removes keys absent from the incoming object) and
+            // the deltas still in the batch window would append onto an
+            // empty raw: a tail-only block (the 2026-08-17 investigation).
+            // Preserve the live raw across the reconcile.
+            const merged =
+              incoming.type === "tool" &&
+              existing?.type === "tool" &&
+              (existing.state as { raw?: string } | undefined)?.raw
+                ? { ...incoming, state: { ...incoming.state, raw: (existing.state as { raw: string }).raw } }
+                : incoming
+            setStore("part", event.properties.part.messageID, result.index, reconcile(merged))
             break
           }
           setStore(
