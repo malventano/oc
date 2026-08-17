@@ -27,7 +27,7 @@ import { SPINNER_FRAMES, Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
-import { formatCount, liveTokensForSteps, turnSteps } from "../../component/prompt/turn-stats"
+import { formatCount, liveTokensForSteps, streamRateFor, streamedChars, turnSteps } from "../../component/prompt/turn-stats"
 import type {
   AssistantMessage,
   Part,
@@ -1798,6 +1798,33 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     return live
   })
 
+  // Streaming tokens/s for the footer: a 1s rolling window over the turn's
+  // streamed chars, keyed by the turn and sampled only while text is actually
+  // arriving. The freeze is keyed to the STREAMING STATE: the in-flight step
+  // id ("" when no step is mid-stream, i.e. tool execution / TTFT gaps) - an
+  // episode change resets the window and freezes the EMA through it, so the
+  // value holds across gaps and only resumes tracking once the next stream
+  // has real deltas. The window spans the WHOLE agent turn - mid-turn LLM
+  // calls continue it (state shared across the turn's per-step footers). The
+  // frozen rate stays on the last footer after the turn ends; it vanishes
+  // when the next message supersedes it (props.last gates the display).
+  const turnKey = props.message.parentID
+  const turnStreamedChars = createMemo(() => {
+    let chars = 0
+    for (const step of turnStepsMemo()) {
+      chars += streamedChars(sync.data.part[step.id])
+    }
+    return chars
+  })
+  const streamKey = createMemo(() => turnStepsMemo().find((s) => !s.time.completed)?.id ?? "")
+  const streamRateMemo = createMemo(() => streamRateFor(turnKey, streamKey(), turnStreamedChars()))
+  const rateDisplay = createMemo(() => {
+    if (!props.last) return
+    const r = streamRateMemo()
+    if (r <= 0) return
+    return formatCount(Math.round(r))
+  })
+
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
 
@@ -1889,6 +1916,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
                   {"="}
                   <span style={{ fg: theme.warning }}>{formatCount(turnTokens()!.reasoning + turnTokens()!.output)}</span>
                   {" tok"}
+                  <Show when={rateDisplay()}>
+                    {" ("}
+                    {rateDisplay()}
+                    {"/s)"}
+                  </Show>
                 </span>
               </Show>
               <Show when={turnTools() > 0}>
