@@ -222,7 +222,9 @@ describe("Epoch.apply", () => {
         expect(result.frozen).toBeUndefined()
 
         const msgs2 = yield* loadMsgs(info.id)
-        const record = msgs2.find((m) => m.info.id === user.id)?.parts.find((p) => p.type === "text" && p.metadata?.epoch)
+        const record = msgs2
+          .find((m) => m.info.id === user.id)
+          ?.parts.find((p): p is SessionV1.TextPart => p.type === "text" && p.metadata?.epoch !== undefined)
         expect(record).toBeDefined()
         expect(record!.synthetic).toBe(true)
         expect(record!.ignored).toBe(true)
@@ -273,7 +275,7 @@ describe("Epoch.apply", () => {
         expect(result.frozen).toContain("v1")
 
         const parts = (yield* loadMsgs(info.id)).find((m) => m.info.id === user.id)!.parts
-        const delta = parts.find((p) => p.type === "text" && p.metadata?.epochDelta)
+        const delta = parts.find((p): p is SessionV1.TextPart => p.type === "text" && p.metadata?.epochDelta !== undefined)
         expect(delta).toBeDefined()
         expect(delta!.text).toContain("- instructions: AGENTS.md v1")
         expect(delta!.text).toContain("+ instructions: AGENTS.md v2")
@@ -301,7 +303,7 @@ describe("Epoch.apply", () => {
           epochInput(user2, msgs3, { instructions: ["instructions: AGENTS.md v3"] }),
         )
         const parts2 = (yield* loadMsgs(info.id)).find((m) => m.info.id === user2.id)!.parts
-        const deltas2 = parts2.filter((p) => p.type === "text" && p.metadata?.epochDelta)
+        const deltas2 = parts2.filter((p): p is SessionV1.TextPart => p.type === "text" && p.metadata?.epochDelta !== undefined)
         expect(deltas2).toHaveLength(1)
         // second delta: only v2 -> v3
         expect(deltas2[0].text).toContain("- instructions: AGENTS.md v2")
@@ -311,7 +313,7 @@ describe("Epoch.apply", () => {
 
         // the first user message keeps only the first delta
         const parts1 = (yield* loadMsgs(info.id)).find((m) => m.info.id === user1.id)!.parts
-        const deltas1 = parts1.filter((p) => p.type === "text" && p.metadata?.epochDelta)
+        const deltas1 = parts1.filter((p): p is SessionV1.TextPart => p.type === "text" && p.metadata?.epochDelta !== undefined)
         expect(deltas1).toHaveLength(1)
         expect(deltas1[0].text).toContain("- instructions: AGENTS.md v1")
         expect(deltas1[0].text).toContain("+ instructions: AGENTS.md v2")
