@@ -20,6 +20,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { useRoute, useRouteData } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
+import { useArgs } from "../../context/args"
 import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
@@ -371,13 +372,81 @@ export function Session() {
   let seeded = false
   let scroll: ScrollBoxRenderable
   let prompt: PromptRef | undefined
+  const args = useArgs()
+  const [promptRefSignal, setPromptRefSignal] = createSignal<PromptRef | undefined>()
   const bind = (r: PromptRef | undefined) => {
     prompt = r
     promptRef.set(r)
-    if (seeded || !route.prompt || !r) return
-    seeded = true
-    r.set(route.prompt)
+    setPromptRefSignal(r)
+    if (!r) return
+    if (route.prompt) {
+      seeded = true
+      r.set(route.prompt)
+      return
+    }
+    // Re-seed on EVERY bind (the Prompt remounts when the session route's
+    // visibility flips): args.prompt must land in the input regardless of
+    // mount count - idempotent.
+    if (args.prompt) r.set({ input: args.prompt, parts: [] })
   }
+
+  // Tool-initiated restart (the `restart` tool): the processor ends the turn
+  // at the tool result; once the turn FINALIZES (time.completed written, the
+  // message.updated event fires post-write), execve in place with the resume
+  // prompt - the new instance boots into this session and auto-submits it,
+  // handing the turn back to the agent.
+  const restartFired = new Set<string>()
+  event.on("message.updated", (evt) => {
+    const info = evt.properties.info
+    if (info.sessionID !== route.sessionID) return
+    if (info.role !== "assistant" || !info.time.completed) return
+    if (restartFired.has(info.id)) return
+    const parts = sync.data.part[info.id] ?? []
+    const tool = parts.find((p) => p.type === "tool" && p.tool === "restart" && p.state.status === "completed")
+    if (!tool) return
+    restartFired.add(info.id)
+    const reason = (tool.state.input as { reason?: string } | undefined)?.reason
+    restart(info.sessionID, reason ? `Restart complete: ${reason}` : "Restart complete")
+  })
+
+  // Boot with --prompt into an existing session (tool-initiated restart
+  // resume, or `oc -s <id> --prompt "..."` from the shell): auto-submit once
+  // the TUI is ready AND the mode has synced. The prompt component restores
+  // the agent from the session's lastUserAgent (primary-only latch); firing
+  // before that latch would run the turn in the config-default agent, not the
+  // session's plan/build mode. Subagent-mode sessions skip the latch by
+  // design - the gate falls through so the prompt still fires.
+  //
+  // Gate: TUI ready + mode latched + the session IDLE (a prompt fired while
+  // the restart turn is still winding down behaves like an Enter during a
+  // turn - wait for the last assistant to finalize) + the seeded input
+  // matches (the bind re-seeds per mount). Submit goes through the prompt
+  // component (the user-Enter path, live-verified) with the input seeded by
+  // the bind.
+  //
+  // The mode-latch comparison is on NAMES: local.agent.current() is the
+  // agent OBJECT while lastUserAgent is the name string - an object!==string
+  // comparison never latches (the 2026-08-16 investigation: the gate probe
+  // displayed current().name so every probe showed a "pass" while the object
+  // comparison blocked the submit; the direct-SDK alternative was also
+  // evaluated and rejected - the component path is the proven one).
+  let resumeSent = false
+  createEffect(() => {
+    if (resumeSent || !args.prompt) return
+    if (!sync.ready || !local.model.ready) return
+    const sessionID = route.sessionID
+    if (!sessionID) return
+    const lastUserAgent = sync.session.get(sessionID)?.lastUserAgent
+    if (!lastUserAgent) return
+    const primary = local.agent.list().some((x) => x.name === lastUserAgent)
+    if (primary && local.agent.current()?.name !== lastUserAgent) return
+    if (sync.session.status(sessionID) !== "idle") return
+    const r = promptRefSignal()
+    if (!r) return
+    if (r.current.input !== args.prompt) return
+    resumeSent = true
+    r.submit()
+  })
   const keymap = useOpencodeKeymap()
   const dialog = useDialog()
   const renderer = useRenderer()

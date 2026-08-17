@@ -504,7 +504,11 @@ const layer = Layer.effect(
             // Open-ended question tool: the turn ends with the question
             // asked (the answers arrive later as a new user prompt), so the
             // step must stop instead of continuing the model loop.
-            if (value.name === "question") ctx.blocked = ctx.shouldBreak
+            // Restart tool: same shape - the turn ends at the tool result so
+            // the TUI's restart watcher can execve AFTER the turn finalizes
+            // (the continuation arrives as a fresh "restart complete" user
+            // prompt from the restarted instance).
+            if (value.name === "question" || value.name === "restart") ctx.blocked = ctx.shouldBreak
             return
           }
 
