@@ -660,7 +660,10 @@ describe("session.message-v2.toModelMessage", () => {
         role: "assistant",
         content: [
           { type: "text", text: "done" },
-          { type: "text", text: "thinking" },
+          // model switch: provider metadata stripped but the reasoning part
+          // type is preserved (prefix-cache compatibility) - not converted
+          // back to text
+          { type: "reasoning", text: "thinking", providerOptions: undefined },
           {
             type: "tool-call",
             toolCallId: "call-1",
