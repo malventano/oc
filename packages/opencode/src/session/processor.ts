@@ -573,8 +573,20 @@ const layer = Layer.effect(
                 messageID: ctx.assistantMessage.parentID,
               })
               .pipe(Effect.ignore, Effect.forkIn(scope))
+            // Post-turn overflow check: a NORMAL-turn auto-compaction trigger.
+            // Skipped on compaction turns - the "inject" method's summary
+            // message does not carry summary:true yet (finalize sets it on the
+            // next loop iteration), so a completed inject summary sitting near
+            // the window would mis-fire this check and stack a legacy
+            // compaction on the already-completed one (two compaction footers,
+            // the second stuck busy - live 2026-08-17). The legacy method's
+            // messages carry summary:true, so the summary guard covered those;
+            // the agent guard covers the inject path. Endpoint overflow
+            // (ContextOverflowError -> halt) is a separate mechanism and still
+            // triggers the designed legacy fallback on compaction turns.
             if (
               !ctx.assistantMessage.summary &&
+              ctx.assistantMessage.agent !== "compaction" &&
               isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
             ) {
               ctx.needsCompaction = true
