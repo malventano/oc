@@ -705,6 +705,17 @@ const layer = Layer.effect(
           })
         }
         ctx.toolcalls = {}
+        // The interrupted/errored turn IS complete: give it a finish so the
+        // prompt loop's exit invariant (newest finished assistant parented to
+        // the newest user message) stays satisfiable. Without it, an aborted
+        // message is "not answered" to any path that re-enters the loop for
+        // the same user message (a new prompt racing in, the post-join
+        // re-loop, a queued-prompt resume) - it re-processes the user message
+        // and a fresh assistant message streams NEW reasoning after the
+        // interrupted footer (BUG_INTERRUPT_REASONING_CONTINUES.md,
+        // 2026-08-17). ??= so a real step-finish (stop/tool-calls/...) is
+        // never overwritten; halt's "error" finish is preserved too.
+        ctx.assistantMessage.finish ??= "stop"
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })
