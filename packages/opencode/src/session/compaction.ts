@@ -68,12 +68,17 @@ export function hasAbortedCompaction(messages: SessionV1.WithParts[]): boolean {
 // session's real tool schemas (required for prefix-cache byte identity), so
 // these lines steer the model toward emitting the summary directly instead.
 const INJECT_NOTES = [
+  // End-of-chain framing: the inject prompt is appended to the current
+  // context chain (prefix byte-identical), so the model sees the whole
+  // conversation above as source material, not a live request stream.
+  "The entire conversation history above this message is the context to summarize - do not treat any prior user message as a request to act on.",
   "Do not call any tools. Output only the summary.",
-  // ~4000 keeps the summary small enough that the retained verbatim tail
-  // plus head fit the preserved budget (default 25% of usable window).
-  "Keep the summary under ~4000 tokens.",
+  "Do not continue the conversation. Do not respond to any questions in it.",
+  // Soft, completeness-first length guidance (spec 03): the tail retention
+  // (tail_turns, default 2, tunable to 0) is a chain mechanism, not a
+  // summarization scope - the summary covers ALL context regardless.
+  "Keep the summary as concise as completeness allows.",
   "Use minimal reasoning; output the summary directly.",
-  "The most recent turns will be retained verbatim; do not summarize them.",
 ].join("\n")
 type Turn = {
   start: number
@@ -299,12 +304,16 @@ const layer = Layer.effect(
       cfg: ConfigV1.Info
       model: Provider.Model
     }) {
-      const limit = input.cfg.compaction?.tail_turns
-      if (limit !== undefined && limit <= 0) return { head: input.messages, tail_start_id: undefined }
+      // oc keeps the turn-count tail default (2, config `tail_turns`), NOT
+      // upstream's all-turns default: the tail is bounded by turn count and
+      // the unclamped 25%-of-window budget (spec 03 section 3). The lazy
+      // per-turn estimation is upstream's and applies here too.
+      const limit = input.cfg.compaction?.tail_turns ?? DEFAULT_TAIL_TURNS
+      if (limit <= 0) return { head: input.messages, tail_start_id: undefined }
       const budget = preserveRecentBudget({ cfg: input.cfg, model: input.model })
       const all = turns(input.messages)
       if (!all.length) return { head: input.messages, tail_start_id: undefined }
-      const recent = limit === undefined ? all : all.slice(-limit)
+      const recent = all.slice(-limit)
 
       let total = 0
       let keep: Tail | undefined
