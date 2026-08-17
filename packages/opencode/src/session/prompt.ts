@@ -567,13 +567,22 @@ const layer = Layer.effect(
                 yield* sessions.updateMessage(msg)
               }
               if (part.state.status === "running") {
+                // The agent must be able to tell a USER-ENTERED shell
+                // command ("!" prompt shell mode -> session.shell) from a
+                // model-generated bash call: the part's output is the only
+                // text the model sees for this part, so carry the source as
+                // a leading <metadata> block (the established marker
+                // format). The TUI renders it too - the block title
+                // additionally switches to "! shell" (2026-08-17).
+                const finalOutput =
+                  ["<metadata>", "This command was executed by the user", "</metadata>", output].join("\n")
                 part.state = {
                   status: "completed",
                   time: { ...part.state.time, end: completed },
                   input: part.state.input,
                   title: "",
-                  metadata: { output },
-                  output,
+                  metadata: { output: finalOutput },
+                  output: finalOutput,
                 }
                 yield* sessions.updatePart(part)
               }
