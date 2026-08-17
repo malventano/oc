@@ -363,22 +363,17 @@ export const {
           }
           const result = search(parts, event.properties.part.id, (part) => part.id)
           if (result.found) {
-            const incoming = event.properties.part
-            const existing = parts[result.index]
-            // The server's tool part never carries the streamed state.raw
-            // (tool-input deltas are broadcast-only, processor.ts) - a
-            // reconcile here would DELETE the client's accumulated raw
-            // (reconcile removes keys absent from the incoming object) and
-            // the deltas still in the batch window would append onto an
-            // empty raw: a tail-only block (the 2026-08-17 investigation).
-            // Preserve the live raw across the reconcile.
-            const merged =
-              incoming.type === "tool" &&
-              existing?.type === "tool" &&
-              (existing.state as { raw?: string } | undefined)?.raw
-                ? { ...incoming, state: { ...incoming.state, raw: (existing.state as { raw: string }).raw } }
-                : incoming
-            setStore("part", event.properties.part.messageID, result.index, reconcile(merged))
+            // 0156's raw-preserve guard was REMOVED (2026-08-17, rework of
+            // BUG_WRITE_STREAMING_DUPLICATE_GREY): the reconcile would wipe
+            // the client-accumulated state.raw (server deltas are
+            // broadcast-only), but raw is only READ while status is
+            // "pending" - and no part.updated reconcile fires during
+            // pending (the create carries raw:"" and precedes the deltas;
+            // the tool-call/status events that reconcile the part arrive
+            // after the raw has been superseded by the landed input). The
+            // guard was dead code; the delta FIFO append path was the only
+            // consumer, and it is untouched.
+            setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
             break
           }
           setStore(
