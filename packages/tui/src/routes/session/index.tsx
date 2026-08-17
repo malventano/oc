@@ -1984,6 +1984,25 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
     return true
   })
 
+  // A bash part created by session.shell (the user's "!" shell-mode command)
+  // is distinguishable by its message chain: the tool part sits in an
+  // assistant message whose PARENT user message carries the synthetic
+  // "The following tool was executed by the user" text part. The block then
+  // titles as "! shell" / "! Running" instead of "# bash" / "# Running"
+  // (2026-08-17).
+  const sync = useSync()
+  const fromUserShell = createMemo(() => {
+    if (display() !== "bash") return false
+    const parentID = props.message.parentID
+    if (!parentID) return false
+    const parent = (sync.data.message[props.message.sessionID] ?? []).find((m) => m.id === parentID)
+    if (!parent || parent.role !== "user") return false
+    const parts = sync.data.part[parent.id] ?? []
+    return parts.some(
+      (p) => p.type === "text" && p.synthetic === true && p.text === "The following tool was executed by the user",
+    )
+  })
+
   const toolprops = {
     get metadata() {
       return props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {})
@@ -2006,7 +2025,7 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
     <Show when={!shouldHide()}>
       <Switch>
         <Match when={display() === "bash"}>
-          <Shell {...toolprops} />
+          <Shell {...toolprops} fromUserShell={fromUserShell()} />
         </Match>
         <Match when={display() === "glob"}>
           <Glob {...toolprops} />
@@ -2064,6 +2083,11 @@ type ToolProps = {
   tool: string
   output?: string
   part: ToolPart
+  // Set for bash parts created by session.shell (the user's "!" shell-mode
+  // command): the block titles as "! shell" instead of "# bash" so the GUI
+  // (and the agent via the output <metadata> marker) can tell a user-entered
+  // command from a model-generated bash call.
+  fromUserShell?: boolean
 }
 function GenericTool(props: ToolProps) {
   const { theme } = useTheme()
@@ -2302,7 +2326,7 @@ function BlockTool(props: {
               </text>
             }
           >
-            <Spinner color={theme.textMuted}>{title().replace(/^# /, "")}</Spinner>
+            <Spinner color={theme.textMuted}>{title().replace(/^[#!←] /, "")}</Spinner>
           </Show>
         )}
       </Show>
@@ -2347,14 +2371,22 @@ function Shell(props: ToolProps) {
   // the spinner inline next to the colored command; multi-line commands
   // get it in the block title (it can't span the gutter).
   const gutter = createMemo(() => command().includes("\n"))
+  // PERSISTENT header (2026-08-17): the "# Running" line used to pop in
+  // and out with the state - a multi-line command with no workdir lost
+  // the title at completion and the block SHRANK a row (the jumpy pop the
+  // user reported). The header is now always present and only the text
+  // toggles: "# Running [in <wd>]" while the command executes, "# bash"
+  // once it completes - the tool call box height never changes (same
+  // pattern as write's # Writing <-> # Wrote and edit's <- Editing <->
+  // <- Patched). The bash tool also gains the persistent label so the GUI
+  // always shows what the block was.
   const title = createMemo(() => {
-    if (isRunning() && gutter()) {
+    const p = props.fromUserShell ? "!" : "#"
+    if (isRunning()) {
       const wd = workdirDisplay()
-      return wd ? `# Running in ${wd}` : "# Running"
+      return wd ? `${p} Running in ${wd}` : `${p} Running`
     }
-    const wd = workdirDisplay()
-    if (!wd) return
-    return `# Running in ${wd}`
+    return props.fromUserShell ? "! shell" : "# bash"
   })
   // Heredoc bodies get their own language colors (delimiter-named, else
   // sniffed from the body, else bash) - the shell parts stay bash.
@@ -2427,7 +2459,11 @@ function Shell(props: ToolProps) {
       <Match when={stream.streaming()}>
         <LiveToolStream
           part={props.part}
-          title={stream.title()}
+          // The persistent "# bash" header is present from the FIRST
+          // streaming frame - the block keeps its title row through
+          // streaming -> running ("# Running") -> completed ("# bash"),
+          // so no height jump at either transition (2026-08-17).
+          title="# bash"
           streaming={true}
           // The streaming display keeps the model's trailing newline (the
           // raw tool-call content ends with "\n"); the landed command
@@ -2459,36 +2495,27 @@ function Shell(props: ToolProps) {
           TRUE-match InlineTool shows for a frame (the '$' + the block
           vanishing - the vertical judder's second half). */}
       <Match when={stringValue(props.metadata.output) !== undefined || isRunning()}>
-        {/* Running: multi-line commands get the spinner in the block title
-            (it can't span the gutter); single-line commands get it inline
-            next to the colored command - the command stays colored either
-            way while it executes. */}
+        {/* Running: the spinner lives in the block title for EVERY command
+            (single AND multi-line) - it signifies the BLOCK is busy, not
+            the command within (the old inline-spinner design shifted the
+            command text by the spinner width, jumping 2 columns when it
+            came and went - 2026-08-17). The command stays colored and
+            stationary below. */}
         <BlockTool
           title={title()}
           part={props.part}
-          spinner={isRunning() && gutter()}
+          // The spinner lives in the TITLE for every running command (single
+          // AND multi-line): a single-line command's inline spinner (the old
+          // 0146 design) shifted the command text by the spinner+gap width
+          // while running, jumping 2 columns when it came and went
+          // (2026-08-17). With the persistent title header, the command line
+          // below never moves - only the title toggles "# Running" (with the
+          // spinner) <-> "# bash".
+          spinner={isRunning()}
           onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
         >
           <box gap={1}>
-            <Show when={isRunning() && !gutter()} fallback={commandBlock()}>
-              <box flexDirection="row" gap={1}>
-                <spinner frames={SPINNER_FRAMES} interval={80} color={theme.textMuted} />
-                <code
-                  flexGrow={1}
-                  flexShrink={1}
-                  filetype="bash"
-                  // drawUnstyledText={false}: the spinner-row element mounts
-                  // fresh at the streaming->running transition - its first
-                  // paint would be the raw WHITE text (video captured at
-                  // the spinner's start frame).
-                  drawUnstyledText={false}
-                  syntaxStyle={syntax()}
-                  content={command()}
-                  conceal={ctx.conceal()}
-                  fg={theme.text}
-                />
-              </box>
-            </Show>
+            {commandBlock()}
             <Show when={output()}>
               <text fg={theme.text}>{limited()}</text>
             </Show>
@@ -2524,6 +2551,15 @@ function streamedJsonValue(raw: string, key: string): string | undefined {
   let out = ""
   for (let j = 0; j < tail.length; j++) {
     const c = tail[j]!
+    // The value ENDS at the first unescaped closing quote - without this
+    // the extraction kept reading into the trailing JSON args ("...", 
+    // "filePath": "...}") and the live title/filetype got a garbage path:
+    // filetype() resolved no extension and the write streamed WHITE text
+    // (markdown content reverting to plain the moment the filePath arg
+    // landed, snapping back at completion - 2026-08-17). Escaped quotes
+    // (\" and \u0022) are consumed by the escape branch below and stay
+    // part of the value.
+    if (c === '"') break
     if (c !== "\\" || j + 1 >= tail.length) {
       out += c
       continue
@@ -2668,10 +2704,13 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
   // with the same letters as element selectors) and by excluding ( and =
   // from the pre-{ run.
   if (/^(?!(?:import|export|const|let|var|function|class|if|for|while|switch|return|interface|type|namespace|enum|struct)\b)[A-Za-z#.\*@][^{}()=]*\{/m.test(head)) return "css"
-  // yaml: key: value at line start, or front-matter (--- + a key: value).
-  // The key: value gate avoids marking markdown (no colons) or a bare
-  // --- horizontal rule (which alone is not yaml).
-  if (/^[A-Za-z0-9_./-]+\s*:\s+[^\s#]/m.test(head)) return "yaml"
+  // yaml: TWO OR MORE key: value lines at line start, or front-matter
+  // (--- + a key: value). A single sentence-like "Key: value" line inside
+  // a markdown/prose document is NOT yaml - a .md write whose "Status:
+  // FIXED (0161)..." line streamed flipped the sniffer (and with batched
+  // deltas, the latched live filetype) to the yaml grammar mid-stream
+  // (2026-08-17). A bare --- horizontal rule is not yaml either.
+  if ((head.match(/^[A-Za-z0-9_./-]+\s*:\s+[^\s#]/gm) ?? []).length >= 2) return "yaml"
   if (/^---\s*$/m.test(head) && /^[A-Za-z0-9_./-]+\s*:/m.test(head)) return "yaml"
   // toml/ini: [section] header to EOL, or key = "..." (dot-free key to
   // avoid JS exports.a = patterns; quoted values only).
@@ -2993,10 +3032,23 @@ function Write(props: ToolProps) {
   // everywhere, or a content-first JS write streams "javascript" and snaps
   // to "typescript" when the path lands - the grammar axis of the
   // duplicate-grey-copy bug.
+  // Latched live filetype: the FIRST CONFIDENT resolution (the path once
+  // it lands and resolves, or a real content sniff) sticks for the
+  // stream's duration - a mid-stream flip reverts the view to plain and
+  // STAYS white (the 2026-08-17 write white-revert: the filePath arg
+  // landing mid-stream flipped the live type to undefined, likely via the
+  // streamedJsonValue tail-garbage path). The low-content markdown
+  // default is NOT latched - a later confident signal still engages. The
+  // completed view re-evaluates from the actual filename.
+  let latched: string | undefined
   const liveFiletype = createMemo(() => {
     const p = stream.livePath() ?? path()
-    if (p) return filetype(p)
-    return coalesceFiletype(sniffFiletype(stream.display())) ?? "markdown"
+    const pathFt = p ? filetype(p) : undefined
+    const sniffed = coalesceFiletype(sniffFiletype(stream.display()))
+    const candidate = pathFt ?? sniffed
+    if (candidate) latched = candidate
+    if (latched) return latched
+    return "markdown"
   })
 
   return (
@@ -3447,7 +3499,9 @@ function Edit(props: ToolProps) {
   const stream = useToolStream(props, {
     bodyKey: "input",
     pathKey: "filePath",
-    title: (live) => (live ? `← Editing ${pathFormatter.format(live)}` : "← Editing..."),
+    // Streaming says "Patching" to match the completed "← Patched <path>"
+    // (the write tool's # Writing <-> # Wrote pattern) - 2026-08-17.
+    title: (live) => (live ? `← Patching ${pathFormatter.format(live)}` : "← Patching..."),
   })
   // The target file's language for the streaming columns: the FIRST
   // section's [path] header inside the streamed patch. NOT stream.livePath()
