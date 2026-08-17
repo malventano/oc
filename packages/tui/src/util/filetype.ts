@@ -122,9 +122,18 @@ export const LANGUAGE_EXTENSIONS: Record<string, string> = {
   ".typc": "typst",
 }
 
+// The JS/TS family renders with ONE grammar (the typescript grammar covers
+// plain JS) so a view that renders the same file in two phases never shows
+// a grammar flip. The completed write view resolves through this; the
+// streaming sniffer (index.tsx) must resolve its guess through it too, or a
+// content-first write streams "javascript" and completes "typescript"
+// (BUG_WRITE_STREAMING_DUPLICATE_GREY.md, grammar axis 0157).
+export function coalesceFiletype(language: string | undefined) {
+  if (["typescriptreact", "javascriptreact", "javascript"].includes(language!)) return "typescript"
+  return language
+}
+
 export function filetype(input?: string) {
   if (!input) return "none"
-  const language = LANGUAGE_EXTENSIONS[path.extname(input)]
-  if (["typescriptreact", "javascriptreact", "javascript"].includes(language)) return "typescript"
-  return language
+  return coalesceFiletype(LANGUAGE_EXTENSIONS[path.extname(input)])
 }

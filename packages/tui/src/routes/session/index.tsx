@@ -55,7 +55,7 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
-import { filetype } from "../../util/filetype"
+import { coalesceFiletype, filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
 import { useToast } from "../../ui/toast"
@@ -2957,10 +2957,15 @@ function Write(props: ToolProps) {
   // thing to stream): sniff the language from the content's first lines,
   // falling back to markdown (correct for prose files; the flip to the
   // file's real language happens when the path lands and at completion).
+  // The sniffed guess MUST resolve through the same coalescing as
+  // filetype() (0157): the JS family renders with the typescript grammar
+  // everywhere, or a content-first JS write streams "javascript" and snaps
+  // to "typescript" when the path lands - the grammar axis of the
+  // duplicate-grey-copy bug.
   const liveFiletype = createMemo(() => {
     const p = stream.livePath() ?? path()
     if (p) return filetype(p)
-    return sniffFiletype(stream.display()) ?? "markdown"
+    return coalesceFiletype(sniffFiletype(stream.display())) ?? "markdown"
   })
 
   return (
