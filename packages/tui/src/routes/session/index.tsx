@@ -56,6 +56,7 @@ import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { coalesceFiletype, filetype } from "../../util/filetype"
+import { parseStreamingPatch } from "../../util/streaming-patch"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
 import { useToast } from "../../ui/toast"
@@ -3296,6 +3297,87 @@ function Execute(props: ToolProps) {
   )
 }
 
+// The edit live view: TWO fixed columns keyed on OLD vs NEW (block type,
+// NOT per-section - the 0159 jumpy-render decision, see BUG_EDIT_LIVE_DIFF).
+// The whole stream's removed content (OLD + CUT blocks across every
+// section) grows the left column (diffRemovedBg), the added content (NEW +
+// PASTE blocks) grows the right (diffAddedBg). The code elements are
+// created ONCE; their content props read signals that only grow, so the
+// streaming buffers append in place exactly like the write live view (the
+// smoothest streaming view in the build). No per-section structure to
+// remount, no flexGrow/flexBasis re-measure dance (fixed width="50%") -
+// the per-section variant collapsed to a single line and bounced
+// (video-captured). The block membership IS the diff semantic: the role
+// tint needs no file matching. Resulting-file line numbers need the match
+// ladder (step 2, deferred): run the ladder OLD<->NEW (not OLD<->file) to
+// tint only the actual delta lines and derive line numbers.
+function LiveEditDiff(props: {
+  part: ToolPart
+  title?: string
+  streaming: boolean
+  content: string
+  filetype?: string
+}) {
+  const { theme, syntax } = useTheme()
+  const [left, setLeft] = createSignal("")
+  const [right, setRight] = createSignal("")
+  // Re-parse per flush and push the freshly parsed column text into the
+  // signals (monotonic growth). Signals are written in an effect so the
+  // two code element descriptors stay STABLE - only the content props
+  // re-evaluate, patching the buffers in place.
+  createEffect(() => {
+    const p = parseStreamingPatch(props.content)
+    const l: string[] = []
+    const r: string[] = []
+    for (const sec of p.sections) {
+      l.push(...sec.left)
+      r.push(...sec.right)
+    }
+    setLeft(l.join("\n"))
+    setRight(r.join("\n"))
+  })
+  const lang = () => props.filetype
+  return (
+    <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
+      <Show when={props.content.length > 0}>
+        <box flexDirection="row">
+          <box width="50%" paddingRight={1}>
+            {/* Block-relative line numbers (1..N per column - real file
+                line numbers need the match ladder, step 2). The gutter
+                width keeps the code's x-position aligned with the
+                completed diff, which is always guttered - no sideways
+                snap at completion. */}
+            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+              <code
+                {...(lang() ? { filetype: lang() } : {})}
+                drawUnstyledText={false}
+                streaming={true}
+                syntaxStyle={syntax()}
+                content={left()}
+                conceal={false}
+                fg={theme.textMuted}
+              />
+            </line_number>
+          </box>
+          <box width="50%">
+            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+              <code
+                {...(lang() ? { filetype: lang() } : {})}
+                drawUnstyledText={false}
+                streaming={true}
+                syntaxStyle={syntax()}
+                content={right()}
+                conceal={false}
+                fg={theme.textMuted}
+              />
+            </line_number>
+          </box>
+        </box>
+      </Show>
+    </BlockTool>
+  )
+}
+
 function Edit(props: ToolProps) {
   const ctx = use()
   const { theme, syntax } = useTheme()
@@ -3355,14 +3437,18 @@ function Edit(props: ToolProps) {
     pathKey: "filePath",
     title: (live) => (live ? `← Editing ${pathFormatter.format(live)}` : "← Editing..."),
   })
-  // The fence content lines are the target file's code, so color them with
-  // the FIRST section's language (the section the model is currently
-  // typing) once its [PATH] header streams in; plain text before that.
+  // The target file's language for the streaming columns: the FIRST
+  // section's [path] header inside the streamed patch. NOT stream.livePath()
+  // - streamedJsonValue has no closing-quote termination, so the filePath
+  // extraction carries the rest of the JSON args ("...", "input": "***...")
+  // and filetype() resolves no extension -> no grammar (grey columns,
+  // 2026-08-17). The header regex stops at the real path. The write view is
+  // immune to the livePath garbage because it falls back to the content
+  // sniffer; edit has no sniffer here.
   const liveFiletype = createMemo(() => {
     const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]/m.exec(stream.display())
     return match ? filetype(match[1]) : undefined
   })
-
   const fileDiffs = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
   function fileTitle(file: { type: string; relativePath: string; filePath: string; movePath?: string }) {
@@ -3442,12 +3528,12 @@ function Edit(props: ToolProps) {
           </Show>
         </BlockTool>
       </Match>
-      {/* Live view: the patch text streams in place while the model
-          generates it (content lines colored as the first section's
-          language - same combo as the write live view). Swaps to the
-          parsed per-file diff once the edit completes and metadata lands. */}
+      {/* Live view: the streamed patch's OLD lines in a removed column,
+          NEW lines in an added column (two fixed columns keyed on block
+          type - see LiveEditDiff). Swaps to the parsed per-file diff once
+          the edit completes and metadata lands. */}
       <Match when={stream.streaming() || stream.status() === "running"}>
-        <LiveToolStream
+        <LiveEditDiff
           part={props.part}
           title={stream.title()}
           streaming={stream.streaming()}
