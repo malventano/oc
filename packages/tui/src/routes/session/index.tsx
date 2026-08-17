@@ -2973,10 +2973,16 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
 // jumped to fill the whole viewport - 0165 rework). On completion
 // (streaming=false) the clamp releases and the final render jumps to the
 // true final height (the allowed transition - the completed view is a
-// fresh block anyway). Rows = the streaming content's line count, the
-// block's height driver (each line is one row at typical block widths;
-// wrapped lines only make the natural height larger, which the clamp never
-// limits).
+// fresh block anyway). Rows = a PURE row-count driver computed by the
+// caller: the logical line count for wrapMode="none" content (each line is
+// one row) or a WRAP-AWARE per-line estimate for wrapping content (the
+// edit diff 0174 and the write/bash streaming paths 0178 - a long wrapped
+// line's rendered height exceeds the logical line count, and a
+// logical-only clamp never captured it, so the block shrank mid-stream).
+// The estimate is stable (never a renderable-height measurement), so the
+// clamp holds the max wrapped height and only wrap-width-collapse flashes
+// (0165, the transient width feeding the native measure for one frame) can
+// beat it.
 function GrowOnly(props: { streaming: boolean; rows: number; children: JSX.Element }) {
   const [maxRows, setMaxRows] = createSignal(0)
   createEffect(() => {
@@ -3021,6 +3027,28 @@ function LiveToolStream(props: {
   // (the 2026-08-17 duplicate-grey-copy report, video-confirmed), and
   // the colors snap in at completion when the conceal=false block lands.
   const conceal = createMemo(() => props.conceal ?? ctx.conceal())
+  // The streaming code's per-line width for the wrap-aware row estimate:
+  // the message width from the session context minus the gutter (minWidth
+  // 3 + paddingRight 1) when shown, minus a small margin so the estimate
+  // is conservative (narrower column -> more estimated rows -> the grow
+  // clamp never under-holds). The edit diff (LiveEditDiff, 0174) uses the
+  // same pattern; write/bash are full-width single columns (no 50/50
+  // split). The estimate is STABLE (no transient layout measurement - the
+  // 0165 balloon trap).
+  const codeWidth = createMemo(() => Math.max(20, use().width - (showGutter() ? 6 : 2)))
+  // Wrap-aware row count: the grow-only clamp must track the WRAPPED
+  // height, not the logical line count - a long line wraps to many rows,
+  // the wrap re-flows as the content changes, and a logical-only clamp
+  // never captured the wrapped height (the block SHRANK mid-stream - the
+  // same bug the user caught on the edit diff, 2026-08-17, fixed 0174).
+  // With wrapping restored on this path (0178) the wrap-aware driver is
+  // required the same way.
+  const wrappedRows = (text: string) => {
+    if (text.length === 0) return 0
+    return text
+      .split("\n")
+      .reduce((acc, line) => acc + Math.max(1, Math.ceil(line.length / codeWidth())), 0)
+  }
   // The single streaming code element - the SAME object in both gutter
   // branches (see below), so the line_number mount never recreates it.
   const singleEl = (
@@ -3037,19 +3065,15 @@ function LiveToolStream(props: {
       content={props.content}
       conceal={conceal()}
       fg={theme.textMuted}
-      // wrapMode="none" (0165): a streaming code element's wrap width can
-      // transiently collapse to ~1-3 chars during a layout re-flow (the
-      // text renderable wraps at Math.max(1, colWidth - padding)), turning
-      // a long first line into ~30 wrapped rows for ONE frame. The
-      // grow-only guard holds the content LINE COUNT, which can't catch a
-      // wrap artifact (natural height beats the minHeight floor), so the
-      // block flashes tall then snaps back - the "jumped to top" that
-      // escaped the guard. No wrapping makes the streaming height always
-      // equal the line count: the guard holds it exactly, a wrap artifact
-      // is structurally impossible. Long lines truncate at the block edge
-      // for the (transient) streaming view; the completed view wraps
-      // normally.
-      wrapMode="none"
+      // wrapMode removed (0178): the streaming view WRAPS long lines like
+      // the completed view (a long single-line bash truncated while
+      // streaming; the completed heredoc's first body line wrapped but the
+      // streamed view didn't - the user's live catches, 2026-08-17). The
+      // 0165 transient wrap-width-collapse flash remains the documented
+      // OPEN risk (a long first line can wrap to many rows for ONE frame
+      // while the width re-flows); the grow-only clamp below is now
+      // WRAP-AWARE (the 0174 diff pattern) so the steady-state shrink from
+      // wrap re-flow is held.
     />
   )
   // line_number only accepts a code element target - a wrapper box is
@@ -3077,7 +3101,6 @@ function LiveToolStream(props: {
             content={seg.text}
             conceal={conceal()}
             fg={theme.textMuted}
-            wrapMode="none"
           />
         )
         return props.gutter === false ? (
@@ -3107,7 +3130,7 @@ function LiveToolStream(props: {
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
       <Show when={props.content.length > 0}>
-        <GrowOnly streaming={props.streaming} rows={props.content.split("\n").length}>
+        <GrowOnly streaming={props.streaming} rows={wrappedRows(props.content)}>
           {code}
         </GrowOnly>
       </Show>
