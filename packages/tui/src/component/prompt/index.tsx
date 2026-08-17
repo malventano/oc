@@ -1102,6 +1102,16 @@ export function Prompt(props: PromptProps) {
     const trimmed = store.prompt.input.trim()
     if (trimmed === "/restart" || trimmed.startsWith("/restart ")) {
       try {
+        // Busy safety: a turn in flight when /restart is typed must be
+        // finalized before the execve drops the process image - otherwise the
+        // DB is left with an unfinalized assistant message and the restarted
+        // instance would treat the orphan as pending work. The cancel
+        // finalizes the interrupted message + marks orphaned tool calls; the
+        // execve only fires after the RPC resolves (the writes are committed
+        // before the response). Idle sessions: the cancel is a no-op.
+        if (props.sessionID) {
+          await sdk.client.session.abort({ sessionID: props.sessionID, resume: "false" }).catch(() => {})
+        }
         restart(props.sessionID)
      } catch (error) {
        toast.show({

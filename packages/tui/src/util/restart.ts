@@ -37,6 +37,15 @@ export function restartArgv(sessionID: string | undefined): string[] {
     }
     if (!positionals && arg === "--fork") continue
     if (!positionals && (arg === "--continue" || arg === "-c")) continue
+    // A stale --prompt (e.g. from a previous tool-initiated restart) must not
+    // leak into a later plain restart - the new instance would re-submit the
+    // old resume prompt. The util re-appends --prompt only for resume
+    // restarts (restart(sessionID, resumePrompt)).
+    if (!positionals && arg === "--prompt") {
+      i += 1 // skip the value
+      continue
+    }
+    if (!positionals && arg.startsWith("--prompt=")) continue
     if (!positionals && (arg === "--session" || arg === "-s")) {
       // Replace the old value; a session id is always known at call time, but
       // guard for the no-session restart (home screen) where --session must go.
@@ -60,7 +69,7 @@ export function restartArgv(sessionID: string | undefined): string[] {
   return result
 }
 
-export function restart(sessionID: string | undefined) {
+export function restart(sessionID: string | undefined, resumePrompt?: string) {
   if (typeof process.execve !== "function") {
     throw new Error("process.execve is not supported by this runtime")
   }
@@ -95,5 +104,11 @@ export function restart(sessionID: string | undefined) {
   // argv[0] = execPath is consumed by the stub as the program name; the
   // remaining entries become the new process's argv.slice(2). Never returns
   // on success.
-  process.execve(process.execPath, [process.execPath, ...restartArgv(sessionID)], process.env)
+  const argv = restartArgv(sessionID)
+  // Tool-initiated restart (the `restart` tool): append the resume prompt so
+  // the new instance boots into the session and auto-submits "restart
+  // complete" once the TUI is ready + the mode has synced, handing the turn
+  // back to the agent. Plain /restart passes no prompt - unchanged behavior.
+  if (resumePrompt) argv.push("--prompt", resumePrompt)
+  process.execve(process.execPath, [process.execPath, ...argv], process.env)
 }
