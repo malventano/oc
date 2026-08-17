@@ -3397,20 +3397,41 @@ function Execute(props: ToolProps) {
   )
 }
 
+// The OLD<->NEW match ladder (step 2): find the identical context prefix by
+// comparing the removed (OLD) lines to the added (NEW) lines at each index.
+// The first divergent line is the diff ANCHOR; everything before it is
+// unchanged context (shown in both columns, neutral). The ladder is MONOTONIC
+// - the anchor only moves FORWARD as the stream confirms more matching lines
+// - so the per-line color maps can rebuild per flush without the diff
+// re-layouting: content, elements, and layout never change, only the line
+// colors (the instability lesson: re-segmenting moved lines between
+// elements whose async highlight buffers lag, making the OLD block
+// intermittently vanish; color-only updates cannot). The context AFTER the
+// change is not yet detected (the identical tail needs the suffix ladder -
+// a later step); for now the removed/added bands run to the end of each
+// block, exactly like the pre-step-2 view past the anchor.
+function diffAnchor(oldLines: string[], newLines: string[]): number {
+  const min = Math.min(oldLines.length, newLines.length)
+  for (let i = 0; i < min; i++) {
+    if (oldLines[i] !== newLines[i]) return i
+  }
+  return min
+}
+
 // The edit live view: TWO fixed columns keyed on OLD vs NEW (block type,
 // NOT per-section - the 0159 jumpy-render decision, see BUG_EDIT_LIVE_DIFF).
 // The whole stream's removed content (OLD + CUT blocks across every
-// section) grows the left column (diffRemovedBg), the added content (NEW +
-// PASTE blocks) grows the right (diffAddedBg). The code elements are
-// created ONCE; their content props read signals that only grow, so the
-// streaming buffers append in place exactly like the write live view (the
-// smoothest streaming view in the build). No per-section structure to
-// remount, no flexGrow/flexBasis re-measure dance (fixed width="50%") -
-// the per-section variant collapsed to a single line and bounced
-// (video-captured). The block membership IS the diff semantic: the role
-// tint needs no file matching. Resulting-file line numbers need the match
-// ladder (step 2, deferred): run the ladder OLD<->NEW (not OLD<->file) to
-// tint only the actual delta lines and derive line numbers.
+// section) grows the left column, the added content (NEW + PASTE blocks)
+// grows the right. The code elements are created ONCE; their content props
+// read signals that only grow, so the streaming buffers append in place
+// exactly like the write live view (the smoothest streaming view in the
+// build). No per-section structure to remount, no flexGrow/flexBasis
+// re-measure dance (fixed width="50%") - the per-section variant collapsed
+// to a single line and bounced (video-captured). STEP 2 (the ladder): the
+// line_number per-line color maps express the diff - the identical context
+// prefix stays neutral, the removed lines get diffRemovedBg (left), the
+// added lines diffAddedBg (right) - while the content itself never changes,
+// so the diff flows into its end state instead of jumping.
 function LiveEditDiff(props: {
   part: ToolPart
   title?: string
@@ -3440,18 +3461,45 @@ function LiveEditDiff(props: {
   // The block's height driver is the two columns (the parsed OLD/NEW lines),
   // not the raw patch text - clamp on the taller column.
   const rows = createMemo(() => Math.max(left().split("\n").length, right().split("\n").length))
+  // STEP 2 ladder: the line arrays + the diff anchor. The anchor is the
+  // first index where OLD[i] !== NEW[i] (or the shorter length when one
+  // column is a prefix of the other). Only moves forward as the stream
+  // confirms matching lines - the color maps below are color-only updates.
+  const leftLines = createMemo(() => (left().length === 0 ? [] : left().split("\n")))
+  const rightLines = createMemo(() => (right().length === 0 ? [] : right().split("\n")))
+  const anchor = createMemo(() => diffAnchor(leftLines(), rightLines()))
+  // Per-line colors for the line_number wrappers: lines past the anchor are
+  // the changed region (red removed on the left, green added on the right);
+  // the confirmed context prefix gets NO band (neutral, both columns).
+  const leftColors = createMemo(() => {
+    const map = new Map<number, { gutter: typeof theme.diffRemoved; content: typeof theme.diffRemovedBg }>()
+    const lines = leftLines()
+    for (let i = anchor(); i < lines.length; i++) {
+      map.set(i, { gutter: theme.diffRemoved, content: theme.diffRemovedBg })
+    }
+    return map
+  })
+  const rightColors = createMemo(() => {
+    const map = new Map<number, { gutter: typeof theme.diffAdded; content: typeof theme.diffAddedBg }>()
+    const lines = rightLines()
+    for (let i = anchor(); i < lines.length; i++) {
+      map.set(i, { gutter: theme.diffAdded, content: theme.diffAddedBg })
+    }
+    return map
+  })
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
       <Show when={props.content.length > 0}>
         <GrowOnly streaming={props.streaming} rows={rows()}>
           <box flexDirection="row">
             <box width="50%" paddingRight={1}>
-              {/* Block-relative line numbers (1..N per column - real file
-                  line numbers need the match ladder, step 2). The gutter
-                  width keeps the code's x-position aligned with the
+              {/* Block-relative line numbers (1..N per column; the step-2
+                  ladder tints the changed region via lineColors - context
+                  stays neutral, removed gets the diffRemoved band). The
+                  gutter width keeps the code's x-position aligned with the
                   completed diff, which is always guttered - no sideways
                   snap at completion. */}
-              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={leftColors()}>
                 <code
                   {...(lang() ? { filetype: lang() } : {})}
                   drawUnstyledText={false}
@@ -3465,7 +3513,7 @@ function LiveEditDiff(props: {
               </line_number>
             </box>
             <box width="50%">
-              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
+              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={rightColors()}>
                 <code
                   {...(lang() ? { filetype: lang() } : {})}
                   drawUnstyledText={false}
