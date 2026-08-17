@@ -2629,6 +2629,8 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
   }
   if (/^<\?xml/.test(head)) return "xml"
   if (/^<!DOCTYPE html|<html[\s>]/i.test(head)) return "html"
+  if (/^<\?php/m.test(head)) return "php"
+  if (/^using [A-Za-z0-9_.]+;|^namespace [A-Za-z0-9_.]+\s*\{/m.test(head)) return "csharp"
   if (/^export (?:function|const|class|interface|type|default)\b|^interface \w+\s*\{/m.test(head)) return "typescript"
   if (/^import .* from ['"]/m.test(head) && /:\s*(?:string|number|boolean|Record|Array|Promise|Map)</m.test(head)) return "typescript"
   if (/^(?:export )?(?:function|const|let|var)\b.*=>/m.test(head)) return "typescript"
@@ -2639,8 +2641,11 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
   if (/^def \w+\(|^class \w+:|^from \w+ import|^import \w+(?: as \w+)?$/m.test(head)) return "python"
   if (/^public (?:static )?(?:class|void|final)\b|^class \w+ \{$/m.test(head)) return "java"
   if (/^fun main|^fun \w+\(/m.test(head)) return "kotlin"
-  if (/^#include <(?:iostream|vector|string|map|algorithm)>/m.test(head)) return "cpp"
-  if (/^#include <(?:stdio|stdlib)\.h>/m.test(head)) return "c"
+  // cpp/c: any std header without a .h extension is cpp (iostream, vector,
+  // memory, ...), .h system headers are c (stdio.h, string.h, ...). cpp
+  // also covers using-namespace-std and std:: starts.
+  if (/^#include <(?![\w./]*\.h>)[\w./]+>|^(?:using namespace std\b|std::[a-z]+\s*\()/m.test(head)) return "cpp"
+  if (/^#include <[a-z0-9_]+\.h>/m.test(head)) return "c"
   if (/^import Foundation|^import SwiftUI/m.test(head)) return "swift"
   if (/^main :: IO \(\)/m.test(head)) return "haskell"
   if (/^require ['"]/m.test(head)) return "ruby"
@@ -2653,6 +2658,19 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
   if (/^(?:const|let|var)\s+\w+\s*=\s*[\[\{\/\'"`(]/m.test(head)) return "javascript"
   if (/^function \w+\(/m.test(head)) return "javascript"
   if (/^\{/.test(firstLine) && /"\w+"\s*:/.test(head)) return "json"
+  // css: a selector + { at line end. JS-block false positives excluded by
+  // the keyword blacklist (import/const/if/function/interface/... start
+  // with the same letters as element selectors) and by excluding ( and =
+  // from the pre-{ run.
+  if (/^(?!(?:import|export|const|let|var|function|class|if|for|while|switch|return|interface|type|namespace|enum|struct)\b)[A-Za-z#.\*@][^{}()=]*\{/m.test(head)) return "css"
+  // yaml: key: value at line start, or front-matter (--- + a key: value).
+  // The key: value gate avoids marking markdown (no colons) or a bare
+  // --- horizontal rule (which alone is not yaml).
+  if (/^[A-Za-z0-9_./-]+\s*:\s+[^\s#]/m.test(head)) return "yaml"
+  if (/^---\s*$/m.test(head) && /^[A-Za-z0-9_./-]+\s*:/m.test(head)) return "yaml"
+  // toml/ini: [section] header to EOL, or key = "..." (dot-free key to
+  // avoid JS exports.a = patterns; quoted values only).
+  if (/^\[[A-Za-z0-9_.-]+\](?:\s.*)?$|^[A-Za-z0-9_-]+\s*=\s*["']/m.test(head)) return "toml"
   // Markdown (heredoc docs with non-language delimiters like EOF, and
   // prose writes): ATX headings, bullet/numbered lists, code fences,
   // tables, blockquotes. Checked AFTER the code languages - comment-headed
