@@ -570,31 +570,56 @@ export const EditTool = Tool.define(
           // file hunk, which would misreport the ranges).
           const changedPositions = (plan: Plan): string[] => {
             const ranges: string[] = []
-            let pos = 1 // current line position in the NEW file
-            let start: number | null = null
-            let end = 0
-            for (const change of diffLines(plan.before, plan.after)) {
+            const formatRange = (a: number, b: number) => (a === b ? `${a}` : `${a}-${b}`)
+            // Track positions in BOTH files: additions live at their NEW
+            // positions, removals at their OLD positions (the lines the
+            // agent saw in its last read). A removal followed by an
+            // addition (before the next context) is a REPLACE - the
+            // addition reports the merged NEW-space location, the removal
+            // is skipped. A PURE removal (deletion-only edit) reports the
+            // deleted lines' OLD positions - it must never collapse to
+            // "no change" (the 2026-08-17 misreport: a 5-line deletion
+            // walked to an empty range list and was summarized as
+            // "no change" while the file DID change).
+            let newPos = 1
+            let oldPos = 1
+            const changes = diffLines(plan.before, plan.after)
+            for (let i = 0; i < changes.length; i++) {
+              const change = changes[i]!
               const count = change.count ?? 1
               if (change.added) {
-                if (start === null) start = pos
-                end = pos + count - 1
-                pos += count
-              } else {
-                if (start !== null) {
-                  ranges.push(start === end ? `${start}` : `${start}-${end}`)
-                  start = null
+                ranges.push(formatRange(newPos, newPos + count - 1))
+                newPos += count
+              } else if (change.removed) {
+                // Skip to the next non-removed change: if it is an
+                // addition, this removal is the delete side of a replace
+                // and the addition reports the location.
+                let j = i + 1
+                while (j < changes.length && changes[j]!.removed) j++
+                if (j < changes.length && changes[j]!.added) {
+                  oldPos += count
+                  continue
                 }
-                if (!change.removed) pos += count // context advances the position
+                ranges.push(formatRange(oldPos, oldPos + count - 1))
+                oldPos += count
+              } else {
+                newPos += count
+                oldPos += count
               }
             }
-            if (start !== null) ranges.push(start === end ? `${start}` : `${start}-${end}`)
             return ranges
           }
           const lineSummary = (plan: Plan): string => {
-            const ranges = changedPositions(plan)
             const rel = path.relative(instance.worktree, plan.targetPath)
-            const label = ranges.join(", ")
-            return ranges.length > 0 ? `${rel}: ${label} (+${plan.additions}/-${plan.deletions})` : `${rel}: no change`
+            const counts = `(+${plan.additions}/-${plan.deletions})`
+            // changedPlansOut only holds plans with a NON-EMPTY diff - a
+            // "no change" verdict here would be a lie (the 2026-08-17
+            // deletion-only misreport). The walk reports deletion-only
+            // edits at their OLD positions; if it ever finds no range, fall
+            // back to the counts alone rather than claiming no change.
+            const ranges = changedPositions(plan)
+            const label = ranges.length > 0 ? `${ranges.join(", ")} ${counts}` : counts
+            return `${rel}: ${label}`
           }
           const changedPlansOut = plans.filter((p) => !p.deleted && p.diff.length > 0)
           if (changedPlansOut.length > 0) {
