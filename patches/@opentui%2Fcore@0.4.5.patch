@@ -1,6 +1,4 @@
-diff --git a/index.bun.js b/index.bun.js
-index 815856bd386617571e24bda7b45da694c731cd04..04618dbf142fd1f3dbea61871faf3bf4c4007a1d 100644
---- a/index.bun.js
+--- a/index.bun.js	1985-10-26 03:15:00.000000000 -0500
 +++ b/index.bun.js
 @@ -5665,7 +5665,8 @@
          lineNumberOffset: 0,
@@ -12,9 +10,18 @@ index 815856bd386617571e24bda7b45da694c731cd04..04618dbf142fd1f3dbea61871faf3bf4
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-diff --git a/index.node.js b/index.node.js
-index 0ddf03bf666a05f50c66bef32af65b1403ed0192..0a588048641713df6e233f79b95ab7f2b7f7de86 100644
---- a/index.node.js
+@@ -6054,8 +6055,8 @@
+ `);
+     leftCodeRenderable.content = leftContentFinal;
+     rightCodeRenderable.content = rightContentFinal;
+-    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, "50%");
+-    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, "50%");
++    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, this.width > 0 ? Math.floor(this.width / 2) : "50%");
++    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, this.width > 0 ? this.width - Math.floor(this.width / 2) : "50%");
+   }
+   get diff() {
+     return this._diff;
+--- a/index.node.js	1985-10-26 03:15:00.000000000 -0500
 +++ b/index.node.js
 @@ -5664,7 +5664,8 @@
          lineNumberOffset: 0,
@@ -26,11 +33,28 @@ index 0ddf03bf666a05f50c66bef32af65b1403ed0192..0a588048641713df6e233f79b95ab7f2
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874f758a2e8c622ca8e9301f20c60c245546..1d9fa8ef1b0c655d70a47b32c04e6e6df2bf0d0c 100644
---- a/chunk-bun-tkm837n2.js
+@@ -6053,8 +6054,8 @@
+ `);
+     leftCodeRenderable.content = leftContentFinal;
+     rightCodeRenderable.content = rightContentFinal;
+-    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, "50%");
+-    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, "50%");
++    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, this.width > 0 ? Math.floor(this.width / 2) : "50%");
++    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, this.width > 0 ? this.width - Math.floor(this.width / 2) : "50%");
+   }
+   get diff() {
+     return this._diff;
+--- a/chunk-bun-tkm837n2.js	1985-10-26 03:15:00.000000000 -0500
 +++ b/chunk-bun-tkm837n2.js
-@@ -3310,7 +3310,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -2986,6 +2986,7 @@
+       this.requestRender();
+     }
+   }
++
+   onResize(width, height) {
+     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
+     this.yogaNode.markDirty();
+@@ -3310,7 +3311,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -42,11 +66,17 @@ index e5e5874f758a2e8c622ca8e9301f20c60c245546..1d9fa8ef1b0c655d70a47b32c04e6e6d
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
-index 4a2cb78..7c5acef 100644
---- a/chunk-node-51kpf0mz.js
+--- a/chunk-node-51kpf0mz.js	1985-10-26 03:15:00.000000000 -0500
 +++ b/chunk-node-51kpf0mz.js
-@@ -3309,7 +3309,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -2985,6 +2985,7 @@
+       this.requestRender();
+     }
+   }
++
+   onResize(width, height) {
+     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
+     this.yogaNode.markDirty();
+@@ -3309,7 +3310,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
