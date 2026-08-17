@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { computeTurn, estimateStepTokens, formatCount, settledReport, turnLiveTokens } from "../src/component/prompt/turn-stats"
+import { computeTurn, estimateStepTokens, formatCount, settledReport, toolResultTokens, turnLiveTokens } from "../src/component/prompt/turn-stats"
 import type { AssistantMessage, Part, ReasoningPart, TextPart, ToolPart, UserMessage } from "@opencode-ai/sdk/v2"
 
 const assistant = (over: Partial<AssistantMessage>): AssistantMessage => ({
@@ -188,6 +188,10 @@ test("settledReport: picks the final step with ANY usage, not just output", () =
   const r = settledReport(messages)
   expect(r?.providerID).toBe("opencode")
   expect(r?.tokens).toBe(400 + 0 + 120 + 60 + 10)
+  // input side = the context sent (input + cached prefix/writes), not the
+  // generated output/reasoning.
+  expect(r?.input).toBe(400 + 60 + 10)
+  expect(r?.output).toBe(0 + 120)
 })
 
 test("settledReport: undefined when no step has any usage", () => {
@@ -274,4 +278,31 @@ test("turnLiveTokens: mixes real tokens (completed) + estimates (in-flight)", ()
   const live = turnLiveTokens(t, (id) => parts[id])
   // asst-2 real (30/20) + asst-3 estimated from textPart (0/100).
   expect(live).toEqual({ reasoning: 30, output: 120 })
+})
+
+test("toolResultTokens: counts completed tool outputs (4 chars/token)", () => {
+  const parts: Record<string, Part[]> = {
+    "asst-2": [
+      {
+        ...toolPart("tool-1"),
+        messageID: "asst-2",
+        state: {
+          status: "completed",
+          input: {},
+          output: "x".repeat(800),
+          title: "bash",
+          metadata: {},
+          time: { start: 0, end: 1 },
+        } as const,
+      },
+      {
+        ...toolPart("tool-2"),
+        messageID: "asst-2",
+        state: { status: "running", input: {}, time: { start: 0 } } as const,
+      },
+    ],
+  }
+  const step = assistant({ parentID: "user-1", id: "asst-2", time: { created: 4000 } })
+  expect(toolResultTokens([step], (id) => parts[id])).toBe(200)
+  expect(toolResultTokens([step])).toBe(0)
 })
