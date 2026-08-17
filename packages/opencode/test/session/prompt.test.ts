@@ -1301,7 +1301,10 @@ raceNoLLMServer.instance(
       expect(firstInterrupted?.info.role).toBe("assistant")
       expect(firstInterrupted?.parts).toHaveLength(0)
       if (firstInterrupted?.info.role === "assistant") {
-        expect(firstInterrupted.info.finish).toBeUndefined()
+        // 0164: the interrupted turn IS complete - finish="stop" keeps the
+        // loop exit invariant satisfiable (no fresh reasoning after the
+        // interrupted footer); the error still marks it aborted.
+        expect(firstInterrupted.info.finish).toBe("stop")
         expect(firstInterrupted.info.time.completed).toBeNumber()
         expect(firstInterrupted.info.error?.name).toBe("MessageAbortedError")
       }
@@ -1565,7 +1568,7 @@ it.instance("prompt submitted during an active run is included in the next LLM i
     expect(lastMsg?.role).toBe("user")
     expect(typeof lastMsg?.content).toBe("string")
     expect(lastMsg?.content).toContain("second")
-    expect(lastMsg?.content).toMatch(/<system-reminder>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}<\/system-reminder>$/)
+    expect(lastMsg?.content).toMatch(/<system-reminder>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z<\/system-reminder>$/)
   }),
 )
 
