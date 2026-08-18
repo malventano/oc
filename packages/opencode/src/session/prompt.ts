@@ -1222,14 +1222,19 @@ const layer = Layer.effect(
             lastAssistant?.finish &&
             !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastAssistant.parentID === lastUser.id &&
-            // A stall-guard-marked message (any of the three signatures:
-            // colon tail, eaten-call remnant, zero text parts) must NOT exit
-            // the loop: the steer prompt is pending and the next iteration
-            // delivers it (the stalled message stays in the request so the
-            // model can continue from its own text). The loop guard never
-            // hits this because its stream is cut mid-flight (no finish).
-            !StallGuardError.isInstance(lastAssistant.error)
+            lastAssistant.parentID === lastUser.id
+            // NO StallGuardError exemption here (removed 2026-08-18, 0200): a
+            // stall-guard-marked message is fine for the loop-exit check. Fires
+            // 1-8 CLEAR the message's finish (continued-turn state), so the
+            // exit check already fails on `lastAssistant?.finish` - the steer
+            // is delivered on the next iteration exactly as before. Only the
+            // 9th-fire HALT keeps finish="stop"; the exemption let a re-entered
+            // runLoop treat the HALTED message as "not done" and continue the
+            // turn (fresh fire budget) instead of exiting - the post-join
+            // re-loop fires because the halt message is parented to a
+            // synthetic compaction_continue message, not the real user prompt
+            // (witnessed 2026-08-18: fires continued + a second compaction
+            // cycle after the fire-9 halt).
           ) {
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),

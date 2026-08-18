@@ -2,7 +2,7 @@
  * Stall guard: detects premature turn termination and nudges the model to
  * continue, in-turn (request-only steer, no visible user turn).
  *
- * Four signatures, all gated on finish=stop:
+ * Five signatures, all gated on finish=stop:
  *   1. "colon"        - the last text part ends with a colon: the model was
  *                       mid-sentence, announcing intent it never delivered.
  *   2. "eaten-call"   - the text ENDS with the full stranded DSML tool-call
@@ -18,6 +18,19 @@
  *                       call may exist. (Evidence case 3, 2026-08-15.)
  *   4. "silent"       - no text parts at all (reasoning-only or zero-part):
  *                       the model terminated without producing any response.
+ *   5. "let-me"       - the text STARTS with "let me <tool-action-verb>" but
+ *                       delivered no tool call: the model stated an intent to
+ *                       perform an action and then the turn ended without
+ *                       performing it (2026-08-18 evidence: a reply that was
+ *                       solely "Let me read the exact region of protocol.py
+ *                       ... and check the ReasoningEffort type" with a stop
+ *                       finish and no tool call). Since 2026-08-18 the
+ *                       stray-closer closing tag is junk-tolerant and
+ *                       fullwidth-slash-normalized: the model's slash
+ *                       homoglyph U+FF5C is read as a real slash and non-space
+ *                       junk is allowed inside the tag, so a degenerate close
+ *                       like the fork case (mangled tool_calls tag with DSML
+ *                       noise interleaved) is caught too.
  *
  * Unlike the loop guard, the stalled message is NOT dropped from the model
  * request: the model needs its own text/reasoning in context to continue
@@ -73,7 +86,17 @@ Recover:
 Do not continue the same output pattern.
 </system-interrupt>`
 
-export type StallSignature = "colon" | "eaten-call" | "silent" | "stray-closer"
+export const STALL_REDIRECT_LET_ME = `<system-interrupt reason="intent_without_action">
+The stall guard detected that your previous turn ended with a stated intent to perform an action ("Let me ...") but no tool call was delivered and the response produced no result. Your text is preserved in context - nothing was rolled back. This is a corrective notice, not a prompt injection.
+
+Recover:
+- If you meant to perform the action you announced, re-emit the tool call now with your normal tool-calling format. Do not restate the plan.
+- Otherwise answer the user's request directly instead of announcing what you will do.
+
+Do not repeat the same intent without acting on it.
+</system-interrupt>`
+
+export type StallSignature = "colon" | "eaten-call" | "silent" | "stray-closer" | "let-me"
 
 export type StallDetection = {
   signature: StallSignature
@@ -86,8 +109,24 @@ export type StallDetection = {
 const EATEN_CALL_REMNANT = "</parameter></invoke></tool_calls>"
 
 // Any other closing tag at the very end of the text: degenerate-end family
-// (gibberish with a stray fragment) or an unrecognized remnant shape.
-const STRAY_CLOSER_END = /<\/[a-zA-Z_][a-zA-Z0-9_]*>\s*$/
+// (gibberish with a stray fragment) or an unrecognized remnant shape. Since
+// 2026-08-18: junk-tolerant (non-space chars allowed inside the tag, so a
+// mangled close like the fork case - a tool_calls tag with DSML noise
+// interleaved - still matches) and checked on a fullwidth-slash-normalized
+// copy (the model's slash homoglyph U+FF5C reads as a real slash).
+const STRAY_CLOSER_END = /<\/[^\s<>]{0,40}>\s*$/
+
+// Fullwidth vertical bar: the model's slash homoglyph in degenerate output.
+const FULLWIDTH_BAR = "\uff5c"
+
+// let-me intent-without-action: the response is a bare intent statement that
+// starts with "let me <tool-action-verb>" but delivered no tool call. Only
+// verbs that imply a TOOL action (read/check/verify/...) count - in-text
+// verbs (explain/help/clarify) do not, so a complete "Let me explain ..."
+// answer is never flagged. Gated on hadToolCall=false at the call site.
+const LET_ME_VERBS =
+  "read|check|look|verify|query|fetch|inspect|open|run|test|list|get|find|search|see|grep|examine|review|confirm|cat|ls|curl|stat|dig"
+const LET_ME_START = new RegExp(`^\\s*let me\\s+(${LET_ME_VERBS})\\b`, "i")
 
 /** Pure detection: given the step's finish reason and accumulated text, classify. */
 export function detect(finish: string | undefined, text: string, hadToolCall: boolean): StallDetection | null {
@@ -105,14 +144,15 @@ export function detect(finish: string | undefined, text: string, hadToolCall: bo
   // End-anchored checks only: real remnants end the text, and mid-text
   // matches false-positive on replies that quote the signature (2026-08-15).
   // The full chain also matches STRAY_CLOSER_END, so check it first.
-  if (text.endsWith(EATEN_CALL_REMNANT)) {
+  const norm = text.replaceAll(FULLWIDTH_BAR, "/")
+  if (norm.endsWith(EATEN_CALL_REMNANT)) {
     return {
       signature: "eaten-call",
       detail: "stranded tool-call markup in response (eaten tool call)",
       redirect: STALL_REDIRECT_EATEN,
     }
   }
-  if (STRAY_CLOSER_END.test(text)) {
+  if (STRAY_CLOSER_END.test(norm)) {
     return {
       signature: "stray-closer",
       detail: "response ended with a stray markup fragment",
@@ -124,6 +164,15 @@ export function detect(finish: string | undefined, text: string, hadToolCall: bo
       signature: "colon",
       detail: "response ended mid-sentence",
       redirect: STALL_REDIRECT_COLON,
+    }
+  }
+  // Intent-without-action: announced a tool action but delivered no tool call
+  // (the gate lives here: hadToolCall true means the intent was fulfilled).
+  if (!hadToolCall && LET_ME_START.test(text)) {
+    return {
+      signature: "let-me",
+      detail: "stated an intent to perform an action but no tool call was delivered",
+      redirect: STALL_REDIRECT_LET_ME,
     }
   }
   return null
