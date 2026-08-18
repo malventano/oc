@@ -522,14 +522,26 @@ export function stream(sessionID: SessionID) {
     // Walkback cap (0188): never page the ENTIRE session - the upstream
     // stream() walked all 14k+ messages per step (278 pages, ~1.2s msgs-load
     // at deep sessions) even though filterCompacted only ever keeps the
-    // newest compaction boundary + its tail. Stop once TWO compaction markers
-    // have been loaded (any user message carrying a compaction part, real or
-    // virtual), walking newest-first. The window then covers the whole
-    // pre-compaction tail (everything newer than the 2nd-newest marker) plus
-    // one marker of safety margin - the filterCompacted context, the epoch
-    // boundary + records, and MessageV2.latest() all operate within it. A
-    // session with < 2 markers pages to the start naturally (next.more).
+    // newest compaction boundary + its tail. Stop once TWO COMPLETED
+    // compaction pairs have been loaded, walking newest-first. The window
+    // then covers the whole pre-compaction tail (everything newer than the
+    // 2nd-newest completed marker) plus one marker of safety margin - the
+    // filterCompacted context, the epoch boundary + records, and
+    // MessageV2.latest() all operate within it. A session with < 2 completed
+    // pairs pages to the start naturally (next.more).
+    //
+    // Only a marker with a COMPLETED summary counts toward the cap (assistant
+    // child with summary + finish + no error - the same criterion as
+    // filterCompacted / epoch / 0148). An IN-FLIGHT or ABORTED compaction's
+    // marker must NOT shift the window. In particular, the compaction turn's
+    // OWN new marker is in flight when its summary request is built: counting
+    // it moves the 2nd-newest boundary forward and DROPS every message that
+    // fell between the old and new boundaries from the compaction request's
+    // chain, breaking the prefix-cache byte identity (witnessed 2026-08-18:
+    // the compaction summary request full-missed - its chain lost a 37-message
+    // pre-marker block and reordered the tail).
     let compactionMarkers = 0
+    const completed = new Set<string>()
     while (true) {
       const next = yield* page({ sessionID, limit: size, before }).pipe(
         Effect.catchIf(NotFoundError.isInstance, () =>
@@ -541,10 +553,22 @@ export function stream(sessionID: SessionID) {
         const item = next.items[i]
         if (!item) continue
         result.push(item)
+        // Newest-first: a marker's summary (created after it) is seen BEFORE
+        // the marker, so the completed set is populated before the check.
+        if (
+          item.info.role === "assistant" &&
+          item.info.summary === true &&
+          item.info.finish &&
+          !item.info.error &&
+          item.info.parentID
+        ) {
+          completed.add(item.info.parentID)
+        }
         if (
           compactionMarkers < 2 &&
           item.info.role === "user" &&
-          item.parts.some((p): p is CompactionPart => p.type === "compaction")
+          item.parts.some((p): p is CompactionPart => p.type === "compaction") &&
+          completed.has(item.info.id)
         ) {
           compactionMarkers++
         }
