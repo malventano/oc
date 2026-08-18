@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import {
   computeTurn,
-  countTurnToolParts,
+  countTurnWalkParts,
   estimateStepTokens,
   formatCount,
   settledReport,
@@ -512,36 +512,57 @@ test("streamRateFor: the EMA damps a single chunk spike and recovers as it ages 
   expect(settled).toBeCloseTo(105.0, 1)
 })
 
-test("countTurnToolParts: counts the steps AFTER the root user message (chronological page)", () => {
+test("countTurnWalkParts: counts the steps AFTER the root user message (chronological page)", () => {
   const items = [
     { info: { id: "older-user", role: "user", parentID: null }, parts: [] },
     { info: { id: "older-asst", role: "assistant", parentID: "older-user" }, parts: [toolPart("t-old")] },
-    { info: { id: "root", role: "user", parentID: null }, parts: [] },
-    { info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1"), toolPart("t2")] },
-    { info: { id: "s2", role: "assistant", parentID: "root" }, parts: [toolPart("t3")] },
+    { info: { id: "root", role: "user", parentID: null, time: { created: 1000 } }, parts: [] },
+    {
+      info: { id: "s1", role: "assistant", parentID: "root", tokens: { reasoning: 50, output: 20 } },
+      parts: [toolPart("t1"), toolPart("t2")],
+    },
+    { info: { id: "s2", role: "assistant", parentID: "root", tokens: { reasoning: 30, output: 5 } }, parts: [toolPart("t3")] },
   ]
-  const r = countTurnToolParts(items, "root", { tools: 0, reachedRoot: false })
-  expect(r).toEqual({ tools: 3, reachedRoot: true })
+  const r = countTurnWalkParts(items, "root", { tools: 0, reasoning: 0, output: 0, reachedRoot: false })
+  expect(r).toEqual({ tools: 3, reachedRoot: true, start: 1000, reasoning: 80, output: 25 })
 })
 
-test("countTurnToolParts: a steps-only page (root on an older page) counts via the parentID filter", () => {
-  const items = [
-    { info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1")] },
-    { info: { id: "s2", role: "assistant", parentID: "root" }, parts: [toolPart("t2")] },
-  ]
-  const r = countTurnToolParts(items, "root", { tools: 0, reachedRoot: false })
-  expect(r).toEqual({ tools: 2, reachedRoot: false })
-})
-
-test("countTurnToolParts: the root on a later page stops the walk without double-counting", () => {
-  let st = countTurnToolParts(
+test("countTurnWalkParts: the root user message's created time anchors the clock even when found on an older page", () => {
+  let st = countTurnWalkParts(
     [{ info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1")] }],
     "root",
-    { tools: 0, reachedRoot: false },
+    { tools: 0, reasoning: 0, output: 0, reachedRoot: false },
   )
-  expect(st).toEqual({ tools: 1, reachedRoot: false })
+  expect(st.start).toBeUndefined()
+  st = countTurnWalkParts(
+    [
+      { info: { id: "older", role: "assistant", parentID: "older-user" }, parts: [] },
+      { info: { id: "root", role: "user", parentID: null, time: { created: 500 } }, parts: [] },
+    ],
+    "root",
+    st,
+  )
+  expect(st.start).toBe(500)
+})
+
+test("countTurnWalkParts: a steps-only page (root on an older page) counts via the parentID filter", () => {
+  const items = [
+    { info: { id: "s1", role: "assistant", parentID: "root", tokens: { reasoning: 10, output: 2 } }, parts: [toolPart("t1")] },
+    { info: { id: "s2", role: "assistant", parentID: "root", tokens: { reasoning: 5, output: 1 } }, parts: [toolPart("t2")] },
+  ]
+  const r = countTurnWalkParts(items, "root", { tools: 0, reasoning: 0, output: 0, reachedRoot: false })
+  expect(r).toEqual({ tools: 2, reachedRoot: false, reasoning: 15, output: 3 })
+})
+
+test("countTurnWalkParts: the root on a later page stops the walk without double-counting", () => {
+  let st = countTurnWalkParts(
+    [{ info: { id: "s1", role: "assistant", parentID: "root", tokens: { reasoning: 10, output: 2 } }, parts: [toolPart("t1")] }],
+    "root",
+    { tools: 0, reasoning: 0, output: 0, reachedRoot: false },
+  )
+  expect(st).toEqual({ tools: 1, reachedRoot: false, reasoning: 10, output: 2 })
   // older page: another turn's messages, then the root - nothing further to count
-  st = countTurnToolParts(
+  st = countTurnWalkParts(
     [
       { info: { id: "older", role: "assistant", parentID: "older-user" }, parts: [toolPart("t-old")] },
       { info: { id: "root", role: "user", parentID: null }, parts: [] },
@@ -549,5 +570,5 @@ test("countTurnToolParts: the root on a later page stops the walk without double
     "root",
     st,
   )
-  expect(st).toEqual({ tools: 1, reachedRoot: true })
+  expect(st).toEqual({ tools: 1, reachedRoot: true, reasoning: 10, output: 2 })
 })
