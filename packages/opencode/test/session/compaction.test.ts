@@ -1112,6 +1112,65 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
+    "walkback counts only completed compaction pairs - an in-flight marker must not drop the between-boundary block",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const test = yield* TestInstance
+      const session = yield* ssn.create({})
+      const marker = (auto: boolean) =>
+        SessionNs.Service.use((s) =>
+          Effect.gen(function* () {
+            const msg = yield* s.updateMessage({
+              id: MessageID.ascending(),
+              role: "user",
+              sessionID: session.id,
+              model: ref,
+              agent: "build",
+              time: { created: Date.now() },
+            })
+            yield* s.updatePart({
+              id: PartID.ascending(),
+              messageID: msg.id,
+              sessionID: session.id,
+              type: "compaction",
+              auto,
+            })
+            return msg
+          }),
+        )
+      const pair = (auto: boolean) =>
+        Effect.gen(function* () {
+          const m = yield* marker(auto)
+          yield* createSummaryAssistantMessage(session.id, m.id, test.directory, `summary ${m.id}`)
+        })
+      // Completed pair 1 (the walkback boundary when the fix holds).
+      yield* pair(false)
+      // The block between the two completed pairs - an in-flight marker
+      // counting toward the cap would shift the walkback boundary forward
+      // past it (dropping it from the next request's chain - the compaction
+      // prefix miss). > 50 messages of filler between it and pair 2 push it
+      // onto a page the uncapped-count walk never loads.
+      const between = yield* createUserMessage(session.id, "between-boundary block")
+      for (let i = 0; i < 55; i++) {
+        yield* createUserMessage(session.id, `filler ${i}`)
+      }
+      // Completed pair 2.
+      yield* pair(false)
+      // In-flight marker: the compaction turn's OWN new marker (created by
+      // compaction.create, no summary yet) - must NOT count toward the cap.
+      yield* marker(true)
+
+      const msgs = yield* MessageV2.stream(session.id)
+      const ids = msgs.map((msg) => msg.info.id)
+      // The between-boundary block is still in the window: with the in-flight
+      // marker counted toward the cap, the walk would stop on page 1 (the
+      // marker + pair 2) and never load the page holding this block.
+      expect(ids).toContain(between.id)
+    }),
+    { git: true },
+  )
+
+  itCompaction.instance(
     "allows plugins to disable synthetic continue prompt",
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
