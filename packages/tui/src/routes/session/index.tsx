@@ -29,13 +29,15 @@ import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, 
 import { Prompt, type PromptRef } from "../../component/prompt"
 import {
   countTurnWalkParts,
+  foldTurnSteps,
   formatCount,
-  liveTokensForSteps,
+  newTurnLiveAccum,
   streamRateFor,
   streamedChars,
+  turnLiveFromAccum,
   turnSteps,
 } from "../../component/prompt/turn-stats"
-import type { TurnDbWalk, TurnWalkPageState } from "../../component/prompt/turn-stats"
+import type { TurnDbWalk, TurnLiveAccum, TurnWalkPageState } from "../../component/prompt/turn-stats"
 import type {
   AssistantMessage,
   Message,
@@ -1786,6 +1788,18 @@ const turnDbCache = new Map<string, TurnDbWalk>()
 // into the DB walk's result at completion; stored separately because the full
 // walk only runs when the session is idle, and the clock must work mid-turn.
 const parentStartCache = new Map<string, number>()
+// In-flight root-start fetches: on a fresh restart every in-window footer
+// runs the seeding effect and the root is pruned from the store, so all of
+// them would fire the same `session.message` fetch - this set dedupes to one.
+const parentStartFetching = new Set<string>()
+
+// In-memory accumulator for LIVE turns' footer stats, keyed by
+// `${sessionID}:${parentID}` (the same key parentStartCache uses). Each
+// completed step folds its real values in ONCE at step completion - no
+// mid-turn DB walk and no per-delta re-scan of every step's parts. The
+// completed-turn DB walk (turnDbCache) supersedes it once it lands. The map
+// is bounded: entries are per turn, and turns are pruned by size cap.
+const turnLiveCache = new Map<string, TurnLiveAccum>()
 
 async function dbTurnStats(
   sdk: ReturnType<typeof useSDK>,
@@ -1868,28 +1882,36 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     const key = parentKey()
     if (!key) return
     const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    if (!user?.time.created) return
     // Seed the start into its own cache (the full turnDbCache holds only
     // COMPLETED walk results; the start is the one piece known from the
     // store while the turn is still live, so it gets its own slot). tools/
     // tokens stay out of dbTurn until the walk lands so the live footer
     // keeps its store-based counts.
-    if (parentStartCache.get(key) !== user.time.created) parentStartCache.set(key, user.time.created)
-    setDbTurnStart(user.time.created)
+    if (user?.time.created) {
+      if (parentStartCache.get(key) !== user.time.created) parentStartCache.set(key, user.time.created)
+      setDbTurnStart(user.time.created)
+      return
+    }
+    // The root is pruned from the store window (long turn) - fetch it by ID
+    // DIRECTLY (a single indexed DB read) instead of waiting for the full
+    // paginated walk to page back to it. This is what makes the timer appear
+    // instantly on a fresh restart (parentStartCache is process-local and
+    // empty): tokens/tools fold from the in-window steps, and the root fetch
+    // gives the clock its anchor in one round trip. Deduped across footers.
+    if (parentStartCache.has(key) || parentStartFetching.has(key)) return
+    parentStartFetching.add(key)
+    sdk.client.session
+      .message({ sessionID: props.message.sessionID, messageID: props.message.parentID })
+      .then((res) => {
+        const created = res.data?.info?.time?.created
+        if (created !== undefined) {
+          if (parentStartCache.get(key) !== created) parentStartCache.set(key, created)
+          setDbTurnStart(created)
+        }
+      })
+      .catch(() => {})
+      .finally(() => parentStartFetching.delete(key))
   })
-  const userStart = createMemo(() => {
-    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    return user?.time.created ?? dbTurnStart()
-  })
-
-  const duration = createMemo(() => {
-    if (!final()) return 0
-    if (!props.message.time.completed) return 0
-    const start = userStart()
-    if (!start) return 0
-    return props.message.time.completed - start
-  })
-
   // Live agent-footer counter for the active turn: the last assistant
   // message's ▣ line ticks the elapsed time (100ms / tenths) and counts up
   // the whole turn's reasoning/output tokens (real for completed steps,
@@ -1907,7 +1929,77 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   })
   const showLive = createMemo(() => turnActive() && props.last)
   const turnStepsMemo = createMemo(() => turnSteps(messages(), props.message.parentID))
-  const turnLive = createMemo(() => liveTokensForSteps(turnStepsMemo(), (id) => sync.data.part[id]))
+  // The turn's not-yet-completed step (the one streaming). Message boundaries
+  // change it; part deltas don't (the messages array is stable), so this
+  // memo does NOT recompute per delta.
+  const inFlightStep = createMemo(() => turnStepsMemo().find((s) => !s.time.completed))
+  // The in-memory turn accumulator, folded as a MEMO so the fold lands in the
+  // same reactive flush as the message update that completed the step - the
+  // live memos below read the folded result immediately (no one-frame dip,
+  // no effect-ordering race). It returns a fresh snapshot reference every
+  // recompute (Solid memos compare by reference, and the shared accumulator
+  // object is mutated in place by every footer of the turn - a same-reference
+  // return would freeze dependents on a pre-mutation snapshot). It recomputes
+  // ONLY at message boundaries: part deltas do not change turnStepsMemo, and
+  // parts are read only for NEWLY completed steps. Every footer of the turn
+  // folds the SAME shared accumulator (idempotent via the `folded` set), so
+  // any footer - the live one and a completed turn's final step - shows the
+  // accumulated values before the DB walk lands. On a remount/restart
+  // mid-turn it rebuilds from the store. No DB walk - the completed turn's
+  // walk (dbTurnStats) supersedes it once it lands.
+  const turnAccum = createMemo(() => {
+    const key = parentKey()
+    if (!key) return
+    const steps = turnStepsMemo()
+    if (steps.length === 0) return
+    let acc = turnLiveCache.get(key)
+    if (!acc) {
+      acc = newTurnLiveAccum(parentStartCache.get(key))
+      turnLiveCache.set(key, acc)
+    }
+    // Seed the clock anchor while the parent is in the window (the store
+    // find), falling back to the module cache (survives the mid-turn prune
+    // and the walk's own seed) and then the cached walk result (the walked
+    // start is persisted to parentStartCache on completion, so a remount in
+    // the same process seeds the timer instantly - no second walk needed).
+    if (acc.start === undefined) {
+      const parent = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
+      acc.start = parent?.time.created ?? parentStartCache.get(key) ?? turnDbCache.get(key)?.start
+    }
+    foldTurnSteps(acc, steps, (id) => sync.data.part[id])
+    // ALWAYS a fresh snapshot reference (Solid memos compare by reference):
+    // the shared accumulator object is mutated in place by EVERY footer of
+    // the turn (they share the turnLiveCache entry), so a same-reference
+    // return here would freeze this footer's dependents on a pre-mutation
+    // snapshot even when another footer's fold changed the values. The memo
+    // only recomputes at message boundaries (part deltas do not reach it), so
+    // the copy cost is bounded to step completions - never per delta.
+    return { ...acc }
+  })
+  // The turn's start time (root user message's created): the in-memory start
+  // that lives next to the counters (seeded into the accumulator from the
+  // store while the parent is in the window, or from parentStartCache once
+  // pruned). Falls back to the DB-walked value for remounts after restart
+  // and long turns whose start the store window never had.
+  const userStart = createMemo(() => {
+    const acc = turnAccum()
+    if (acc?.start !== undefined) return acc.start
+    return dbTurnStart()
+  })
+  // Live tokens: the folded real values (completed steps) + the in-flight
+  // step's streamed-text estimate. Per part delta this is O(1) over the
+  // completed turn - just the one in-flight step's parts walk.
+  const turnLive = createMemo(() => turnLiveFromAccum(turnAccum(), inFlightStep(), (id) => sync.data.part[id]))
+
+  // Completed-step footer duration: the final step's elapsed time from the
+  // turn's start (the in-memory start) to its own completion.
+  const duration = createMemo(() => {
+    if (!final()) return 0
+    if (!props.message.time.completed) return 0
+    const start = userStart()
+    if (!start) return 0
+    return props.message.time.completed - start
+  })
   // The turn's full DB-walked stats (tools + reasoning/output tokens + root
   // start). The LIVE turn counts from the store (the stream keeps it
   // complete); completed turns are LOCKED to the DB via the walk - the store
@@ -1942,16 +2034,26 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
       const key = `${props.message.sessionID}:${parentID}`
       turnDbCache.set(key, stats)
       setDbTurn(stats)
-      if (stats.start !== undefined) setDbTurnStart(stats.start)
+      // Persist the walked start into the module cache too, not just the
+      // signal: a remount/reload seeds `turnAccum` from parentStartCache, so
+      // the timer appears instantly on a session reload instead of waiting
+      // for the walk to land again (the walk result itself is cached, but the
+      // live-clock seed must come from the in-memory map).
+      if (stats.start !== undefined) {
+        setDbTurnStart(stats.start)
+        if (parentStartCache.get(key) !== stats.start) parentStartCache.set(key, stats.start)
+      }
     })
   })
   const turnTools = createMemo(() => {
     const db = dbTurn()
     if (db !== undefined) return db.tools
-    let tools = 0
-    for (const step of turnStepsMemo()) {
-      tools += (sync.data.part[step.id] ?? []).filter((p) => p.type === "tool").length
-    }
+    // Folded tool count (completed steps) + the in-flight step's tool parts
+    // only - O(1) over the completed turn, no per-delta re-scan.
+    const acc = turnAccum()
+    let tools = acc?.tools ?? 0
+    const inFlight = inFlightStep()
+    if (inFlight) tools += (sync.data.part[inFlight.id] ?? []).filter((p) => p.type === "tool").length
     return tools
   })
   const [turnNow, setTurnNow] = createSignal(0)
@@ -1995,29 +2097,16 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   // frozen rate stays on the last footer after the turn ends; it vanishes
   // when the next message supersedes it (props.last gates the display).
   const turnKey = props.message.parentID
-  // Per-step streamedChars cache for COMPLETED steps: their parts never
-  // change after the step lands, so their contribution is static. The memos
-  // recompute on every delta (the live step's parts array reference changes),
-  // and without the cache each recompute re-walked every step's parts -
-  // including JSON.stringify of all completed tool inputs (the footer's
-  // live tokens/s - a measured 22ms/delta flush at ~85 steps deep). The
-  // cache turns that into a Map.get per completed step + the live step's
-  // parts walk only.
-  const completedStepChars = new Map<string, number>()
+  // The turn's streamed chars: the accumulator folds each COMPLETED step's
+  // chars once (their parts never change after the step lands), so the only
+  // per-delta work is the in-flight step's parts walk - O(1) over the
+  // completed turn (the same win the old per-step cache gave, without the
+  // Map or the step list iteration).
   const turnStreamedChars = createMemo(() => {
-    let chars = 0
-    for (const step of turnStepsMemo()) {
-      if (step.time.completed) {
-        let c = completedStepChars.get(step.id)
-        if (c === undefined) {
-          c = streamedChars(sync.data.part[step.id])
-          completedStepChars.set(step.id, c)
-        }
-        chars += c
-      } else {
-        chars += streamedChars(sync.data.part[step.id])
-      }
-    }
+    const acc = turnAccum()
+    let chars = acc?.chars ?? 0
+    const inFlight = inFlightStep()
+    if (inFlight) chars += streamedChars(sync.data.part[inFlight.id])
     return chars
   })
   const streamKey = createMemo(() => turnStepsMemo().find((s) => !s.time.completed)?.id ?? "")
