@@ -18,6 +18,7 @@ import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
 import { escapeHtml } from "@/util/html"
 import * as NFS from "fs/promises"
+import type { Stats } from "node:fs"
 
 const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
@@ -114,7 +115,7 @@ export interface Interface {
   readonly require: (name: string) => Effect.Effect<Info, NotFoundError>
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
-  readonly refresh: () => Effect.Effect<RefreshChange[], never, never>
+  readonly refresh: (options?: { names?: Set<string> }) => Effect.Effect<RefreshChange[], never, never>
   readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
 }
 
@@ -335,17 +336,77 @@ const layer = Layer.effect(
       if (!agent) return list
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
-    const refresh: () => Effect.Effect<RefreshChange[], never, never> = () =>
+    const refresh: (options?: { names?: Set<string> }) => Effect.Effect<RefreshChange[], never, never> = (options) =>
       Effect.gen(function* () {
-      const s = yield* InstanceState.get(state)
-      const d = yield* InstanceState.get(discovered)
+      const [s, d] = yield* Effect.all([InstanceState.get(state), InstanceState.get(discovered)], {
+        concurrency: "unbounded",
+      })
       const changed: RefreshChange[] = []
       // File-level: stat each cached skill's SKILL.md; re-parse on change. A failed
       // stat marks the skill deleted (once - the sentinel suppresses re-reports).
-      for (const info of Object.values(s.skills)) {
-        if (info.location === "<built-in>") continue
+      // Mid-turn calls pass `names` (the skills loaded into this context since the
+      // last compaction) so only those bodies are re-checked; the full re-stat +
+      // dir rescan runs on the next real user turn only.
+      const skillList = Object.values(s.skills).filter(
+        (info) => info.location !== "<built-in>" && (!options?.names || options.names.has(info.name)),
+      )
+      // One batched stat pass for the skill files AND the dir-watch targets:
+      // each Effect.all is a single suspension (~20ms of scheduler delay per
+      // sequential suspension in the app), so merging the batches cuts the
+      // full-refresh overhead by ~2 yields.
+      const watchedDirs =
+        options?.names
+          ? []
+          : (() => {
+              const set = new Set<string>()
+              for (const spec of d.specs) {
+                set.add(spec.root)
+                for (const m of s.matchCache[spec.root] ?? []) set.add(path.dirname(m))
+                set.add(path.join(spec.root, "skills"))
+                set.add(path.join(spec.root, "skill"))
+              }
+              return Array.from(set)
+            })()
+      const statResults = yield* Effect.all(
+        [
+          ...skillList.map((info) => ({ kind: "skill" as const, path: info.location, info })),
+          ...watchedDirs.map((dir) => ({ kind: "dir" as const, path: dir, info: undefined as undefined })),
+        ].map((t) =>
+          Effect.tryPromise(() => NFS.stat(t.path)).pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+            Effect.map((st) => ({ t, st })),
+          ),
+        ),
+        { concurrency: "unbounded" },
+      )
+      // The merged batch yields { t, st } (t = {kind, path, info}); restore the
+      // { info, st } shape the file-level consumers below destructure.
+      type StatResult = (typeof statResults)[number]
+      type DirStatResult = StatResult & { t: { kind: "dir" } }
+      type SkillStatResult = StatResult & { t: { kind: "skill" } }
+      const stats = statResults
+        .filter((r): r is SkillStatResult => r.t.kind === "skill")
+        .map(({ t, st }) => ({ info: t.info, st }))
+      const dirStatByDir = new Map<string, Stats | undefined>(
+        statResults.filter((r): r is DirStatResult => r.t.kind === "dir").map((r) => [r.t.path, r.st]),
+      )
+      const toParse = stats.filter(({ info, st }) => {
+        if (!st) return false
         const prev = s.lastSeen[info.name]
-        const st = yield* Effect.tryPromise(() => NFS.stat(info.location)).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        return !(prev && !("deleted" in prev) && prev.mtimeMs === st.mtimeMs && prev.size === st.size)
+      })
+      const parsed = yield* Effect.all(
+        toParse.map(({ info }) =>
+          Effect.tryPromise(() => ConfigMarkdown.parse(info.location)).pipe(
+            Effect.catch(() => Effect.succeed(undefined)),
+            Effect.map((md) => ({ info, md })),
+          ),
+        ),
+        { concurrency: "unbounded" },
+      )
+      const parsedByLoc = new Map(parsed.flatMap((x) => (x.md ? [[x.info.location, x.md]] : [])))
+      for (const { info, st } of stats) {
+        const prev = s.lastSeen[info.name]
         if (!st) {
           if (prev && "deleted" in prev) continue
           s.lastSeen[info.name] = { deleted: true }
@@ -353,8 +414,8 @@ const layer = Layer.effect(
           continue
         }
         if (prev && !("deleted" in prev) && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue
-        const md = yield* Effect.tryPromise(() => ConfigMarkdown.parse(info.location)).pipe(Effect.catch(() => Effect.succeed(undefined)))
         s.lastSeen[info.name] = { mtimeMs: st.mtimeMs, size: st.size }
+        const md = parsedByLoc.get(info.location)
         if (!md || !isSkillFrontmatter(md.data)) continue
         s.skills[info.name] = {
           name: md.data.name,
@@ -369,28 +430,32 @@ const layer = Layer.effect(
           delete s.lastSeen[info.name]
         }
       }
-      // Dir-level: re-scan roots whose dir mtime changed (entry add/remove/rename),
-      // then add new matches and drop cached skills whose file vanished from the scan.
-      for (const spec of d.specs) {
+      // Dir-level (full refresh only): re-scan roots whose dir mtime changed
+      // (entry add/remove/rename), then add new matches and drop cached skills
+      // whose file vanished from the scan. Mid-turn calls scope to the loaded
+      // skills above and skip this - new dirs/renames wait for the user turn.
+      if (!options?.names) {
        // Watch the parents of known matches plus the well-known skill dirs,
        // not just the root: a new SKILL.md lands at root/skills/<name>/SKILL.md,
        // which changes the skills/ dir's mtime - the root's own mtime only
        // changes for DIRECT children (grandchild add/remove would be missed).
-       const watched = new Set<string>([spec.root])
-       for (const m of s.matchCache[spec.root] ?? []) watched.add(path.dirname(m))
-       watched.add(path.join(spec.root, "skills"))
-       watched.add(path.join(spec.root, "skill"))
-       let rescan = false
-       for (const dir of watched) {
-         const st = yield* Effect.tryPromise(() => NFS.stat(dir)).pipe(Effect.catch(() => Effect.succeed(undefined)))
-         if (!st) continue
-         if (s.dirMtimes[dir] !== st.mtimeMs) {
-           s.dirMtimes[dir] = st.mtimeMs
-           rescan = true
+       // dirStatByDir came from the merged stat batch above.
+       for (const spec of d.specs) {
+         const watched = new Set<string>([spec.root])
+         for (const m of s.matchCache[spec.root] ?? []) watched.add(path.dirname(m))
+         watched.add(path.join(spec.root, "skills"))
+         watched.add(path.join(spec.root, "skill"))
+         let rescan = false
+         for (const dir of watched) {
+           const st = dirStatByDir.get(dir)
+           if (!st) continue
+           if (s.dirMtimes[dir] !== st.mtimeMs) {
+             s.dirMtimes[dir] = st.mtimeMs
+             rescan = true
+           }
          }
-       }
-       if (!rescan) continue
-        const scanState: ScanState = { matches: new Set(), dirs: new Set(), specs: [] }
+         if (!rescan) continue
+         const scanState: ScanState = { matches: new Set(), dirs: new Set(), specs: [] }
         yield* scan(scanState, spec.root, spec.pattern, spec.opts)
         const prevMatches = new Set(s.matchCache[spec.root] ?? [])
         const curMatches = Array.from(scanState.matches)
@@ -412,6 +477,7 @@ const layer = Layer.effect(
             changed.push({ name, deleted: true })
           }
         }
+      }
       }
       return changed
     })
