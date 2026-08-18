@@ -100,6 +100,7 @@ interface ProcessorContext extends Input {
   stallFired: boolean
   stallHit: string | null
   stallGuardEnabled: boolean
+  restartClosed: boolean
 }
 
 type StreamEvent = LLMEvent
@@ -152,6 +153,7 @@ const layer = Layer.effect(
         stallFired: false,
         stallHit: null,
         stallGuardEnabled: input.stallGuardEnabled ?? true,
+        restartClosed: false,
       }
       let aborted = false
 
@@ -507,8 +509,21 @@ const layer = Layer.effect(
             // Restart tool: same shape - the turn ends at the tool result so
             // the TUI's restart watcher can execve AFTER the turn finalizes
             // (the continuation arrives as a fresh "restart complete" user
-            // prompt from the restarted instance).
-            if (value.name === "question" || value.name === "restart") ctx.blocked = ctx.shouldBreak
+            // prompt from the restarted instance). The restart also CLOSES
+            // the turn: the message is marked finished so the TUI footer
+            // renders the turn's stats right after the restart call -
+            // without it the step keeps its tool-calls finish and the footer
+            // never renders once the restart continuation supersedes it
+            // (0184). The finish itself is applied at the FINAL write (the
+            // cleanup below): the step's own finish-step ("tool-calls")
+            // fires AFTER this tool-result handling and would overwrite any
+            // finish set here.
+            if (value.name === "restart") {
+              ctx.restartClosed = true
+              ctx.blocked = ctx.shouldBreak
+            } else if (value.name === "question") {
+              ctx.blocked = ctx.shouldBreak
+            }
             return
           }
 
@@ -727,6 +742,14 @@ const layer = Layer.effect(
         // interrupted footer (BUG_INTERRUPT_REASONING_CONTINUES.md,
         // 2026-08-17). ??= so a real step-finish (stop/tool-calls/...) is
         // never overwritten; halt's "error" finish is preserved too.
+        // The restart tool closed the turn: FORCE the closed finish here.
+        // The step's own finish-step ("tool-calls") fires AFTER the
+        // tool-result handling, overwriting any finish set there, so the
+        // final write re-applies "stop" - the TUI footer's final() gate then
+        // renders the turn's stats right after the restart call (0184).
+        // Guarded on !error: the halt/interrupt paths keep their error
+        // finish.
+        if (ctx.restartClosed && !ctx.assistantMessage.error) ctx.assistantMessage.finish = "stop"
         ctx.assistantMessage.finish ??= "stop"
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
@@ -826,7 +849,11 @@ const layer = Layer.effect(
           // Stall detection runs AFTER the stream completes (unlike the loop
           // guard, which fires mid-stream): classify the step's finish reason
           // + accumulated text into the three stall signatures.
-          if (ctx.stallGuardEnabled && !ctx.assistantMessage.error) {
+          // The stall guard is skipped for a restart-closed step: the turn
+          // ends BY DESIGN at the restart tool result (finish set to "stop"
+          // above), so a premature-stop signature (text ending in ":") must
+          // not re-open the turn with a steer.
+          if (ctx.stallGuardEnabled && !ctx.restartClosed && !ctx.assistantMessage.error) {
             const hit = StallGuard.detect(ctx.assistantMessage.finish, ctx.stallText, ctx.stallHadToolCall)
             if (hit) {
               ctx.stallFired = true

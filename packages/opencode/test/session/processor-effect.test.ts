@@ -259,6 +259,36 @@ const streamingWriteEnv = LayerNode.compile(
 )
 const itStreamingWrite = testEffect(streamingWriteEnv)
 
+// Restart tool turn: the step ends with a tool-call + result, and the
+// processor closes the turn with finish=stop (0184 - the finish-step event
+// fires AFTER the tool-result handling, so the closed finish must be forced
+// at the final cleanup write).
+const restartLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolInputStart({ id: "call-1", name: "restart" }),
+        LLMEvent.toolInputEnd({ id: "call-1", name: "restart" }),
+        LLMEvent.toolCall({ id: "call-1", name: "restart", input: { reason: "test" }, providerExecuted: true }),
+        LLMEvent.toolResult({
+          id: "call-1",
+          name: "restart",
+          result: { type: "text", value: "Restart requested: test" },
+          providerExecuted: true,
+        }),
+        LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+        LLMEvent.finish({ reason: "tool-calls" }),
+      ),
+  }),
+)
+const restartEnv = LayerNode.compile(
+  LayerNode.group([root, LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })]),
+  [...replacements, [LLM.node, restartLLM]],
+)
+const itRestart = testEffect(restartEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -1200,5 +1230,47 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
         expect(seen.filter((type) => type.startsWith("session.next."))).toEqual([])
       }),
     { config: cfg },
+  ),
+)
+
+itRestart.live("session.processor effect tests the restart tool closes the turn with finish=stop", () =>
+  provideTmpdirServer(
+    ({ dir }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "restart")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "restart" }],
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        // The turn ends at the restart tool result, and the step finalizes
+        // with the CLOSED finish (not tool-calls) so the TUI footer renders
+        // the turn's stats right after the restart call.
+        expect(value).toBe("stop")
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role === "assistant") {
+          expect(stored.info.finish).toBe("stop")
+        }
+      }),
+    { config: (url) => providerCfg(url) },
   ),
 )
