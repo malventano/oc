@@ -46,6 +46,7 @@ import {
   liveTokensForSteps,
   promptTokenEstimate,
   settledReport,
+  shouldReanchorBase,
   toolResultTokens,
   turnLiveTokens,
 } from "./turn-stats"
@@ -286,13 +287,26 @@ export function Prompt(props: PromptProps) {
     return messages.filter((m, index): m is UserMessage => index > pending && m.role === "user")
   })
 
+  // The viewed session's messages with the revert boundary applied: reverted
+  // (undone) messages stay in the sync store but render hidden, so the tally
+  // must read the same truncated list the transcript shows - the context/cost
+  // reports the last visible turn, updating as the undo/redo boundary moves.
+  const sessionMessages = createMemo(() => {
+    if (!props.sessionID) return []
+    const msg = sync.data.message[props.sessionID] ?? []
+    const messageID = sync.session.get(props.sessionID)?.revert?.messageID
+    if (!messageID) return msg
+    const index = msg.findIndex((m) => m.id === messageID)
+    if (index === -1) return msg
+    return msg.slice(0, index)
+  })
+
   // The current turn: steps rooted at the last assistant message's parent user
   // message. Tokens/cost land per step end (session.next.step.ended), so the
   // running totals tick at step boundaries.
   const turn = createMemo(() => {
     if (!props.sessionID) return
-    const msg = sync.data.message[props.sessionID] ?? []
-    return computeTurn(msg)
+    return computeTurn(sessionMessages())
   })
   // Turn-liveness: the server's session status ("busy" covers streaming AND
   // tool-execution gaps where no step is mid-stream), OR'd with a step being
@@ -309,8 +323,10 @@ export function Prompt(props: PromptProps) {
   // The live tally accumulates on this fixed start, so it never drops
   // mid-turn (no step-boundary flicker) and only re-anchors to fresh DB
   // values when the session goes idle. Keyed by session+turn-root so a new
-  // turn re-captures.
-  const tallyBases = new Map<string, { tokens: number }>()
+  // turn re-captures. `at` records which settled report the base was frozen
+  // from; `anchored` marks a mid-turn re-anchor (the base then already
+  // includes the current turn's prompt, so the caller drops its estimate).
+  const tallyBases = new Map<string, { tokens: number; at?: string; anchored?: boolean }>()
   // Per-session held display: the last busy value, kept through the
   // busy->idle->DB-update window so the cost does not flicker back to the
   // lagging session-row value. Released when the DB catches up or the turn is
@@ -334,7 +350,7 @@ export function Prompt(props: PromptProps) {
   // (the server's cost formula, session.ts). Busy sessions keep the frozen
   // baseline + live tally; idle sessions report their current DB cost.
   const liveTallyForSession = (sessionID: string) => {
-    const messages = sync.data.message[sessionID] ?? []
+    const messages = sessionID === props.sessionID ? sessionMessages() : (sync.data.message[sessionID] ?? [])
     const t = computeTurn(messages)
     const busy = (sync.data.session_status?.[sessionID]?.type ?? "idle") !== "idle" || t.active
     const key = sessionID + ":" + (t.parentID ?? "")
@@ -363,15 +379,29 @@ export function Prompt(props: PromptProps) {
     }
 
     // Context base: frozen settled input side at the turn start (for the
-    // running context display).
+    // running context display). Re-anchored mid-turn only when a NEWER settled
+    // report (this turn's first completed step) shows LESS context than the
+    // frozen base - the base was captured from a report that read the full
+    // pre-compaction context (the compaction summary request reads the whole
+    // conversation, so its own report stays high), and the post-compaction
+    // turn's real report corrects it. In the normal case the newer report
+    // grew (base + prompt) and the frozen base holds, keeping the monotonic
+    // display. The re-anchored base already includes the turn's prompt, so
+    // the caller drops its estimate (`anchored`).
     let tokens = settledInput
+    let anchored = false
     if (busy) {
+      const settled = settledReport(messages)
       let base = tallyBases.get(key)
       if (!base) {
-        base = { tokens: settledReport(messages)?.input ?? 0 }
+        base = { tokens: settledInput, at: settled?.id, anchored: false }
+        tallyBases.set(key, base)
+      } else if (shouldReanchorBase(base, settled)) {
+        base = { tokens: settled!.input, at: settled!.id, anchored: true }
         tallyBases.set(key, base)
       }
       tokens = base.tokens
+      anchored = base.anchored ?? false
     } else {
       tallyBases.delete(key)
     }
@@ -395,7 +425,7 @@ export function Prompt(props: PromptProps) {
     }
     if (busy) heldDisplays.set(sessionID, display)
 
-    return { cost: display, live: 0, tokens, toolTokens }
+    return { cost: display, live: 0, tokens, toolTokens, anchored }
   }
 
   // Subtree tally (the viewed session + all descendants), mirroring the cost
@@ -422,9 +452,7 @@ export function Prompt(props: PromptProps) {
   const turnPromptTokens = createMemo(() => {
     const t = turn()
     if (!t?.parentID) return 0
-    const prompt = sync.data.message[props.sessionID ?? ""]?.find(
-      (m): m is UserMessage => m.role === "user" && m.id === t.parentID,
-    )
+    const prompt = sessionMessages().find((m): m is UserMessage => m.role === "user" && m.id === t.parentID)
     return promptTokenEstimate(prompt, (id) => sync.data.part[id])
   })
 
@@ -442,12 +470,12 @@ export function Prompt(props: PromptProps) {
   // ends.
   const usage = createMemo(() => {
     if (!props.sessionID) return
-    const msg = sync.data.message[props.sessionID] ?? []
+    const msg = sessionMessages()
     const active = turnActive()
     const tally = liveTallyForSession(props.sessionID)
     const live = active ? liveTurn() : undefined
     const total = active
-      ? tally.tokens + turnPromptTokens() + (live ? live.reasoning + live.output : 0) + tally.toolTokens
+      ? tally.tokens + (tally.anchored ? 0 : turnPromptTokens()) + (live ? live.reasoning + live.output : 0) + tally.toolTokens
       : tally.tokens
     if (total <= 0) return
     const settled = settledReport(msg)

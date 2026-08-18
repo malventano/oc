@@ -167,12 +167,33 @@ export function settledReport(messages: Array<UserMessage | AssistantMessage>) {
   return {
     // The context actually sent to the model (input + cached prefix/writes),
     // NOT the full request sum (which also includes the generated tokens).
+    // `id` lets a caller detect a NEWER report than the one a frozen tally
+    // base was captured from.
+    id: last.id,
     input,
     output,
     tokens: input + output,
     providerID: last.providerID,
     modelID: last.modelID,
   }
+}
+
+/**
+ * Whether a frozen tally base should re-anchor mid-turn to a newer settled
+ * report: the report is from a DIFFERENT message than the base was frozen
+ * from AND shows LESS context than the frozen base. A newer report that grew
+ * (the frozen base + the turn's prompt) is normal turn progression - the
+ * frozen base holds so the display stays monotonic; only a report that SHRANK
+ * the context re-anchors. That happens after a compaction/prune (the base was
+ * captured from a report that read the full pre-compaction context - e.g. the
+ * compaction summary request - and the next turn's first step reports the
+ * real compacted total) or on a model/tokenizer switch.
+ */
+export function shouldReanchorBase(
+  base: { at?: string; tokens: number },
+  settled: { id: string; input: number } | undefined,
+): boolean {
+  return settled !== undefined && settled.id !== base.at && settled.input < base.tokens
 }
 
 /**

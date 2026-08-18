@@ -5,6 +5,7 @@ import {
   estimateStepTokens,
   formatCount,
   settledReport,
+  shouldReanchorBase,
   streamedChars,
   streamRateFor,
   toolResultTokens,
@@ -204,12 +205,62 @@ test("settledReport: picks the final step with ANY usage, not just output", () =
   expect(r?.output).toBe(0 + 120)
 })
 
+test("settledReport: reports the message id (for frozen-base staleness detection)", () => {
+  const messages: Array<UserMessage | AssistantMessage> = [
+    user("user-0", 1000),
+    assistant({
+      parentID: "user-0",
+      id: "asst-final",
+      time: { created: 1000, completed: 2000 },
+      tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 0, write: 0 } },
+    }),
+  ]
+  const r = settledReport(messages)
+  expect(r?.id).toBe("asst-final")
+})
+
 test("settledReport: undefined when no step has any usage", () => {
   const messages: Array<UserMessage | AssistantMessage> = [
     user("user-0"),
     assistant({ parentID: "user-0", time: { created: 1000, completed: 2000 }, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } }),
   ]
   expect(settledReport(messages)).toBeUndefined()
+})
+
+test("shouldReanchorBase: re-anchors a stale base when a NEWER report shows LESS context (compaction)", () => {
+  // The base was frozen from the compaction summary's report, which read the
+  // whole pre-compaction context; the post-compaction turn's first step
+  // reports the real compacted total - strictly smaller -> re-anchor.
+  expect(
+    shouldReanchorBase({ at: "summary-asst", tokens: 294916 }, { id: "next-step-1", input: 77420 }),
+  ).toBe(true)
+})
+
+test("shouldReanchorBase: holds the frozen base on normal growth (base + prompt)", () => {
+  // A newer report that GREW is normal turn progression - re-anchoring would
+  // introduce step-boundary flicker, so the frozen base must hold.
+  expect(
+    shouldReanchorBase({ at: "prev-final", tokens: 40000 }, { id: "step-1", input: 43000 }),
+  ).toBe(false)
+})
+
+test("shouldReanchorBase: same message (no newer report yet) never re-anchors", () => {
+  expect(
+    shouldReanchorBase({ at: "step-1", tokens: 77420 }, { id: "step-1", input: 77420 }),
+  ).toBe(false)
+})
+
+test("shouldReanchorBase: undefined settled report never re-anchors", () => {
+  expect(shouldReanchorBase({ at: "step-1", tokens: 77420 }, undefined)).toBe(false)
+})
+
+test("shouldReanchorBase: equal input is NOT a correction (strict less-than)", () => {
+  // The turn's first step can report the same context the base already holds
+  // (e.g. a zero-accumulation turn); re-anchoring would only flip the caller's
+  // anchored flag and wrongly drop the prompt estimate.
+  expect(
+    shouldReanchorBase({ at: "prev-final", tokens: 40000 }, { id: "step-1", input: 40000 }),
+  ).toBe(false)
 })
 
 test("formatCount: integers below 1000", () => {
