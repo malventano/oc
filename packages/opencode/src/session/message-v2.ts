@@ -519,6 +519,17 @@ export function stream(sessionID: SessionID) {
   return Effect.gen(function* () {
     const result = [] as WithParts[]
     let before: string | undefined
+    // Walkback cap (0188): never page the ENTIRE session - the upstream
+    // stream() walked all 14k+ messages per step (278 pages, ~1.2s msgs-load
+    // at deep sessions) even though filterCompacted only ever keeps the
+    // newest compaction boundary + its tail. Stop once TWO compaction markers
+    // have been loaded (any user message carrying a compaction part, real or
+    // virtual), walking newest-first. The window then covers the whole
+    // pre-compaction tail (everything newer than the 2nd-newest marker) plus
+    // one marker of safety margin - the filterCompacted context, the epoch
+    // boundary + records, and MessageV2.latest() all operate within it. A
+    // session with < 2 markers pages to the start naturally (next.more).
+    let compactionMarkers = 0
     while (true) {
       const next = yield* page({ sessionID, limit: size, before }).pipe(
         Effect.catchIf(NotFoundError.isInstance, () =>
@@ -528,8 +539,17 @@ export function stream(sessionID: SessionID) {
       if (next.items.length === 0) break
       for (let i = next.items.length - 1; i >= 0; i--) {
         const item = next.items[i]
-        if (item) result.push(item)
+        if (!item) continue
+        result.push(item)
+        if (
+          compactionMarkers < 2 &&
+          item.info.role === "user" &&
+          item.parts.some((p): p is CompactionPart => p.type === "compaction")
+        ) {
+          compactionMarkers++
+        }
       }
+      if (compactionMarkers >= 2) break
       if (!next.more || !next.cursor) break
       before = next.cursor
     }
