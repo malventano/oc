@@ -21,7 +21,7 @@
    }
    get diff() {
      return this._diff;
-@@ -11436,6 +11437,14 @@
+@@ -11436,6 +11437,36 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -33,10 +33,32 @@
 +  _manualAnchorChild = null;
 +  _manualAnchorOffset = 0;
 +  _manualAnchorHeight = 0;
++  // Fallback anchor (0186): the child immediately BELOW the anchor, plus the
++  // content's child count at capture. If the anchored block is DESTROYED
++  // while the user is scrolled back (the store pruned the oldest messages
++  // past its 100-cap window and the anchor was among them - the user is at
++  // the window's top edge), the block anchor has no child to reference, so
++  // the viewport re-anchors to the next sibling's CURRENT top: content
++  // ABOVE it was removed, so it slid up by exactly the pruned height. A new
++  // message APPENDED at the bottom in the same pass does not move the next
++  // sibling's top, so the top-prune/bottom-append case is exact. Gated on
++  // the child count FALLING (a prune removes blocks) so a pure remount
++  // (message.updated reconcile, same children) is untouched.
++  _manualAnchorNextChild = null;
++  _manualAnchorNextTop = null;
++  _manualAnchorChildCount = 0;
++  // Continuously-tracked distance from the viewport top to the content BOTTOM
++  // plus the content height at the previous recalc. The D-anchor: when the
++  // anchor is below the viewport or destroyed and the content SHRANK (the
++  // prune signature - appends and below-viewport registration only grow it),
++  // target = content.height - D moves the position up by exactly the removal,
++  // independent of which blocks remounted or grew in the gap.
++  _manualAnchorD = null;
++  _lastRecalcHeight = 0;
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11633,7 @@
+@@ -11624,6 +11655,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -44,7 +66,7 @@
          this.updateStickyState();
        }
      });
-@@ -11929,12 +11939,59 @@
+@@ -11929,12 +11961,118 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -60,10 +82,21 @@
 +        this._manualAnchorChild = child;
 +        this._manualAnchorOffset = position - layout.top;
 +        this._manualAnchorHeight = layout.height;
++        this._manualAnchorNextChild = children[i + 1] ?? null;
++        this._manualAnchorNextTop =
++          this._manualAnchorNextChild ? this._manualAnchorNextChild.getLayoutNode().getComputedLayout().top : null;
++        this._manualAnchorChildCount = children.length;
++        this._manualAnchorD = this.content.height - position;
++        this._lastRecalcHeight = this.content.height;
 +        return;
 +      }
 +    }
 +    this._manualAnchorChild = null;
++    this._manualAnchorNextChild = null;
++    this._manualAnchorNextTop = null;
++    this._manualAnchorChildCount = 0;
++    this._manualAnchorD = null;
++    this._lastRecalcHeight = 0;
 +  }
    recalculateBarProps() {
      const wasApplyingStickyScroll = this._isApplyingStickyScroll;
@@ -77,6 +110,12 @@
 +        : null;
        this.verticalScrollBar.scrollSize = this.content.height;
        this.verticalScrollBar.viewportSize = this.viewport.height;
++      // Content shrank since the last recalc = a top-removal (the store
++      // pruning the oldest messages). Appends only grow it; blocks registering
++      // real heights in the gap BELOW the viewport grow it. So a shrink is the
++      // unambiguous prune signature, and the continuously-tracked distance to
++      // the content bottom gives the exact removal - the D-anchor below.
++      const heightShrunk = this.content.height < this._lastRecalcHeight;
 +      if (anchor) {
 +        // Shift scrollTop so the content BELOW the anchor stays fixed:
 +        // (1) content ABOVE the anchor changing height moves the anchor's
@@ -96,14 +135,65 @@
 +        const children = this.content.getChildrenSortedByPrimaryAxis();
 +        const anchorIsLast = children.length > 0 && children[children.length - 1] === anchor.child;
 +        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
-+        const target = anchorLayout.top + anchor.offset + (anchorIsLast ? 0 : anchorLayout.height - this._manualAnchorHeight);
++        // Height-delta (0170) applies only while the anchor's growth displaces
++        // VISIBLE content: its bottom must sit above the viewport bottom. An
++        // anchor entirely below the viewport (the culled-gap case, negative
++        // offset) grows out of sight - following the height-delta there made
++        // the viewport drift down a couple rows per streamed message. The
++        // 0183 last-child skip is folded into the same condition (a last-child
++        // anchor's bottom is the content bottom, past the viewport).
++        const anchorBottom = anchorLayout.top + anchorLayout.height;
++        const heightDelta =
++          anchorIsLast || anchorBottom >= this.verticalScrollBar.scrollPosition + this.viewport.height
++            ? 0
++            : anchorLayout.height - this._manualAnchorHeight;
++        // Y-delta (0168): track the content ABOVE THE VIEWPORT. When the
++        // anchor overlaps the viewport (offset >= 0) its top-delta does that.
++        // When the anchor sits below the viewport top (negative offset - the
++        // viewport in a gap), its top-delta includes blocks registering
++        // between the viewport and the anchor - INVISIBLE growth that dragged
++        // the viewport down a few rows per streamed message - so only a
++        // top-removal (heightShrunk) moves the position, via the D-anchor; a
++        // grow/hold leaves it put.
++        let target;
++        if (this._manualAnchorOffset < 0 && heightShrunk) {
++          target = this.content.height - this._manualAnchorD;
++        } else if (this._manualAnchorOffset < 0) {
++          target = this.verticalScrollBar.scrollPosition;
++        } else {
++          target = anchorLayout.top + this._manualAnchorOffset + heightDelta;
++        }
 +        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
 +          this.verticalScrollBar.scrollPosition = target;
++        }
++      } else if (this._hasManualScroll && this._manualAnchorChild && this._manualAnchorChild.isDestroyed) {
++        // The anchored block was DESTROYED. If the content shrank, a top-
++        // removal happened (a prune) - the continuously-tracked distance to
++        // the content bottom gives the exact removal, so the same rows stay
++        // visible regardless of which blocks remounted around it. If the
++        // content only grew or held (a pure remount), nothing moved -
++        // re-capture so future changes are anchored again.
++        if (heightShrunk) {
++          const target = this.content.height - this._manualAnchorD;
++          if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++            this.verticalScrollBar.scrollPosition = target;
++          }
++        } else {
++          this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
 +        }
 +      }
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
+@@ -11959,6 +12097,8 @@
+           }
+         }
+       }
++      this._lastRecalcHeight = this.content.height;
++      this._manualAnchorD = this.content.height - this.verticalScrollBar.scrollPosition;
+     } finally {
+       this._isApplyingStickyScroll = wasApplyingStickyScroll;
+     }
 --- a/index.node.js
 +++ b/index.node.js
 @@ -5664,7 +5664,8 @@
@@ -127,7 +217,7 @@
    }
    get diff() {
      return this._diff;
-@@ -11435,6 +11436,14 @@
+@@ -11435,6 +11436,36 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -139,10 +229,32 @@
 +  _manualAnchorChild = null;
 +  _manualAnchorOffset = 0;
 +  _manualAnchorHeight = 0;
++  // Fallback anchor (0186): the child immediately BELOW the anchor, plus the
++  // content's child count at capture. If the anchored block is DESTROYED
++  // while the user is scrolled back (the store pruned the oldest messages
++  // past its 100-cap window and the anchor was among them - the user is at
++  // the window's top edge), the block anchor has no child to reference, so
++  // the viewport re-anchors to the next sibling's CURRENT top: content
++  // ABOVE it was removed, so it slid up by exactly the pruned height. A new
++  // message APPENDED at the bottom in the same pass does not move the next
++  // sibling's top, so the top-prune/bottom-append case is exact. Gated on
++  // the child count FALLING (a prune removes blocks) so a pure remount
++  // (message.updated reconcile, same children) is untouched.
++  _manualAnchorNextChild = null;
++  _manualAnchorNextTop = null;
++  _manualAnchorChildCount = 0;
++  // Continuously-tracked distance from the viewport top to the content BOTTOM
++  // plus the content height at the previous recalc. The D-anchor: when the
++  // anchor is below the viewport or destroyed and the content SHRANK (the
++  // prune signature - appends and below-viewport registration only grow it),
++  // target = content.height - D moves the position up by exactly the removal,
++  // independent of which blocks remounted or grew in the gap.
++  _manualAnchorD = null;
++  _lastRecalcHeight = 0;
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11632,7 @@
+@@ -11623,6 +11654,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -150,7 +262,7 @@
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11938,59 @@
+@@ -11928,12 +11960,118 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -166,10 +278,21 @@
 +        this._manualAnchorChild = child;
 +        this._manualAnchorOffset = position - layout.top;
 +        this._manualAnchorHeight = layout.height;
++        this._manualAnchorNextChild = children[i + 1] ?? null;
++        this._manualAnchorNextTop =
++          this._manualAnchorNextChild ? this._manualAnchorNextChild.getLayoutNode().getComputedLayout().top : null;
++        this._manualAnchorChildCount = children.length;
++        this._manualAnchorD = this.content.height - position;
++        this._lastRecalcHeight = this.content.height;
 +        return;
 +      }
 +    }
 +    this._manualAnchorChild = null;
++    this._manualAnchorNextChild = null;
++    this._manualAnchorNextTop = null;
++    this._manualAnchorChildCount = 0;
++    this._manualAnchorD = null;
++    this._lastRecalcHeight = 0;
 +  }
    recalculateBarProps() {
      const wasApplyingStickyScroll = this._isApplyingStickyScroll;
@@ -183,6 +306,12 @@
 +        : null;
        this.verticalScrollBar.scrollSize = this.content.height;
        this.verticalScrollBar.viewportSize = this.viewport.height;
++      // Content shrank since the last recalc = a top-removal (the store
++      // pruning the oldest messages). Appends only grow it; blocks registering
++      // real heights in the gap BELOW the viewport grow it. So a shrink is the
++      // unambiguous prune signature, and the continuously-tracked distance to
++      // the content bottom gives the exact removal - the D-anchor below.
++      const heightShrunk = this.content.height < this._lastRecalcHeight;
 +      if (anchor) {
 +        // Shift scrollTop so the content BELOW the anchor stays fixed:
 +        // (1) content ABOVE the anchor changing height moves the anchor's
@@ -202,14 +331,65 @@
 +        const children = this.content.getChildrenSortedByPrimaryAxis();
 +        const anchorIsLast = children.length > 0 && children[children.length - 1] === anchor.child;
 +        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
-+        const target = anchorLayout.top + anchor.offset + (anchorIsLast ? 0 : anchorLayout.height - this._manualAnchorHeight);
++        // Height-delta (0170) applies only while the anchor's growth displaces
++        // VISIBLE content: its bottom must sit above the viewport bottom. An
++        // anchor entirely below the viewport (the culled-gap case, negative
++        // offset) grows out of sight - following the height-delta there made
++        // the viewport drift down a couple rows per streamed message. The
++        // 0183 last-child skip is folded into the same condition (a last-child
++        // anchor's bottom is the content bottom, past the viewport).
++        const anchorBottom = anchorLayout.top + anchorLayout.height;
++        const heightDelta =
++          anchorIsLast || anchorBottom >= this.verticalScrollBar.scrollPosition + this.viewport.height
++            ? 0
++            : anchorLayout.height - this._manualAnchorHeight;
++        // Y-delta (0168): track the content ABOVE THE VIEWPORT. When the
++        // anchor overlaps the viewport (offset >= 0) its top-delta does that.
++        // When the anchor sits below the viewport top (negative offset - the
++        // viewport in a gap), its top-delta includes blocks registering
++        // between the viewport and the anchor - INVISIBLE growth that dragged
++        // the viewport down a few rows per streamed message - so only a
++        // top-removal (heightShrunk) moves the position, via the D-anchor; a
++        // grow/hold leaves it put.
++        let target;
++        if (this._manualAnchorOffset < 0 && heightShrunk) {
++          target = this.content.height - this._manualAnchorD;
++        } else if (this._manualAnchorOffset < 0) {
++          target = this.verticalScrollBar.scrollPosition;
++        } else {
++          target = anchorLayout.top + this._manualAnchorOffset + heightDelta;
++        }
 +        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
 +          this.verticalScrollBar.scrollPosition = target;
++        }
++      } else if (this._hasManualScroll && this._manualAnchorChild && this._manualAnchorChild.isDestroyed) {
++        // The anchored block was DESTROYED. If the content shrank, a top-
++        // removal happened (a prune) - the continuously-tracked distance to
++        // the content bottom gives the exact removal, so the same rows stay
++        // visible regardless of which blocks remounted around it. If the
++        // content only grew or held (a pure remount), nothing moved -
++        // re-capture so future changes are anchored again.
++        if (heightShrunk) {
++          const target = this.content.height - this._manualAnchorD;
++          if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++            this.verticalScrollBar.scrollPosition = target;
++          }
++        } else {
++          this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
 +        }
 +      }
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
+@@ -11958,6 +12096,8 @@
+           }
+         }
+       }
++      this._lastRecalcHeight = this.content.height;
++      this._manualAnchorD = this.content.height - this.verticalScrollBar.scrollPosition;
+     } finally {
+       this._isApplyingStickyScroll = wasApplyingStickyScroll;
+     }
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -2986,6 +2986,7 @@

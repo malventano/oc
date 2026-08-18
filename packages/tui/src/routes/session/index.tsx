@@ -38,6 +38,7 @@ import {
 import type { TurnToolPageState } from "../../component/prompt/turn-stats"
 import type {
   AssistantMessage,
+  Message,
   Part,
   Provider,
   ToolPart,
@@ -222,6 +223,37 @@ export function Session() {
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+  // Solid's <For> keys by item REFERENCE, but the sync store replaces message
+  // objects on every message.updated reconcile - without stable keys every
+  // message block remounts mid-turn, destroying the scrollbox's manual-scroll
+  // anchor (the root cause of the pruned-viewport jumps: a remounted anchor
+  // leaves no reference to compensate the next prune). Key by message id: each
+  // entry is a stable shell whose msg() memo resolves the CURRENT message
+  // reactively, so only the changed block re-renders (equalFn on the memo
+  // value keeps untouched blocks dormant).
+  const messageShells = new Map<string, { id: string; msg: () => Message | undefined }>()
+  const keyedMessages = createMemo(() => {
+    const list = messages()
+    const seen = new Set<string>()
+    const out: { id: string; msg: () => Message | undefined }[] = []
+    for (const m of list) {
+      seen.add(m.id)
+      let shell = messageShells.get(m.id)
+      if (!shell) {
+        const id = m.id
+        shell = {
+          id,
+          msg: createMemo(() => (sync.data.message[route.sessionID] ?? []).find((x) => x.id === id)),
+        }
+        messageShells.set(id, shell)
+      }
+      out.push(shell)
+    }
+    for (const id of messageShells.keys()) {
+      if (!seen.has(id)) messageShells.delete(id)
+    }
+    return out
+  })
   // Marker message ids whose compaction part is `virtual` (created by the
   // virtual-compact path). Their synthetic summaries render as compact blocks
   // instead of full assistant messages, mirroring the undo block.
@@ -1364,8 +1396,10 @@ export function Session() {
                 scrollAcceleration={scrollAcceleration()}
               >
                 <box height={1} />
-                <For each={messages()}>
-                  {(message, index) => (
+                <For each={keyedMessages()}>
+                  {(shell, index) => {
+                    const message = shell.msg()!
+                    return (
                     <Switch>
                       <Match when={message.id === revert()?.messageID}>
                         {(function () {
@@ -1470,7 +1504,8 @@ export function Session() {
                         />
                       </Match>
                     </Switch>
-                  )}
+                    )
+                  }}
                 </For>
               </scrollbox>
               <box flexShrink={0}>
@@ -1828,6 +1863,15 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     if (showLive()) return
     const parentID = props.message.parentID
     if (!parentID) return
+    // Walk the DB only when the SESSION is idle (the turn fully over). A
+    // completed step's footer goes non-live mid-turn while later steps are
+    // still streaming - walking then CACHES A PARTIAL COUNT for the turn,
+    // and every subsequent live footer seeds `priorTools` from that cache,
+    // freezing the counter at the stale value ("flips back to 1 and stays").
+    // The idle gate defers the walk until the final count exists; it also
+    // stops the mid-turn DB pagination (the inter-tool-call stalls).
+    const status = sync.data.session_status?.[props.message.sessionID]?.type
+    if (status !== undefined && status !== "idle") return
     void dbTurnToolCount(sdk, props.message.sessionID, parentID, props.message, props.parts).then((n) =>
       setPriorTools(n),
     )
