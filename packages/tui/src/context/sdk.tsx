@@ -54,6 +54,32 @@ export function getStreamHighlightMs(now: number): number {
   return Math.min(STREAM_BATCH_MAX_MS, highlightDurations[highlightDurations.length - 1]!)
 }
 
+// Measured per-delta Solid flush time (ms): the reactive flush that runs after a
+// part.delta store update (turn-stats memos + streaming code-element content
+// setter). This was the measured mid-turn UI-freeze driver (~22ms/delta deep in a
+// turn) and it happens BETWEEN the delta arrival and the frame render - invisible
+// to the frame-duration signal the batch controller used, so the window never
+// widened under flush load. sync.tsx feeds it per delta (setTimeout(0) after the
+// handler measures the handler + flush); the controller folds it into the load
+// signal. MAX over the burst window: a Solid batch flush is measured fully by the
+// FIRST timer after it and as partial tails by the rest - the max is the true cost.
+const STREAM_FLUSH_FRESH_MS = 2 * STREAM_BATCH_MAX_MS
+const STREAM_FLUSH_MIN_BURST = 3
+let lastFlushAt = 0
+let flushDurations: number[] = []
+export function onStreamFlush(now: number, durationMs: number) {
+  lastFlushAt = now
+  if (durationMs > 0) {
+    flushDurations.push(durationMs)
+    if (flushDurations.length > STREAM_FLUSH_MIN_BURST) flushDurations.shift()
+  }
+}
+export function getStreamFlushMs(now: number): number {
+  if (now - lastFlushAt > STREAM_FLUSH_FRESH_MS) return 0
+  if (flushDurations.length < STREAM_FLUSH_MIN_BURST) return 0
+  return Math.min(STREAM_BATCH_MAX_MS, Math.max(...flushDurations))
+}
+
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
