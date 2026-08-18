@@ -763,10 +763,24 @@ const layer = Layer.effect(
         // renders the turn's stats right after the restart call (0184).
         // Guarded on !error: the halt/interrupt paths keep their error
         // finish.
-        if (ctx.restartClosed && !ctx.assistantMessage.error) ctx.assistantMessage.finish = "stop"
-        ctx.assistantMessage.finish ??= "stop"
-        ctx.assistantMessage.time.completed = Date.now()
-        yield* session.updateMessage(ctx.assistantMessage)
+        // EXCEPT a LOOP-GUARD cut (ctx.loopGuardFired): the stream ends via
+        // takeUntil (a normal end, so this block would stamp finish="stop" +
+        // time.completed). The loop-guard handler marks the message with its
+        // error + a steer and returns "continue" - the loop re-delivers the
+        // user message with the steer. The exit-invariant check skips
+        // messages WITHOUT a finish, so a loop-guard-cut message must STAY
+        // finish-less: with finish="stop" the next iteration's exit check
+        // sees a "finished" last assistant and BREAKS before the steer lands
+        // - neither loop-guard channel returned the turn (tool-input + text/
+        // reasoning, live 2026-08-18), while the stall guard (which clears
+        // finish + completed) always did. The loop-guard handler writes the
+        // message itself (with the error banner).
+        if (!ctx.loopGuardFired) {
+          if (ctx.restartClosed && !ctx.assistantMessage.error) ctx.assistantMessage.finish = "stop"
+          ctx.assistantMessage.finish ??= "stop"
+          ctx.assistantMessage.time.completed = Date.now()
+          yield* session.updateMessage(ctx.assistantMessage)
+        }
       })
 
       const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
