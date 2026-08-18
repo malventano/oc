@@ -14,7 +14,7 @@ export type EventSource = {
 // it back toward baseline once frames stay within budget. Batching more tokens per
 // flush reduces render frequency, trading update smoothness for a responsive loop.
 export const STREAM_BATCH_MIN_MS = 4
-export const STREAM_BATCH_MAX_MS = 256
+export const STREAM_BATCH_MAX_MS = 1024
 const [streamBatchWindow, setStreamBatchWindowRaw] = createSignal(STREAM_BATCH_MIN_MS)
 export function setStreamBatchWindow(ms: number) {
   setStreamBatchWindowRaw(Math.max(STREAM_BATCH_MIN_MS, Math.min(STREAM_BATCH_MAX_MS, ms)))
