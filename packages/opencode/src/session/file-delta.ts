@@ -256,12 +256,12 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
   step: number
   compactingPrompt: boolean
 }) {
-  // Mirror skill-delta/epoch gating: deltas ride step-1 real user messages
-  // only. Mid-turn drift is held in the chain and surfaces on the next user
-  // prompt (the model may act once on stale content; the hashline anchors on
-  // the edit tool are the backstop). Compaction turns and per-message system
-  // overrides bypass.
-  if (input.userSystem || input.compactingPrompt || input.step !== 1 || !isRealUser(input.user)) return
+  // Loaded files are re-statted on EVERY step (mid-turn included): the stats
+  // are one batched Effect.all, so staleness is caught while the model is
+  // still working on the files instead of deferred to the next user prompt.
+  // Emission stays idempotent via the hasDelta check below (one reminder per
+  // message). Compaction turns and per-message system overrides bypass.
+  if (input.userSystem || input.compactingPrompt || !isRealUser(input.user)) return
 
   const reconstructed = integrateFileReads(input.msgs)
   if (reconstructed.size === 0) return
@@ -270,14 +270,22 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
   if (hasDelta) return
 
   const instance = yield* InstanceState.context
-  const diskStats = new Map<string, FileStat | undefined>()
-  for (const path of reconstructed.keys()) {
-    const st = yield* Effect.tryPromise(() => NFS.stat(path)).pipe(Effect.catch(() => Effect.succeed(undefined)))
-    diskStats.set(
-      path,
-      st ? { mtimeMs: Math.trunc(st.mtimeMs), size: st.size } : undefined,
-    )
-  }
+  // Batch the per-path stats into one Effect.all (a single suspension - the
+  // app's scheduler costs ~20ms per sequential yield, so per-file loops scale
+  // linearly otherwise).
+  const paths = Array.from(reconstructed.keys())
+  const stats = yield* Effect.all(
+    paths.map((path) =>
+      Effect.tryPromise(() => NFS.stat(path)).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+        Effect.map((st) => ({ path, st })),
+      ),
+    ),
+    { concurrency: "unbounded" },
+  )
+  const diskStats = new Map<string, FileStat | undefined>(
+    stats.map(({ path, st }) => [path, st ? { mtimeMs: Math.trunc(st.mtimeMs), size: st.size } : undefined]),
+  )
 
   const readNew = async (path: string): Promise<string | undefined> => {
     try {

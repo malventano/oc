@@ -8,7 +8,7 @@ import { MessageV2 } from "./message-v2"
 import { Skill } from "@/skill"
 import { TimeContext } from "./time-context"
 import { Epoch } from "./epoch"
-import { SkillDelta } from "./skill-delta"
+import { SkillDelta, integrateSkillBodies } from "./skill-delta"
 import { FileDelta } from "./file-delta"
 
 import { LoopGuard } from "./loop-guard"
@@ -1165,7 +1165,6 @@ const layer = Layer.effect(
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
-
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
           )
@@ -1421,19 +1420,47 @@ const layer = Layer.effect(
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-TimeContext.stampUserMessages(msgs)
-            // Skill hot-reload: re-stat cached skill files (and re-scan dirs on
-            // dir-mtime change) BEFORE the skills section renders, so the epoch
-            // section diff sees table changes (descriptions/adds/removals) and
-            // skill tool loads serve fresh content.
-            const skillChanges = yield* skill.refresh()
+            TimeContext.stampUserMessages(msgs)
+             // Skill hot-reload: re-stat cached skill files (and re-scan dirs on
+             // dir-mtime change) BEFORE the skills section renders, so the epoch
+             // section diff sees table changes (descriptions/adds/removals) and
+             // skill tool loads serve fresh content. The full re-stat + dir rescan
+             // runs only on the real user turn (step 1, non-compaction); mid-turn
+             // scopes to the skills loaded into this context since the last
+             // compaction - only those bodies can drift between steps.
+             const isRealUserTurn = step === 1 && !compactingPrompt
+             const refreshOptions = isRealUserTurn
+               ? undefined
+               : { names: new Set(integrateSkillBodies(msgs).keys()) }
+             // Loaded-skill and loaded-file staleness checks run in PARALLEL on
+             // every step (FileDelta.apply is step-agnostic - one batched stat
+             // pass each). Mid-turn this catches drift while the model is still
+             // working on the assets instead of deferring to the next user prompt.
+             const [skillChanges] = yield* Effect.all([
+               skill.refresh(refreshOptions),
+               FileDelta.apply({
+                 msgs,
+                 sessionID,
+                 user: lastUserMsg!,
+                 userSystem: lastUser.system,
+                 step,
+                 compactingPrompt: !!compactingPrompt,
+               }).pipe(Effect.provideService(Session.Service, sessions)),
+             ])
 
-            const [skills, env, instructions, mcpInstructions] = yield* Effect.all([
-              sys.skills(agent),
-              sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
-              sys.mcp(agent, session.permission),
-            ])
+            const skills = yield* sys.skills(agent)
+            const env = yield* sys.environment(model)
+            // Instruction files (AGENTS.md/CLAUDE.md/CONTEXT.md + config
+            // instructions) are read in full only on the real user turn: the
+            // epoch freezes the system bytes and discards mid-turn section
+            // diffs, so a mid-turn re-read only feeds a diff that is thrown
+            // away. Drift in system-rendered instructions surfaces on the next
+            // user prompt; AGENTS.md files read via the read tool are tracked
+            // by FileDelta (step-1-gated walk) separately.
+            const instructions = isRealUserTurn
+              ? yield* instruction.system().pipe(Effect.orDie)
+              : []
+            const mcpInstructions = yield* sys.mcp(agent, session.permission)
 
             // Frozen-system epoch: snapshot the wire system at the first
             // prompt of each epoch (session start / first post-compaction
@@ -1466,16 +1493,6 @@ TimeContext.stampUserMessages(msgs)
              step,
              compactingPrompt: !!compactingPrompt,
              changed: skillChanges,
-           }).pipe(
-             Effect.provideService(Session.Service, sessions),
-           )
-           yield* FileDelta.apply({
-             msgs,
-             sessionID,
-             user: lastUserMsg!,
-             userSystem: lastUser.system,
-             step,
-             compactingPrompt: !!compactingPrompt,
            }).pipe(
              Effect.provideService(Session.Service, sessions),
            )
