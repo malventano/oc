@@ -37,6 +37,27 @@ async function startListener() {
   return Server.listen({ hostname: "127.0.0.1", port: 0 })
 }
 
+// Server.listen with port 0 prefers the fixed CLI port 4096 before falling back
+// to a kernel-assigned port. Under --parallel, workers' server tests race for
+// 4096, so a stopped listener's port can be re-bound by another worker before a
+// fetch-after-stop assertion runs - the fetch then RESOLVES against the foreign
+// server. Tests that assert post-stop rejection need a port no other worker
+// will take: bind a random high port explicitly (retrying EADDRINUSE).
+async function startExclusiveListener() {
+  Flag.OPENCODE_SERVER_PASSWORD = auth.password
+  Flag.OPENCODE_SERVER_USERNAME = auth.username
+  process.env.OPENCODE_SERVER_PASSWORD = auth.password
+  process.env.OPENCODE_SERVER_USERNAME = auth.username
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      return await Server.listen({ hostname: "127.0.0.1", port: 40000 + Math.floor(Math.random() * 20000) })
+    } catch (error) {
+      if (!(typeof error === "object" && error !== null && "code" in error && error.code === "EADDRINUSE")) throw error
+    }
+  }
+  throw new Error("could not bind a free port after 8 attempts")
+}
+
 async function startNoAuthListener() {
   Flag.OPENCODE_SERVER_PASSWORD = undefined
   Flag.OPENCODE_SERVER_USERNAME = auth.username
@@ -276,7 +297,7 @@ describe("HttpApi Server.listen", () => {
   })
 
   test("stop() gracefully closes an idle listener and is repeat-safe", async () => {
-    const listener = await startListener()
+    const listener = await startExclusiveListener()
     await withTimeout(listener.stop(), 10_000, "timed out waiting for graceful listener.stop()")
     await withTimeout(listener.stop(), 5_000, "timed out waiting for repeated graceful listener.stop()")
     await expect(
