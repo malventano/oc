@@ -208,34 +208,60 @@ export function formatCount(num: number): string {
   return num.toString()
 }
 
-/** State of the prior-turn tool-count DB walk across pages. */
-export type TurnToolPageState = { tools: number; reachedRoot: boolean }
+/**
+ * The full prior-turn DB walk result: every stat the footer shows for a
+ * completed turn, resolved from the DB in ONE paginated pass (the store
+ * window caps at 100 messages, so long turns' early steps and their root
+ * prompt fall outside it). `tools` = tool-call parts, `reasoning`/`output` =
+ * the assistant steps' real endpoint token totals, `start` = the root user
+ * message's created time (the elapsed clock's anchor).
+ */
+export type TurnDbWalk = { tools: number; reasoning: number; output: number; start?: number }
+
+/** Per-page state of the turn DB walk across pages. */
+export type TurnWalkPageState = TurnDbWalk & { reachedRoot: boolean }
 
 /**
- * Count tool parts on a turn's assistant steps from one page of the messages
- * API (chronological, oldest first). The turn's root user message PRECEDES its
- * steps in the page, so reaching it flips `reachedRoot` and every following
- * item is one of the turn's steps; before it, only items whose parentID
- * matches count (a page that omits the root holds only steps, all newer than
- * it). Returning at the root instead of continuing would skip the steps and
- * report 0. Pure - unit-tested.
+ * Accumulate a turn's stats from one page of the messages API (chronological,
+ * oldest first). The turn's root user message PRECEDES its steps in the page,
+ * so reaching it flips `reachedRoot` and every following item is one of the
+ * turn's steps; before it, only items whose parentID matches count (a page
+ * that omits the root holds only steps, all newer than it). Returning at the
+ * root instead of continuing would skip the steps and report 0. Pure -
+ * unit-tested.
  */
-export function countTurnToolParts(
-  items: Array<{ info: { id: string; role: string; parentID?: string | null }; parts: Part[] }>,
+export function countTurnWalkParts(
+  items: Array<{
+    info: {
+      id: string
+      role: string
+      parentID?: string | null
+      time?: { created: number }
+      tokens?: { reasoning?: number; output?: number }
+    }
+    parts: Part[]
+  }>,
   parentID: string,
-  state: TurnToolPageState,
-): TurnToolPageState {
-  let { tools, reachedRoot } = state
+  state: TurnWalkPageState,
+): TurnWalkPageState {
+  let { tools, reachedRoot, start, reasoning, output } = state
   for (const item of items) {
     if (item.info.id === parentID) {
       reachedRoot = true
+      // The turn's root user message anchors the elapsed clock. Capture its
+      // created time while the walk passes it - the store window (capped at
+      // 100) prunes the parent away on long turns, and the footer's elapsed
+      // reads it from here instead.
+      start = item.info.time?.created ?? start
       continue
     }
     if (item.info.role === "assistant" && (reachedRoot || item.info.parentID === parentID)) {
       tools += item.parts.filter((p) => p.type === "tool").length
+      reasoning += item.info.tokens?.reasoning ?? 0
+      output += item.info.tokens?.output ?? 0
     }
   }
-  return { tools, reachedRoot }
+  return { tools, reachedRoot, start, reasoning, output }
 }
 
 /**

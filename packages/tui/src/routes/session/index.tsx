@@ -28,14 +28,14 @@ import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useThe
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import {
-  countTurnToolParts,
+  countTurnWalkParts,
   formatCount,
   liveTokensForSteps,
   streamRateFor,
   streamedChars,
   turnSteps,
 } from "../../component/prompt/turn-stats"
-import type { TurnToolPageState } from "../../component/prompt/turn-stats"
+import type { TurnDbWalk, TurnWalkPageState } from "../../component/prompt/turn-stats"
 import type {
   AssistantMessage,
   Message,
@@ -1767,45 +1767,78 @@ function VirtualCompactionBlock(props: { message: AssistantMessage; parts: Part[
   )
 }
 
-// Prior-turn tool counts walk back in the session DB (paginated messages API)
-// because the TUI sync store caps at the last 100 messages: a turn's tool-call
-// steps can fall outside that window, so the footer's store-based count would
-// undercount or miss them entirely. The walk starts at the footer message's
-// cursor and pages older until the turn's root user message is found, counting
-// tool parts on the turn's assistant steps. Cached per (session, turn) with the
-// RESOLVED value so a remount can seed the signal synchronously (no flash of
-// the pruned store count). A completed turn's footer is locked to the DB
-// contents - the walk result does not change when the store window shifts.
-const priorTurnToolCache = new Map<string, number>()
+// Completed turns' footers walk back in the session DB (paginated messages
+// API) because the TUI sync store caps at the last 100 messages: a long turn's
+// early steps and its root user prompt fall outside that window, so the
+// footer's store-based stats would undercount or miss them entirely. The walk
+// starts at the footer message's cursor and pages older until the turn's root
+// user message is found, accumulating in ONE pass everything the footer shows
+// for a completed turn: the tool-call count, the assistant steps' real
+// reasoning/output token totals, and the root's created time (the elapsed
+// clock's anchor). Cached per (session, turn) with the RESOLVED value so a
+// remount can seed the signal synchronously (no flash of the pruned store
+// stats). A completed turn's footer is locked to the DB contents - the walk
+// result does not change when the store window shifts.
+const turnDbCache = new Map<string, TurnDbWalk>()
 
-async function dbTurnToolCount(
+// The turn's root user message's created time, seeded from the store while
+// the parent is still in the window (the live clock's early anchor). Merged
+// into the DB walk's result at completion; stored separately because the full
+// walk only runs when the session is idle, and the clock must work mid-turn.
+const parentStartCache = new Map<string, number>()
+
+async function dbTurnStats(
   sdk: ReturnType<typeof useSDK>,
   sessionID: string,
   parentID: string,
   footer: AssistantMessage,
   footerParts: Part[],
-): Promise<number> {
+): Promise<TurnDbWalk> {
   const key = `${sessionID}:${parentID}`
-  const cached = priorTurnToolCache.get(key)
+  const cached = turnDbCache.get(key)
   if (cached !== undefined) return cached
-  let state: TurnToolPageState = { tools: footerParts.filter((p) => p.type === "tool").length, reachedRoot: false }
+  let state: TurnWalkPageState = {
+    tools: footerParts.filter((p) => p.type === "tool").length,
+    reasoning: footer.tokens?.reasoning ?? 0,
+    output: footer.tokens?.output ?? 0,
+    reachedRoot: false,
+    start: parentStartCache.get(key),
+  }
   let cursor = Buffer.from(JSON.stringify({ id: footer.id, time: footer.time.created })).toString("base64url")
   for (let page = 0; page < 200; page++) {
     const resp = await sdk.client.session.messages({ sessionID, limit: 100, before: cursor })
-    state = countTurnToolParts(resp.data ?? [], parentID, state)
+    state = countTurnWalkParts(resp.data ?? [], parentID, state)
     if (state.reachedRoot) {
-      priorTurnToolCache.set(key, state.tools)
-      return state.tools
+      const result: TurnDbWalk = {
+        tools: state.tools,
+        reasoning: state.reasoning,
+        output: state.output,
+        start: state.start,
+      }
+      turnDbCache.set(key, result)
+      return result
     }
     const next = resp.response?.headers.get("X-Next-Cursor")
     if (!next) {
-      priorTurnToolCache.set(key, state.tools)
-      return state.tools
+      const result: TurnDbWalk = {
+        tools: state.tools,
+        reasoning: state.reasoning,
+        output: state.output,
+        start: state.start,
+      }
+      turnDbCache.set(key, result)
+      return result
     }
     cursor = next
   }
-  priorTurnToolCache.set(key, state.tools)
-  return state.tools
+  const result: TurnDbWalk = {
+    tools: state.tools,
+    reasoning: state.reasoning,
+    output: state.output,
+    start: state.start,
+  }
+  turnDbCache.set(key, result)
+  return result
 }
 
 function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
@@ -1821,12 +1854,40 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
   })
 
+  // The turn's start time (root user message's created). Reads the store
+  // first (fast, the live turn's parent is present until the 100-cap prunes
+  // it), falling back to the DB-walked value for long turns and remounts
+  // after restart. Seeds the cache while the parent is still in the store so
+  // a mid-turn prune can't drop the live clock to 0ms.
+  const parentKey = () =>
+    props.message.parentID ? `${props.message.sessionID}:${props.message.parentID}` : undefined
+  const [dbTurnStart, setDbTurnStart] = createSignal<number | undefined>(
+    parentKey() ? parentStartCache.get(parentKey()!) : undefined,
+  )
+  createEffect(() => {
+    const key = parentKey()
+    if (!key) return
+    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
+    if (!user?.time.created) return
+    // Seed the start into its own cache (the full turnDbCache holds only
+    // COMPLETED walk results; the start is the one piece known from the
+    // store while the turn is still live, so it gets its own slot). tools/
+    // tokens stay out of dbTurn until the walk lands so the live footer
+    // keeps its store-based counts.
+    if (parentStartCache.get(key) !== user.time.created) parentStartCache.set(key, user.time.created)
+    setDbTurnStart(user.time.created)
+  })
+  const userStart = createMemo(() => {
+    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
+    return user?.time.created ?? dbTurnStart()
+  })
+
   const duration = createMemo(() => {
     if (!final()) return 0
     if (!props.message.time.completed) return 0
-    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    if (!user || !user.time) return 0
-    return props.message.time.completed - user.time.created
+    const start = userStart()
+    if (!start) return 0
+    return props.message.time.completed - start
   })
 
   // Live agent-footer counter for the active turn: the last assistant
@@ -1847,41 +1908,51 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const showLive = createMemo(() => turnActive() && props.last)
   const turnStepsMemo = createMemo(() => turnSteps(messages(), props.message.parentID))
   const turnLive = createMemo(() => liveTokensForSteps(turnStepsMemo(), (id) => sync.data.part[id]))
-  // Tool call count for the turn. The LIVE turn counts from the store (the
-  // stream keeps it complete); prior turns are LOCKED to the DB via the walk
-  // (the store caps at 100 messages, so a turn's tool-call steps can be
-  // pruned away - the walk result must not depend on the store window). The
-  // signal seeds from the resolved cache so a remount never flashes the
-  // pruned store count; the plain effect (NO defer) runs the walk on mount
-  // for prior turns and on the live turn's completion.
-  const [priorTools, setPriorTools] = createSignal<number | undefined>(
-    props.message.parentID
-      ? priorTurnToolCache.get(`${props.message.sessionID}:${props.message.parentID}`)
-      : undefined,
+  // The turn's full DB-walked stats (tools + reasoning/output tokens + root
+  // start). The LIVE turn counts from the store (the stream keeps it
+  // complete); completed turns are LOCKED to the DB via the walk - the store
+  // caps at 100 messages, so a long turn's early steps and its root prompt
+  // are pruned away, and the walk result must not depend on the store
+  // window. The signal seeds from the resolved cache so a remount never
+  // flashes the pruned store numbers; the plain effect (NO defer) runs the
+  // walk on mount for prior turns and on the live turn's completion.
+  const [dbTurn, setDbTurn] = createSignal<TurnDbWalk | undefined>(
+    parentKey() ? turnDbCache.get(parentKey()!) : undefined,
   )
   createEffect(() => {
     if (showLive()) return
     const parentID = props.message.parentID
     if (!parentID) return
+    // The turn's NEWEST in-window step is the only authoritative walk source:
+    // the walk pages OLDER from the footer's cursor, so a mid-turn footer's
+    // walk would count only the steps before it and cache a PARTIAL result
+    // that races the real one. The newest step's walk spans the whole turn.
+    const steps = turnStepsMemo()
+    if (steps.length === 0 || steps.at(-1)?.id !== props.message.id) return
     // Walk the DB only when the SESSION is idle (the turn fully over). A
     // completed step's footer goes non-live mid-turn while later steps are
     // still streaming - walking then CACHES A PARTIAL COUNT for the turn,
-    // and every subsequent live footer seeds `priorTools` from that cache,
+    // and every subsequent live footer seeds `dbTurn` from that cache,
     // freezing the counter at the stale value ("flips back to 1 and stays").
     // The idle gate defers the walk until the final count exists; it also
     // stops the mid-turn DB pagination (the inter-tool-call stalls).
     const status = sync.data.session_status?.[props.message.sessionID]?.type
     if (status !== undefined && status !== "idle") return
-    void dbTurnToolCount(sdk, props.message.sessionID, parentID, props.message, props.parts).then((n) =>
-      setPriorTools(n),
-    )
+    void dbTurnStats(sdk, props.message.sessionID, parentID, props.message, props.parts).then((stats) => {
+      const key = `${props.message.sessionID}:${parentID}`
+      turnDbCache.set(key, stats)
+      setDbTurn(stats)
+      if (stats.start !== undefined) setDbTurnStart(stats.start)
+    })
   })
   const turnTools = createMemo(() => {
+    const db = dbTurn()
+    if (db !== undefined) return db.tools
     let tools = 0
     for (const step of turnStepsMemo()) {
       tools += (sync.data.part[step.id] ?? []).filter((p) => p.type === "tool").length
     }
-    return priorTools() ?? tools
+    return tools
   })
   const [turnNow, setTurnNow] = createSignal(0)
   createEffect(
@@ -1895,16 +1966,19 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
       },
     ),
   )
-  const userStart = createMemo(() => {
-    const user = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-    return user?.time.created
-  })
   const liveElapsed = createMemo(() => {
     if (!showLive()) return 0
     const start = userStart()
     return start ? Math.max(0, turnNow() - start) : 0
   })
   const turnTokens = createMemo(() => {
+    // Completed turns: the DB walk's full token totals (the store window
+    // truncates long turns' early steps - the walk result is authoritative).
+    const db = dbTurn()
+    if (db !== undefined) {
+      if (db.reasoning + db.output <= 0) return
+      return { reasoning: db.reasoning, output: db.output }
+    }
     const live = turnLive()
     if (live.reasoning + live.output <= 0) return
     return live
