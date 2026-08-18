@@ -139,6 +139,23 @@ async function row(file: string): Promise<Row> {
   return Filesystem.readJson<Row>(file)
 }
 
+// Plugins write their marker files asynchronously from their tui() hooks during
+// TuiPluginRuntime.init(). Poll for the files that MUST exist before reading
+// them - a straight read races the plugin runtime and ENOENTs under load
+// (reliably at --parallel worker counts).
+async function waitForFile(file: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      await fs.stat(file)
+      return
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+  throw new Error(`timed out waiting for ${file}`)
+}
+
 async function load(): Promise<Data> {
   const stamp = Date.now()
   const globalConfigPath = path.join(Global.Path.config, "tui.json")
@@ -533,6 +550,14 @@ export default {
       }),
       config,
     })
+    // Wait for the plugin-side async writes to land before reading them. The
+    // invalid plugin is expected to stay silent - never wait for it.
+    await waitForFile(tmp.extra.localMarker)
+    await waitForFile(tmp.extra.globalMarker)
+    await waitForFile(tmp.extra.preloadedMarker)
+    await waitForFile(tmp.extra.localDest)
+    await waitForFile(tmp.extra.globalDest)
+    await waitForFile(tmp.extra.preloadedDest)
     const local = await row(tmp.extra.localMarker)
     const global = await row(tmp.extra.globalMarker)
     const invalid = await row(tmp.extra.invalidMarker)
