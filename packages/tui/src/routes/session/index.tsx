@@ -2731,7 +2731,7 @@ function BlockTool(props: {
 }
 
 function Shell(props: ToolProps) {
-  const { theme, syntax } = useTheme()
+  const { theme } = useTheme()
   const pathFormatter = usePathFormatter()
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
@@ -2795,134 +2795,62 @@ function Shell(props: ToolProps) {
     return segs && segs.length > 1 ? segs[1]!.lang : "bash"
   })
   const commandSegments = createMemo(() => heredocSegments(command()))
-  const commandBlock = () => {
-    // line_number only accepts a code element as its target (lineInfo/
-    // lineCount/virtualLineCount/scrollY) - a wrapper box is silently
-    // dropped (the 0138-revealed bug: heredoc commands lost the command
-    // in the completed block). Gutter EACH segment instead; the numbers
-    // restart per segment.
-    const code = commandSegments() ? (
-      <box flexDirection="column">
-        {commandSegments()!.map((seg, i) => {
-          const el = (
-            <code
-              // key-less: opentui CodeProps has no key field; segments re-render in place
-              filetype={seg.lang}
-              // drawUnstyledText={false}: the completed element's FIRST
-              // paint would be the raw text (the 1-frame WHITE flash at
-              // the running->completed transition - video captured). With
-              // it false the buffer defers to the async highlight, so the
-              // command stays colored through the transition.
-              drawUnstyledText={false}
-              syntaxStyle={syntax()}
-              content={seg.text}
-              conceal={ctx.conceal()}
-              fg={theme.text}
-            />
-          )
-          return gutter() ? (
-            <line_number key={i} fg={theme.textMuted} minWidth={3} paddingRight={1}>
-              {el}
-            </line_number>
-          ) : (
-            el
-          )
-        })}
-      </box>
-    ) : (
-      <code
-        filetype="bash"
-        // drawUnstyledText={false}: no raw white first frame at the
-        // running->completed transition (see the segment branch).
-        drawUnstyledText={false}
-        syntaxStyle={syntax()}
-        content={command()}
-        conceal={ctx.conceal()}
-        fg={theme.text}
-      />
-    )
-    return code
-  }
+  // 0199 carry-over: the SINGLE code element (LiveToolStream's) persists
+  // through streaming -> running -> completed, so the non-heredoc command
+  // never remounts at completion (its buffer holds the last highlight of
+  // the identical content). The completed HEREDOC flips the segments prop
+  // to the static per-segment re-split (fresh mounts - the 0143 per-delta
+  // recreation concern does not apply: no more deltas at completion).
+  const completed = () => !stream.streaming() && !isRunning()
+  // The block shows once there is ANYTHING to render (streaming, running,
+  // landed command, or output); the bare pre-stream/errored-no-output
+  // pending state falls back to the inline "$ command" row.
+  const showBlock = () =>
+    stream.streaming() ||
+    isRunning() ||
+    stringValue(props.metadata.output) !== undefined ||
+    command().length > 0
 
   return (
-    <Switch>
-      {/* Live view: the command streams in as it is typed (bash grammar
-          colors keywords, strings, variables as they land). */}
-      <Match when={stream.streaming()}>
-        <LiveToolStream
-          part={props.part}
-          // The persistent "# bash" header is present from the FIRST
-          // streaming frame - the block keeps its title row through
-          // streaming -> running ("# Running") -> completed ("# bash"),
-          // so no height jump at either transition (2026-08-17).
-          title="# bash"
-          streaming={true}
-          // The streaming display keeps the model's trailing newline (the
-          // raw tool-call content ends with "\n"); the landed command
-          // input strips it. The trailing "\n" flips the gutter on
-          // mid-stream, the gutter column narrows the code, and a
-          // boundary-length command wraps/unwraps between the streaming
-          // and completed states - the 1-line vertical judder (video
-          // captured: a '1' appears in front of the streaming line).
-          // Trim the display's trailing newlines (display-only) so the
-          // streaming view matches the completed view's width/rows.
-          content={stream.display().replace(/\n+$/, "")}
-          filetype={liveFiletype()}
-          gutter={stream.display().replace(/\n+$/, "").includes("\n")}
-          // segments={undefined} (0143): the segmented branch's per-segment
-          // code elements are RECREATED per delta (the component body
-          // re-runs when it reads reactive props - the createMemo slots
-          // traced this live: 122 new elements per heredoc) and each mount
-          // paints a w=1 transient before the layout settles - the
-          // '1 p'/'1 d' flicker (BUG_STREAMING_FLICKER.md, video-confirmed
-          // 0146: 1-char collapses recur per delta + the gutter-width
-          // jitter between 1- and 2-digit segments). Stream as a single
-          // bash element (stable, colored); the completed view below
-          // switches to the segmented render.
-          segments={undefined}
-        />
-      </Match>
-      {/* The running state must keep the BlockTool: a FAST command's
-          output stays undefined until completion, and without this the
-          TRUE-match InlineTool shows for a frame (the '$' + the block
-          vanishing - the vertical judder's second half). */}
-      <Match when={stringValue(props.metadata.output) !== undefined || isRunning()}>
-        {/* Running: the spinner lives in the block title for EVERY command
-            (single AND multi-line) - it signifies the BLOCK is busy, not
-            the command within (the old inline-spinner design shifted the
-            command text by the spinner width, jumping 2 columns when it
-            came and went - 2026-08-17). The command stays colored and
-            stationary below. */}
-        <BlockTool
-          title={title()}
-          part={props.part}
-          // The spinner lives in the TITLE for every running command (single
-          // AND multi-line): a single-line command's inline spinner (the old
-          // 0146 design) shifted the command text by the spinner+gap width
-          // while running, jumping 2 columns when it came and went
-          // (2026-08-17). With the persistent title header, the command line
-          // below never moves - only the title toggles "# Running" (with the
-          // spinner) <-> "# bash".
-          spinner={isRunning()}
-          onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
-        >
-          <box gap={1}>
-            {commandBlock()}
-            <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
-            </Show>
-            <Show when={collapsed().overflow}>
-              <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
-            </Show>
-          </box>
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="$" pending="Writing command..." complete={command()} part={props.part}>
-          {command()}
-        </InlineTool>
-      </Match>
-    </Switch>
+    <Show when={showBlock()} fallback={
+      <InlineTool icon="$" pending="Writing command..." complete={command()} part={props.part}>
+        {command()}
+      </InlineTool>
+    }>
+      {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
+          completed. The single code element persists (its buffer holds the
+          last highlight of the identical content), so the completion never
+          remounts a fresh element - no white flash, no blank. The title
+          toggles "# bash" <-> "# Running" <-> "# bash" in place, the
+          spinner runs while streaming/running, fg brightens
+          textMuted -> theme.text at completion, and the grow-only clamp
+          releases to the command's natural final height. The completed
+          HEREDOC flips segments to the static per-segment re-split (fresh
+          mounts - fine: no deltas after completion). The output + expand
+          toggle render as block children after the code. */}
+      <LiveToolStream
+        part={props.part}
+        title={title()}
+        streaming={stream.streaming()}
+        // Trim the display's trailing newlines (display-only) so the
+        // streaming width/rows match the landed command's (0146 judder).
+        content={stream.display().replace(/\n+$/, "")}
+        filetype={liveFiletype()}
+        gutter={gutter()}
+        segments={completed() ? commandSegments() : undefined}
+        fg={stream.streaming() || isRunning() ? theme.textMuted : theme.text}
+        release={completed()}
+        spinner={stream.streaming() || isRunning()}
+        onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+      >
+        <Show when={output()}>
+          <text fg={theme.text}>{limited()}</text>
+        </Show>
+        <Show when={collapsed().overflow}>
+          <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+        </Show>
+      </LiveToolStream>
+    </Show>
   )
 }
 
@@ -3319,9 +3247,18 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
 //     width) skips collapse frames so a flash artifact cannot balloon the
 //     clamp (the 0165 trap); the flash itself (one frame taller than the
 //     clamp) remains the documented OPEN risk.
-function GrowOnly(props: { rows: number; children: JSX.Element }) {
+function GrowOnly(props: { rows: number; release?: boolean; children: JSX.Element }) {
   const [maxRows, setMaxRows] = createSignal(0)
   createEffect(() => {
+    if (props.release) {
+      // 0199: at completion the code element carries over (no fresh mount),
+      // so the clamp must DROP to the code's natural final height instead
+      // of holding the streaming peak (which would leave blank lines under
+      // the completed content). The content is final at completion, so the
+      // natural height IS the final height.
+      setMaxRows(0)
+      return
+    }
     if (props.rows > maxRows()) setMaxRows(props.rows)
   })
   // minHeight is applied for the ENTIRE life of the live view, not only
@@ -3333,8 +3270,8 @@ function GrowOnly(props: { rows: number; children: JSX.Element }) {
   // completed view replaced it (user's live catch 2026-08-17: "it should
   // only ever be able to shrink below its initial size at the end of the
   // turn, when the final render is present"). The clamp holds the peak for
-  // the whole mount and is gone when the live view unmounts (the completed
-  // render is a fresh block anyway).
+  // the whole live view and drops only at the release (the completed
+  // carry-over).
   return (
     <box minHeight={maxRows()} flexShrink={0}>
       {props.children}
@@ -3424,6 +3361,18 @@ function LiveToolStream(props: {
   gutter?: boolean
   conceal?: boolean
   segments?: { text: string; lang: string }[]
+  // 0199 carry-over: the SAME code element persists through
+  // streaming -> running -> completed (the caller flips these props instead
+  // of remounting a fresh completed element). fg is the code's unstyled
+  // color (textMuted while streaming/running, theme.text at completion);
+  // release drops the grow-only clamp at completion; spinner overrides the
+  // default (bash shows the title spinner through running, not just
+  // streaming); children render after the code (bash's output).
+  fg?: RGBA
+  release?: boolean
+  spinner?: boolean
+  onClick?: () => void
+  children?: JSX.Element
 }) {
   const { theme, syntax } = useTheme()
   const ctx = use()
@@ -3490,11 +3439,17 @@ function LiveToolStream(props: {
       // The empty first frame is fixed in opentui (0142), not by
       // flipping this flag.
       drawUnstyledText={false}
-      streaming={true}
+      // 0199 carry-over: streaming flips false and fg brightens at
+      // completion IN PLACE - the element is never recreated, so its
+      // buffer (the last landed highlight of the identical content)
+      // keeps painting through the transition. The 0196 already-painting
+      // guard in opentui keeps the buffer visible during the fresh
+      // highlight - no blank, no raw-white first paint.
+      streaming={props.streaming}
       syntaxStyle={syntax()}
       content={props.content}
       conceal={conceal()}
-      fg={theme.textMuted}
+      fg={props.fg ?? theme.textMuted}
       // wrapMode removed (0178): the streaming view WRAPS long lines like
       // the completed view (a long single-line bash truncated while
       // streaming; the completed heredoc's first body line wrapped but the
@@ -3524,13 +3479,15 @@ function LiveToolStream(props: {
             // segment mounts, fixed in opentui's
             // ensureVisibleTextBeforeHighlight (0142) - initial streaming
             // content now renders its raw text immediately instead of
-            // waiting for the first highlight.
+            // waiting for the first highlight. 0199: the segments branch
+            // is the COMPLETED heredoc only (static - no per-delta
+            // recreation), so streaming=false + the caller's fg apply.
             drawUnstyledText={false}
-            streaming={true}
+            streaming={props.streaming}
             syntaxStyle={syntax()}
             content={seg.text}
             conceal={conceal()}
-            fg={theme.textMuted}
+            fg={props.fg ?? theme.textMuted}
           />
         )
         return props.gutter === false ? (
@@ -3558,26 +3515,30 @@ function LiveToolStream(props: {
     </Show>
   )
   return (
-    <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
+    <BlockTool title={props.title} part={props.part} spinner={props.spinner ?? props.streaming} onClick={props.onClick}>
       <Show when={props.content.length > 0}>
-        <GrowOnly rows={rows()}>
+        <GrowOnly rows={rows()} release={props.release}>
           {code}
         </GrowOnly>
       </Show>
+      {/* 0199: caller content after the code (bash's output + expand
+          toggle) - renders in the same BlockTool so the carry-over
+          structure keeps one box for the whole life of the block. */}
+      {props.children}
     </BlockTool>
   )
 }
 
 function Write(props: ToolProps) {
-  const ctx = use()
-  const { theme, syntax } = useTheme()
+  const { theme } = useTheme()
   const pathFormatter = usePathFormatter()
   const status = createMemo(() => props.part.state.status)
   const path = createMemo(() => stringValue(props.input.filePath) ?? "")
-  const code = createMemo(() => {
-    return stringValue(props.input.content) ?? ""
-  })
   const diagnostics = createMemo(() => props.metadata.diagnostics)
+  // The block's content for every state is the tool stream's display: the
+  // live body while streaming, the landed input once running (== the
+  // completed content - identical strings, so the 0199 carry-over never
+  // re-paints the buffer at completion).
   const stream = useToolStream(props, {
     bodyKey: "content",
     pathKey: "filePath",
@@ -3615,6 +3576,8 @@ function Write(props: ToolProps) {
     return "markdown"
   })
 
+  const running = () => stream.status() === "running"
+  const completed = () => !stream.streaming() && !running()
   return (
     <Switch>
       <Match when={status() === "error"}>
@@ -3622,51 +3585,29 @@ function Write(props: ToolProps) {
           Write {pathFormatter.format(path())}
         </InlineTool>
       </Match>
-      {/* Live view: the input is still streaming (state.raw) or just landed
-          (running) - the content block grows in place as deltas arrive.
-          Colored with the target file's own language (plain until the
-          filePath arg streams in) so the streaming and completed views
-          share one grammar - no color snap at completion. */}
-      <Match when={stream.streaming() || stream.status() === "running"}>
+      {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
+          completed - the code element persists, so at completion the buffer
+          (the last landed highlight of the identical content) keeps
+          painting; fg brightens textMuted -> theme.text and the grow-only
+          clamp releases to the natural final height. No fresh completed
+          element, no white first paint, no blank frame. */}
+      <Match when={true}>
         <LiveToolStream
           part={props.part}
-          title={stream.title()}
+          title={stream.streaming() || running() ? stream.title() : title()}
           streaming={stream.streaming()}
           content={stream.display()}
           filetype={liveFiletype()}
-          // The write's completed view below is always guttered and never
-          // conceals - the live view must match on both, or the first
-          // newline flips the gutter Show (code element recreation, grey
-          // first frame) and concealed comments render as a grey block
-          // above the colored code (2026-08-17 video-confirmed).
+          // Always guttered and never conceals (0156) - stable from the
+          // first frame, no Show flip at completion.
           gutter={true}
           conceal={false}
+          fg={stream.streaming() || running() ? theme.textMuted : theme.text}
+          release={completed()}
         />
-      </Match>
-      {/* Completed: same gutter layout as the live view, so a batched
-          provider (whole content in one delta) has no visible layout flip
-          at completion; diagnostics when present. */}
-      <Match when={true}>
-        <BlockTool title={title()} part={props.part}>
-          <Show when={code().length > 0}>
-            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-              <code
-                conceal={false}
-                fg={theme.text}
-                filetype={filetype(path())}
-                // drawUnstyledText={false}: same as the bash command block -
-                // the completed element's first paint would be the raw
-                // WHITE text at the streaming->completed transition.
-                drawUnstyledText={false}
-                syntaxStyle={syntax()}
-                content={code()}
-              />
-            </line_number>
-          </Show>
-          <Show when={diagnostics() !== undefined}>
-            <Diagnostics diagnostics={diagnostics()} filePath={path()} />
-          </Show>
-        </BlockTool>
+        <Show when={completed() && diagnostics() !== undefined}>
+          <Diagnostics diagnostics={diagnostics()} filePath={path()} />
+        </Show>
       </Match>
     </Switch>
   )
