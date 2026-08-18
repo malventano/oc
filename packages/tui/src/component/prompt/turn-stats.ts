@@ -187,6 +187,36 @@ export function formatCount(num: number): string {
   return num.toString()
 }
 
+/** State of the prior-turn tool-count DB walk across pages. */
+export type TurnToolPageState = { tools: number; reachedRoot: boolean }
+
+/**
+ * Count tool parts on a turn's assistant steps from one page of the messages
+ * API (chronological, oldest first). The turn's root user message PRECEDES its
+ * steps in the page, so reaching it flips `reachedRoot` and every following
+ * item is one of the turn's steps; before it, only items whose parentID
+ * matches count (a page that omits the root holds only steps, all newer than
+ * it). Returning at the root instead of continuing would skip the steps and
+ * report 0. Pure - unit-tested.
+ */
+export function countTurnToolParts(
+  items: Array<{ info: { id: string; role: string; parentID?: string | null }; parts: Part[] }>,
+  parentID: string,
+  state: TurnToolPageState,
+): TurnToolPageState {
+  let { tools, reachedRoot } = state
+  for (const item of items) {
+    if (item.info.id === parentID) {
+      reachedRoot = true
+      continue
+    }
+    if (item.info.role === "assistant" && (reachedRoot || item.info.parentID === parentID)) {
+      tools += item.parts.filter((p) => p.type === "tool").length
+    }
+  }
+  return { tools, reachedRoot }
+}
+
 /**
  * Streamed text chars of a step - reasoning + text parts plus the tool-call
  * payload (the streamed JSON in `raw` while pending, the structured input
