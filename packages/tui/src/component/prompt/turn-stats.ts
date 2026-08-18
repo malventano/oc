@@ -286,6 +286,75 @@ export function streamedChars(parts: Part[] | undefined): number {
   return chars
 }
 
+/**
+ * In-memory accumulator for a LIVE turn's footer stats. Each completed step
+ * folds its real endpoint values in exactly ONCE (the `folded` set makes the
+ * fold idempotent), so the footer never re-scans the store per part delta nor
+ * walks the DB mid-turn. `start` is the turn's root user message created
+ * time (the elapsed clock anchor), kept next to the counters. Keyed by
+ * `${sessionID}:${parentID}` at the call site; superseded by the completed
+ * turn's DB walk (the walk result wins once it lands).
+ */
+export type TurnLiveAccum = {
+  reasoning: number
+  output: number
+  tools: number
+  chars: number
+  start?: number
+  folded: Set<string>
+}
+
+/** A fresh per-turn accumulator. `start` seeds the clock from the store. */
+export function newTurnLiveAccum(start?: number): TurnLiveAccum {
+  return { reasoning: 0, output: 0, tools: 0, chars: 0, start, folded: new Set() }
+}
+
+/**
+ * Fold a turn's completed steps into the accumulator exactly once: real
+ * reasoning/output tokens, tool-call part count, and streamed chars (the
+ * tokens/s window's source). Steps already in `folded` are skipped, so the
+ * fold is idempotent across re-runs and remounts (a remount folds every
+ * completed step back from the store). Returns whether anything was folded.
+ * Pure - unit-tested.
+ */
+export function foldTurnSteps(
+  acc: TurnLiveAccum,
+  steps: AssistantMessage[],
+  getParts?: (messageID: string) => Part[] | undefined,
+): boolean {
+  let changed = false
+  for (const step of steps) {
+    if (!step.time.completed || acc.folded.has(step.id)) continue
+    acc.reasoning += step.tokens.reasoning
+    acc.output += step.tokens.output
+    const parts = getParts?.(step.id) ?? []
+    acc.tools += parts.filter((p) => p.type === "tool").length
+    acc.chars += streamedChars(parts)
+    acc.folded.add(step.id)
+    changed = true
+  }
+  return changed
+}
+
+/**
+ * The live footer token totals: the folded accumulator (completed steps' real
+ * values) plus the in-flight step's estimate. O(1) over the completed turn -
+ * the caller resolves the single in-flight step's parts.
+ */
+export function turnLiveFromAccum(
+  acc: TurnLiveAccum | undefined,
+  inFlight: AssistantMessage | undefined,
+  getParts?: (messageID: string) => Part[] | undefined,
+): { reasoning: number; output: number } {
+  const reasoning = acc?.reasoning ?? 0
+  const output = acc?.output ?? 0
+  if (inFlight) {
+    const est = estimateStepTokens(inFlight, getParts?.(inFlight.id))
+    return { reasoning: reasoning + est.reasoning, output: output + est.output }
+  }
+  return { reasoning, output }
+}
+
 type StreamRateState = {
   cumulative: number
   samples: Array<[number, number]>

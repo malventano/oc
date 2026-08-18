@@ -3,12 +3,15 @@ import {
   computeTurn,
   countTurnWalkParts,
   estimateStepTokens,
+  foldTurnSteps,
   formatCount,
+  newTurnLiveAccum,
   settledReport,
   shouldReanchorBase,
   streamedChars,
   streamRateFor,
   toolResultTokens,
+  turnLiveFromAccum,
   turnLiveTokens,
 } from "../src/component/prompt/turn-stats"
 import type { AssistantMessage, Part, ReasoningPart, TextPart, ToolPart, UserMessage } from "@opencode-ai/sdk/v2"
@@ -571,4 +574,111 @@ test("countTurnWalkParts: the root on a later page stops the walk without double
     st,
   )
   expect(st).toEqual({ tools: 1, reachedRoot: true, reasoning: 10, output: 2 })
+})
+
+test("foldTurnSteps: folds a completed step's real values once (idempotent)", () => {
+  const acc = newTurnLiveAccum()
+  const step = assistant({
+    parentID: "user-1",
+    id: "asst-1",
+    time: { created: 4000, completed: 4500 },
+    tokens: { input: 200, output: 20, reasoning: 30, cache: { read: 0, write: 0 } },
+  })
+  const parts = [toolPart("t1"), textPart("y".repeat(400))]
+  expect(foldTurnSteps(acc, [step], (id) => parts)).toBe(true)
+  expect(acc.reasoning).toBe(30)
+  expect(acc.output).toBe(20)
+  expect(acc.tools).toBe(1)
+  expect(acc.chars).toBe(400)
+  // Re-fold (same step, e.g. another footer re-runs the fold): no double count.
+  expect(foldTurnSteps(acc, [step], (id) => parts)).toBe(false)
+  expect(acc.reasoning).toBe(30)
+  expect(acc.output).toBe(20)
+  expect(acc.tools).toBe(1)
+  expect(acc.chars).toBe(400)
+})
+
+test("foldTurnSteps: skips in-flight (not yet completed) steps", () => {
+  const acc = newTurnLiveAccum()
+  const step = assistant({
+    parentID: "user-1",
+    id: "asst-1",
+    time: { created: 4000 },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
+  expect(foldTurnSteps(acc, [step], (id) => [toolPart("t1")])).toBe(false)
+  expect(acc.reasoning).toBe(0)
+  expect(acc.tools).toBe(0)
+})
+
+test("foldTurnSteps: accumulates across multiple completed steps", () => {
+  const acc = newTurnLiveAccum()
+  const s1 = assistant({
+    parentID: "user-1",
+    id: "asst-1",
+    time: { created: 4000, completed: 4500 },
+    tokens: { input: 200, output: 20, reasoning: 30, cache: { read: 0, write: 0 } },
+  })
+  const s2 = assistant({
+    parentID: "user-1",
+    id: "asst-2",
+    time: { created: 5000, completed: 5500 },
+    tokens: { input: 300, output: 40, reasoning: 50, cache: { read: 0, write: 0 } },
+  })
+  foldTurnSteps(acc, [s1], (id) => [toolPart("t1")])
+  foldTurnSteps(acc, [s2], (id) => [toolPart("t2"), toolPart("t3")])
+  expect(acc.reasoning).toBe(80)
+  expect(acc.output).toBe(60)
+  expect(acc.tools).toBe(3)
+})
+
+test("foldTurnSteps: real tokens from completed steps are exact (no char estimation)", () => {
+  const acc = newTurnLiveAccum()
+  const step = assistant({
+    parentID: "user-1",
+    id: "asst-1",
+    time: { created: 4000, completed: 4500 },
+    tokens: { input: 200, output: 500, reasoning: 300, cache: { read: 0, write: 0 } },
+  })
+  // 4 chars/token would estimate these very differently - the fold must use
+  // the endpoint's real numbers.
+  foldTurnSteps(acc, [step], (id) => [textPart("y".repeat(1000))])
+  expect(acc.reasoning).toBe(300)
+  expect(acc.output).toBe(500)
+  expect(acc.chars).toBe(1000)
+})
+
+test("turnLiveFromAccum: folded real values + in-flight estimate", () => {
+  const acc = newTurnLiveAccum()
+  foldTurnSteps(acc, [
+    assistant({
+      parentID: "user-1",
+      id: "asst-1",
+      time: { created: 4000, completed: 4500 },
+      tokens: { input: 200, output: 20, reasoning: 30, cache: { read: 0, write: 0 } },
+    }),
+  ])
+  const inFlight = assistant({
+    parentID: "user-1",
+    id: "asst-2",
+    time: { created: 5000 },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
+  // 160 chars / 4 = 40 output for the in-flight step.
+  const live = turnLiveFromAccum(acc, inFlight, (id) => [textPart("y".repeat(160))])
+  expect(live).toEqual({ reasoning: 30, output: 60 })
+  // No in-flight step: just the folded values.
+  expect(turnLiveFromAccum(acc, undefined, (id) => [])).toEqual({ reasoning: 30, output: 20 })
+  // No accumulator yet: zero base.
+  expect(turnLiveFromAccum(undefined, undefined, (id) => [])).toEqual({ reasoning: 0, output: 0 })
+})
+
+test("newTurnLiveAccum: carries the seed start and starts folded-empty", () => {
+  const acc = newTurnLiveAccum(1234)
+  expect(acc.start).toBe(1234)
+  expect(acc.reasoning).toBe(0)
+  expect(acc.output).toBe(0)
+  expect(acc.tools).toBe(0)
+  expect(acc.chars).toBe(0)
+  expect(acc.folded.size).toBe(0)
 })
