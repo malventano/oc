@@ -18,7 +18,9 @@ describe("opencode acp lifecycle subprocess", () => {
         const acp = yield* opencode.acp()
         acp.close()
 
-        const code = yield* Effect.promise(() => acp.exited).pipe(Effect.timeout(Duration.seconds(5)))
+        // Generous: the subprocess exit handshake runs under full --parallel
+        // contention where the CLI boot can take seconds, not milliseconds.
+        const code = yield* Effect.promise(() => acp.exited).pipe(Effect.timeout(Duration.seconds(20)))
         expect(code).toBe(0)
       }),
     60_000,

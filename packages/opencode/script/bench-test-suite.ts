@@ -20,7 +20,9 @@ for (const index of Array.from({ length: warmups + runs }, (_, index) => index))
   const start = performance.now()
   console.log(`bench:test ${label}`)
 
-  const proc = Bun.spawn(["bun", "test", "--timeout", "30000"], {
+  // --parallel: bun 1.3.14 runs test files serially without the flag despite the
+  // help text claiming a CPU-count default - the flag is the whole speedup.
+  const proc = Bun.spawn(["bun", "test", "--timeout", "30000", "--parallel"], {
     cwd: import.meta.dir + "/..",
     stdout: "inherit",
     stderr: "inherit",
