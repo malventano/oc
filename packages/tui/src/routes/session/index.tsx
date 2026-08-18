@@ -3964,22 +3964,30 @@ function Edit(props: ToolProps) {
 
   const stream = useToolStream(props, {
     bodyKey: "input",
-    pathKey: "filePath",
-    // Streaming says "Patching" to match the completed "← Patched <path>"
-    // (the write tool's # Writing <-> # Wrote pattern) - 2026-08-17.
-    title: (live) => (live ? `← Patching ${pathFormatter.format(live)}` : "← Patching..."),
+    // The edit tool has NO filePath argument - the target path lives inside
+    // the patch text as a [path] section header (liveEditPath below), so
+    // useToolStream's pathKey extraction (a "filePath" JSON key that never
+    // exists) would never resolve. The streaming title is computed locally.
+    title: () => undefined,
   })
-  // The target file's language for the streaming columns: the FIRST
-  // section's [path] header inside the streamed patch. NOT stream.livePath()
-  // - streamedJsonValue has no closing-quote termination, so the filePath
-  // extraction carries the rest of the JSON args ("...", "input": "***...")
-  // and filetype() resolves no extension -> no grammar (grey columns,
-  // 2026-08-17). The header regex stops at the real path. The write view is
-  // immune to the livePath garbage because it falls back to the content
-  // sniffer; edit has no sniffer here.
-  const liveFiletype = createMemo(() => {
+  // Live target path: the FIRST [path] section header inside the streamed
+  // patch. The write tool's # Writing <path> updates the instant the
+  // filePath arg streams in; the edit tool's ← Patching does the same when
+  // the [path] header line lands (0186). No end anchor - the streaming
+  // header line is unterminated; the closing bracket IS the signal.
+  const liveEditPath = createMemo(() => {
     const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]/m.exec(stream.display())
-    return match ? filetype(match[1]) : undefined
+    return match ? match[1] : undefined
+  })
+  // The target file's language for the streaming columns from the same live
+  // path; falls back to nothing (grey columns) until the header lands.
+  const liveFiletype = createMemo(() => (liveEditPath() ? filetype(liveEditPath()!) : undefined))
+  // Streaming title: "← Patching <path>" as soon as the [path] header
+  // streams in, falling back to the landed input paths once the call lands
+  // (the write tool's live ?? path() parity). "← Patching..." until then.
+  const streamingTitle = createMemo(() => {
+    const target = liveEditPath() ?? editPaths()[0]
+    return target ? `← Patching ${pathFormatter.format(target)}` : "← Patching..."
   })
   const fileDiffs = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
@@ -4067,7 +4075,7 @@ function Edit(props: ToolProps) {
       <Match when={stream.streaming() || stream.status() === "running"}>
         <LiveEditDiff
           part={props.part}
-          title={stream.title()}
+          title={streamingTitle()}
           streaming={stream.streaming()}
           content={stream.display()}
           filetype={liveFiletype()}
