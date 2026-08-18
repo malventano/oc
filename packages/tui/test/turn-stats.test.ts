@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import {
   computeTurn,
+  countTurnToolParts,
   estimateStepTokens,
   formatCount,
   settledReport,
@@ -458,4 +459,44 @@ test("streamRateFor: the EMA damps a single chunk spike and recovers as it ages 
   // display settles back toward it (alpha ~= 0.96 over the long gap)
   const settled = streamRateFor("t-spike", "step-a", 1840, 2150)
   expect(settled).toBeCloseTo(105.0, 1)
+})
+
+test("countTurnToolParts: counts the steps AFTER the root user message (chronological page)", () => {
+  const items = [
+    { info: { id: "older-user", role: "user", parentID: null }, parts: [] },
+    { info: { id: "older-asst", role: "assistant", parentID: "older-user" }, parts: [toolPart("t-old")] },
+    { info: { id: "root", role: "user", parentID: null }, parts: [] },
+    { info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1"), toolPart("t2")] },
+    { info: { id: "s2", role: "assistant", parentID: "root" }, parts: [toolPart("t3")] },
+  ]
+  const r = countTurnToolParts(items, "root", { tools: 0, reachedRoot: false })
+  expect(r).toEqual({ tools: 3, reachedRoot: true })
+})
+
+test("countTurnToolParts: a steps-only page (root on an older page) counts via the parentID filter", () => {
+  const items = [
+    { info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1")] },
+    { info: { id: "s2", role: "assistant", parentID: "root" }, parts: [toolPart("t2")] },
+  ]
+  const r = countTurnToolParts(items, "root", { tools: 0, reachedRoot: false })
+  expect(r).toEqual({ tools: 2, reachedRoot: false })
+})
+
+test("countTurnToolParts: the root on a later page stops the walk without double-counting", () => {
+  let st = countTurnToolParts(
+    [{ info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1")] }],
+    "root",
+    { tools: 0, reachedRoot: false },
+  )
+  expect(st).toEqual({ tools: 1, reachedRoot: false })
+  // older page: another turn's messages, then the root - nothing further to count
+  st = countTurnToolParts(
+    [
+      { info: { id: "older", role: "assistant", parentID: "older-user" }, parts: [toolPart("t-old")] },
+      { info: { id: "root", role: "user", parentID: null }, parts: [] },
+    ],
+    "root",
+    st,
+  )
+  expect(st).toEqual({ tools: 1, reachedRoot: true })
 })
