@@ -143,6 +143,39 @@ export const {
       vcs: undefined,
     })
 
+    // Cap TUI-rendered messages at 100. Runs on EVERY new message (mid-turn,
+    // so a very long agent turn can't grow the store unbounded) and on
+    // prompt submit. Pruning removes only the OLDEST messages - the far end
+    // of the session view, above the user's reading position - which the
+    // scrollbox's block-anchored manual scroll (opentui 0168/0170/0183)
+    // keeps stable even while scrolled back: the anchor survives and the
+    // y-delta compensates, and a pruned (destroyed) anchor falls back to a
+    // distance-to-bottom anchor. It never removes the live turn's newest
+    // messages, so the streaming footers stay intact.
+    function pruneMessages(sessionID: string) {
+      const messages = store.message[sessionID]
+      if (!messages || messages.length <= 100) return
+      const excess = messages.length - 100
+      const toRemove = messages.slice(0, excess)
+      batch(() => {
+        setStore(
+          "message",
+          sessionID,
+          produce((draft) => {
+            draft.splice(0, excess)
+          }),
+        )
+        setStore(
+          "part",
+          produce((draft) => {
+            for (const msg of toRemove) {
+              delete draft[msg.id]
+            }
+          }),
+        )
+      })
+    }
+
     const event = useEvent()
     const project = useProject()
     const sdk = useSDK()
@@ -337,6 +370,7 @@ export const {
               draft.splice(result.index, 0, event.properties.info)
             }),
           )
+          pruneMessages(event.properties.info.sessionID)
           break
         }
         case "message.removed": {
@@ -662,24 +696,11 @@ export const {
           syncingSessions.set(sessionID, task)
           return task
         },
-        // Cap TUI-rendered messages at 100; pruning runs on submit (not
-        // mid-stream) because splicing the live chain during renders churns
-        // the message/part stores.
+        // Belt-and-suspenders: the per-message prune (message.updated) keeps
+        // the store at <= 100 during a turn, so this is normally a no-op; it
+        // catches any drift at the prompt boundary.
         prune(sessionID: string) {
-          const messages = store.message[sessionID]
-          if (!messages || messages.length <= 100) return
-          const excess = messages.length - 100
-          const toRemove = messages.slice(0, excess)
-          batch(() => {
-            setStore("message", sessionID, produce((draft) => {
-              draft.splice(0, excess)
-            }))
-            setStore("part", produce((draft) => {
-              for (const msg of toRemove) {
-                delete draft[msg.id]
-              }
-            }))
-          })
+          pruneMessages(sessionID)
         },
       },
       bootstrap,
