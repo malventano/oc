@@ -289,6 +289,40 @@ const restartEnv = LayerNode.compile(
 )
 const itRestart = testEffect(restartEnv)
 
+// Loop-guard cut: repetitive text deltas trip the text-channel detector
+// mid-stream. The cut message must STAY finish-less - the loop-guard handler
+// marks it with a steer and the loop re-processes the user message; a
+// finish="stop" stamp (the 0164 cleanup addition) makes the next iteration's
+// exit check break before the steer lands (0191 - the turn never came back
+// on either loop-guard channel, live 2026-08-18).
+const loopGuardLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () => {
+      const SEG = "The configuration service loads provider settings from the local filesystem on startup"
+      return Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.textDelta({ id: "text-1", text: SEG + "\n\n" }),
+        LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+        LLMEvent.finish({ reason: "tool-calls" }),
+      )
+    },
+  }),
+)
+const loopGuardEnv = LayerNode.compile(
+  LayerNode.group([root, LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })]),
+  [...replacements, [LLM.node, loopGuardLLM]],
+)
+const itLoopGuard = testEffect(loopGuardEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -1326,6 +1360,51 @@ itRestart.live("session.processor effect tests the restart tool closes the turn 
         expect(stored.info.role).toBe("assistant")
         if (stored.info.role === "assistant") {
           expect(stored.info.finish).toBe("stop")
+        }
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+itLoopGuard.live("session.processor effect tests a loop-guard cut stays finish-less (turn return)", () =>
+  provideTmpdirServer(
+    ({ dir }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "loop")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "loop" }],
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(handle.loopGuardFired).toBe(true)
+        expect(value).toBe("continue")
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role === "assistant") {
+          // No cleanup stamp: the loop-guard cut must NOT get finish="stop" +
+          // time.completed (the 0164 addition broke the loop's exit check -
+          // it saw a "finished" last assistant and broke before the steer
+          // landed). The message keeps the helper's seeded finish, untouched.
+          expect(stored.info.finish).not.toBe("stop")
+          expect(stored.info.time?.completed).toBeUndefined()
         }
       }),
     { config: (url) => providerCfg(url) },
