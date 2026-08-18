@@ -4040,6 +4040,11 @@ function Edit(props: ToolProps) {
                     showLineNumbers={true}
                     width="100%"
                     wrapMode={ctx.diffWrapMode()}
+                    // drawUnstyledText={false} (0196): the completed diff
+                    // must defer to its async highlight instead of
+                    // raw-painting white for a frame at completion (the
+                    // streaming->completed white flash).
+                    drawUnstyledText={false}
                     fg={theme.text}
                     addedBg={theme.diffAddedBg}
                     removedBg={theme.diffRemovedBg}
@@ -4078,6 +4083,8 @@ function Edit(props: ToolProps) {
                 showLineNumbers={true}
                 width="100%"
                 wrapMode={ctx.diffWrapMode()}
+                // drawUnstyledText={false} (0196): see the per-file diff.
+                drawUnstyledText={false}
                 fg={theme.text}
                 addedBg={theme.diffAddedBg}
                 removedBg={theme.diffRemovedBg}
