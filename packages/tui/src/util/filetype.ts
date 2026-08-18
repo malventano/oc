@@ -89,10 +89,16 @@ export const LANGUAGE_EXTENSIONS: Record<string, string> = {
   ".sass": "sass",
   ".scala": "scala",
   ".shader": "shaderlab",
-  ".sh": "shellscript",
-  ".bash": "shellscript",
-  ".zsh": "shellscript",
-  ".ksh": "shellscript",
+  // 0199: the shell family must resolve to "bash" - the REAL tree-sitter
+  // grammar name (opentui's own extensionToFiletype maps sh/bash/zsh/ksh to
+  // bash). The previous "shellscript" value had no grammar: the write tool
+  // streamed a .sh file with a filetype that returned ZERO highlights (the
+  // content stayed raw - grey while streaming, white after completion),
+  // while the bash tool (hardcoded "bash") was colorful.
+  ".sh": "bash",
+  ".bash": "bash",
+  ".zsh": "bash",
+  ".ksh": "bash",
   ".sql": "sql",
   ".svelte": "svelte",
   ".swift": "swift",
