@@ -112,19 +112,44 @@ const layer: Layer.Layer<
       const ctx = yield* InstanceState.context
       const paths = new Set<string>()
 
+      // The global AGENTS.md (or ~/.claude/CLAUDE.md) and every project-level
+      // (file x ancestor-level) candidate are checked in ONE batched Effect.all -
+      // a single suspension (the app's scheduler costs ~20ms per sequential
+      // yield). The walk semantics are unchanged from the original findUp:
+      // every ancestor level is checked (matches at any level, gap-jumping
+      // included); global = first existing file wins; project = the first file
+      // (AGENTS.md > CLAUDE.md > CONTEXT.md) with any match contributes all of
+      // its matches.
+      const levels: string[] = []
+      {
+        let current = ctx.directory
+        while (true) {
+          levels.push(current)
+          if (current === ctx.worktree) break
+          const parent = path.dirname(current)
+          if (parent === current) break
+          current = parent
+        }
+      }
+      const candidates = [
+        ...globalFiles.map((file) => ({ kind: "global" as const, file, path: file })),
+        ...(Flag.OPENCODE_DISABLE_PROJECT_CONFIG
+          ? []
+          : instructionFiles.flatMap((file) => levels.map((level) => ({ kind: "project" as const, file, level, path: path.join(level, file) })))),
+      ]
+      const exists = yield* Effect.all(candidates.map((c) => fs.existsSafe(c.path)), { concurrency: "unbounded" })
+      const existsByPath = new Map(candidates.map((c, i) => [c.path, exists[i]]))
       for (const file of globalFiles) {
-        if (yield* fs.existsSafe(file)) {
+        if (existsByPath.get(file)) {
           paths.add(path.resolve(file))
           break
         }
       }
-
-      // The first project-level match wins so we don't stack AGENTS.md/CLAUDE.md from every ancestor.
       if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
         for (const file of instructionFiles) {
-          const matches = yield* fs
-            .findUp(file, ctx.directory, ctx.worktree)
-            .pipe(Effect.catch(() => Effect.succeed([])))
+          const matches = levels
+            .map((level) => path.join(level, file))
+            .filter((pathAtLevel) => existsByPath.get(pathAtLevel))
           if (matches.length > 0) {
             matches.forEach((item) => paths.add(path.resolve(item)))
             break
