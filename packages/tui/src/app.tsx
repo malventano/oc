@@ -39,6 +39,7 @@ import {
   getStreamBatchWindow,
   onStreamHighlight,
   getStreamHighlightMs,
+  getStreamFlushMs,
   STREAM_WIDEN_MARGIN_MS,
 } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
@@ -265,7 +266,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           // renderMs): the measured gap between consecutive worker responses equals
           // the worker's per-update parse+query time while it is the binding
           // constraint, so streaming slows enough for the highlight to stay in sync.
-          const renderMs = Math.max(now - renderStartMs, getStreamHighlightMs(now))
+          // The Solid flush time (fed per delta by the sync handler) is folded in
+          // too: it runs between the delta and the frame, invisible to both the
+          // frame duration and the worker, yet it is the measured mid-turn freeze
+          // driver (turn-stats walk + code-element content setter).
+          const renderMs = Math.max(now - renderStartMs, getStreamHighlightMs(now), getStreamFlushMs(now))
           if (renderMs > windowMs - STREAM_WIDEN_MARGIN_MS) {
             wideStreak += 1
             narrowStreak = 0

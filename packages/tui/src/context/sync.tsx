@@ -26,6 +26,7 @@ import { useEvent } from "./event"
 import { useSDK } from "./sdk"
 import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
+import { onStreamFlush } from "./sdk"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
@@ -442,6 +443,18 @@ export const {
               target[last] = (existing ?? "") + event.properties.delta
             }),
           )
+          // Full synchronous tail per delta (handler + Solid flush + anything
+          // before the next macrotask): the reactive flush is the measured
+          // mid-turn UI-freeze driver and it is invisible to the frame-duration
+          // batch-controller signal - feed it so the window widens under flush
+          // load (fluid streaming, adaptive batching).
+          {
+            const tTail = performance.now()
+            setTimeout(() => {
+              const fullMs = performance.now() - tTail
+              onStreamFlush(performance.now(), fullMs)
+            }, 0)
+          }
           break
         }
 
