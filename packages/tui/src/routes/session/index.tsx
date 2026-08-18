@@ -1922,10 +1922,28 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   // frozen rate stays on the last footer after the turn ends; it vanishes
   // when the next message supersedes it (props.last gates the display).
   const turnKey = props.message.parentID
+  // Per-step streamedChars cache for COMPLETED steps: their parts never
+  // change after the step lands, so their contribution is static. The memos
+  // recompute on every delta (the live step's parts array reference changes),
+  // and without the cache each recompute re-walked every step's parts -
+  // including JSON.stringify of all completed tool inputs (the footer's
+  // live tokens/s - a measured 22ms/delta flush at ~85 steps deep). The
+  // cache turns that into a Map.get per completed step + the live step's
+  // parts walk only.
+  const completedStepChars = new Map<string, number>()
   const turnStreamedChars = createMemo(() => {
     let chars = 0
     for (const step of turnStepsMemo()) {
-      chars += streamedChars(sync.data.part[step.id])
+      if (step.time.completed) {
+        let c = completedStepChars.get(step.id)
+        if (c === undefined) {
+          c = streamedChars(sync.data.part[step.id])
+          completedStepChars.set(step.id, c)
+        }
+        chars += c
+      } else {
+        chars += streamedChars(sync.data.part[step.id])
+      }
     }
     return chars
   })
