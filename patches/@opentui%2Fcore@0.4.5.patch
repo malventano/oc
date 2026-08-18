@@ -1,6 +1,42 @@
 --- a/index.bun.js
 +++ b/index.bun.js
-@@ -5665,7 +5665,8 @@
+@@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
+     });
+     super.add(this.gutter);
+     super.add(this.target);
++    // 0196: mark the gutter dirty at attach so it paints its line numbers
++    // on the FIRST frame. The gutter is buffered with isDirty=false on a
++    // fresh mount, and it attaches AFTER the target's constructor already
++    // emitted its initial line-info-change - so without this the numbers
++    // stay empty until the async highlight lands and re-emits
++    // line-info-change. That is the "1 pops in at completion" flicker (the
++    // completed view mounts a fresh gutter while the streaming gutter
++    // unmounts - the numbers vanish for a frame then return).
++    this.gutter.requestRender();
+   }
+   add(child) {
+     if (!this.target && "lineInfo" in child && "lineCount" in child && "virtualLineCount" in child && "scrollY" in child) {
+@@ -5347,6 +5356,7 @@ class DiffRenderable extends Renderable {
+   _syntaxStyle;
+   _wrapMode;
+   _conceal;
++  _drawUnstyledText;
+   _selectionBg;
+   _selectionFg;
+   _treeSitterClient;
+@@ -5388,6 +5398,11 @@ class DiffRenderable extends Renderable {
+     this._syntaxStyle = options.syntaxStyle;
+     this._wrapMode = options.wrapMode;
+     this._conceal = options.conceal ?? false;
++    // 0196: undefined = unset (the per-view default applies: unified
++    // defaults to raw paint, split derives it from needsConsistentConcealing).
++    // The edit tool passes false so its completed diff defers to the async
++    // highlight instead of raw-painting white for a frame.
++    this._drawUnstyledText = options.drawUnstyledText;
+     this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined;
+     this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined;
+     this._treeSitterClient = options.treeSitterClient;
+@@ -5665,7 +5680,8 @@ class DiffRenderable extends Renderable {
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -10,7 +46,30 @@
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -6054,8 +6055,8 @@
+@@ -5778,7 +5794,7 @@ class DiffRenderable extends Renderable {
+     }
+     const content = contentLines.join(`
+ `);
+-    const codeRenderable = this.createOrUpdateCodeRenderable("left", content, this._wrapMode);
++    const codeRenderable = this.createOrUpdateCodeRenderable("left", content, this._wrapMode, this._drawUnstyledText);
+     this.attachLineInfoListeners();
+     this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set, "100%");
+     if (this.rightSide && this.rightSideAdded) {
+@@ -5905,8 +5921,11 @@ class DiffRenderable extends Renderable {
+ `);
+     const needsConsistentConcealing = (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype;
+     const drawUnstyledText = !needsConsistentConcealing;
+-    const leftCodeRenderable = this.createOrUpdateCodeRenderable("left", preLeftContent, this._wrapMode, drawUnstyledText);
+-    const rightCodeRenderable = this.createOrUpdateCodeRenderable("right", preRightContent, this._wrapMode, drawUnstyledText);
++    // The explicit drawUnstyledText option (0196) wins over the split view's
++    // derived value (the edit tool passes false so the completed diff defers
++    // to its async highlight instead of raw-painting white).
++    const leftCodeRenderable = this.createOrUpdateCodeRenderable("left", preLeftContent, this._wrapMode, this._drawUnstyledText ?? drawUnstyledText);
++    const rightCodeRenderable = this.createOrUpdateCodeRenderable("right", preRightContent, this._wrapMode, this._drawUnstyledText ?? drawUnstyledText);
+     this.attachLineInfoListeners();
+     let finalLeftLines;
+     let finalRightLines;
+@@ -6054,8 +6073,8 @@ class DiffRenderable extends Renderable {
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -21,7 +80,28 @@
    }
    get diff() {
      return this._diff;
-@@ -11436,6 +11437,36 @@
+@@ -6291,6 +6310,20 @@ class DiffRenderable extends Renderable {
+       this.rebuildView();
+     }
+   }
++  // 0196: the Solid adapter applies props AFTER construction (the element is
++  // created with {id} only), so this setter arrives after buildView and must
++  // rebuild to re-create the code renderables with the new value.
++  get drawUnstyledText() {
++    return this._drawUnstyledText;
++  }
++  set drawUnstyledText(value) {
++    if (this._drawUnstyledText !== value) {
++      this._drawUnstyledText = value;
++      if (this.leftCodeRenderable || this.rightCodeRenderable) {
++        this.rebuildView();
++      }
++    }
++  }
+   get fg() {
+     return this._fg;
+   }
+@@ -11436,6 +11469,36 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -58,7 +138,7 @@
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11655,7 @@
+@@ -11624,6 +11687,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -66,7 +146,7 @@
          this.updateStickyState();
        }
      });
-@@ -11929,12 +11961,118 @@
+@@ -11929,12 +11993,118 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -185,7 +265,7 @@
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11959,6 +12097,8 @@
+@@ -11959,6 +12129,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -196,7 +276,7 @@
      }
 --- a/index.node.js
 +++ b/index.node.js
-@@ -5664,7 +5664,8 @@
+@@ -5664,7 +5664,8 @@ class DiffRenderable extends Renderable {
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -206,7 +286,7 @@
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -6053,8 +6054,8 @@
+@@ -6053,8 +6054,8 @@ class DiffRenderable extends Renderable {
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -217,7 +297,7 @@
    }
    get diff() {
      return this._diff;
-@@ -11435,6 +11436,36 @@
+@@ -11435,6 +11436,36 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -254,7 +334,7 @@
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11654,7 @@
+@@ -11623,6 +11654,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -262,7 +342,7 @@
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11960,118 @@
+@@ -11928,12 +11960,118 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -381,7 +461,7 @@
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12096,8 @@
+@@ -11958,6 +12096,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -392,7 +472,7 @@
      }
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
-@@ -2986,6 +2986,7 @@
+@@ -2986,6 +2986,7 @@ class TextBufferRenderable extends Renderable {
        this.requestRender();
      }
    }
@@ -400,7 +480,7 @@
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3310,7 +3311,10 @@
+@@ -3310,7 +3311,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -412,27 +492,31 @@
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3319,7 +3323,16 @@
+@@ -3318,7 +3322,21 @@ class CodeRenderable extends TextBufferRenderable {
+       }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
++    } else if (this._shouldRenderTextBuffer) {
++      // Already painting (an element carried across the streaming->running
++      // ->completed transitions, or a completed element whose content
++      // changed): the buffer already shows text (the last landed
++      // content/highlight). Keep it visible and defer to the incoming
++      // highlight - a raw re-paint here is the 0167 raw-WHITE flash, a
++      // defer-with-blank here is the pre-0167 one-frame no-text flicker.
      } else {
--      this._shouldRenderTextBuffer = false;
-+      // Non-streaming completed views with drawUnstyledText=false (the
-+      // write/bash completed elements): the buffer would stay BLANK until
-+      // the async highlight lands - the one-frame no-text flicker at the
-+      // streaming->completed transition. Render the raw text immediately
-+      // (the completed first paint is raw-white for a frame, then the
-+      // highlight colors it) - the same treatment as the streaming initial
-+      // content above.
-+      this.textBuffer.setText(content);
-+      this.setRenderedLineSources(undefined);
-+      this._shouldRenderTextBuffer = true;
++      // Fresh non-streaming completed mount with drawUnstyledText=false
++      // (the write/bash completed elements, the edit diff): the buffer was
++      // set in the constructor but is not painted (_shouldRenderTextBuffer
++      // = false). Keep it unpainted and defer to the async highlight - a
++      // sub-frame blank for typical content, then the highlight colors it.
++      // 0167's raw paint replaced this with a WHITE first frame, which is
++      // the worse artifact (a full-brightness frame vs a brief blank).
+       this._shouldRenderTextBuffer = false;
      }
    }
-   async startHighlight() {
 --- a/chunk-node-51kpf0mz.js
 +++ b/chunk-node-51kpf0mz.js
-@@ -2985,6 +2985,7 @@
+@@ -2985,6 +2985,7 @@ class TextBufferRenderable extends Renderable {
        this.requestRender();
      }
    }
@@ -440,7 +524,7 @@
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3309,7 +3310,10 @@
+@@ -3309,7 +3310,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -452,7 +536,7 @@
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,7 +3322,16 @@
+@@ -3318,7 +3322,16 @@ class CodeRenderable extends TextBufferRenderable {
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
      } else {
@@ -470,3 +554,30 @@
      }
    }
    async startHighlight() {
+--- a/renderables/Diff.d.ts
++++ b/renderables/Diff.d.ts
+@@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
+     syntaxStyle?: SyntaxStyle;
+     wrapMode?: "word" | "char" | "none";
+     conceal?: boolean;
++    drawUnstyledText?: boolean;
+     selectionBg?: string | RGBA;
+     selectionFg?: string | RGBA;
+     treeSitterClient?: TreeSitterClient;
+@@ -44,6 +45,7 @@ export declare class DiffRenderable extends Renderable {
+     private _syntaxStyle?;
+     private _wrapMode?;
+     private _conceal;
++    private _drawUnstyledText?;
+     private _selectionBg?;
+     private _selectionFg?;
+     private _treeSitterClient?;
+@@ -134,6 +136,8 @@ export declare class DiffRenderable extends Renderable {
+     set selectionFg(value: string | RGBA | undefined);
+     get conceal(): boolean;
+     set conceal(value: boolean);
++    get drawUnstyledText(): boolean | undefined;
++    set drawUnstyledText(value: boolean | undefined);
+     get fg(): RGBA | undefined;
+     set fg(value: string | RGBA | undefined);
+     setLineColor(line: number, color: string | RGBA | LineColorConfig): void;
