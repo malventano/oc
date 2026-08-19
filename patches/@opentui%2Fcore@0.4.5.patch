@@ -146,7 +146,7 @@
          this.updateStickyState();
        }
      });
-@@ -11929,12 +11993,118 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11929,12 +11993,122 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -216,15 +216,19 @@
 +        const anchorIsLast = children.length > 0 && children[children.length - 1] === anchor.child;
 +        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
 +        // Height-delta (0170) applies only while the anchor's growth displaces
-+        // VISIBLE content: its bottom must sit above the viewport bottom. An
-+        // anchor entirely below the viewport (the culled-gap case, negative
-+        // offset) grows out of sight - following the height-delta there made
-+        // the viewport drift down a couple rows per streamed message. The
-+        // 0183 last-child skip is folded into the same condition (a last-child
-+        // anchor's bottom is the content bottom, past the viewport).
-+        const anchorBottom = anchorLayout.top + anchorLayout.height;
++        // VISIBLE content. Compare the anchor's extent BEFORE this growth
++        // (captured height) against the viewport bottom, not the NEW height:
++        // a culled block (3 rows) that registers its real height as it enters
++        // the viewport did NOT span the viewport before growing, so its
++        // growth pushes the content below it (what the user reads) downward
++        // and must be compensated. Only an anchor that ALREADY spanned the
++        // viewport (old bottom past the viewport bottom) grows out of sight
++        // and can skip the delta. (0186 compared the NEW bottom here, which
++        // zeroes the delta exactly when the culled block's growth crosses
++        // the viewport bottom - re-introducing the 0170 jump.)
++        const anchorBottomOld = anchorLayout.top + this._manualAnchorHeight;
 +        const heightDelta =
-+          anchorIsLast || anchorBottom >= this.verticalScrollBar.scrollPosition + this.viewport.height
++          anchorIsLast || anchorBottomOld >= this.verticalScrollBar.scrollPosition + this.viewport.height
 +            ? 0
 +            : anchorLayout.height - this._manualAnchorHeight;
 +        // Y-delta (0168): track the content ABOVE THE VIEWPORT. When the
@@ -342,7 +346,7 @@
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11960,118 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11928,12 +11960,122 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -412,15 +416,19 @@
 +        const anchorIsLast = children.length > 0 && children[children.length - 1] === anchor.child;
 +        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
 +        // Height-delta (0170) applies only while the anchor's growth displaces
-+        // VISIBLE content: its bottom must sit above the viewport bottom. An
-+        // anchor entirely below the viewport (the culled-gap case, negative
-+        // offset) grows out of sight - following the height-delta there made
-+        // the viewport drift down a couple rows per streamed message. The
-+        // 0183 last-child skip is folded into the same condition (a last-child
-+        // anchor's bottom is the content bottom, past the viewport).
-+        const anchorBottom = anchorLayout.top + anchorLayout.height;
++        // VISIBLE content. Compare the anchor's extent BEFORE this growth
++        // (captured height) against the viewport bottom, not the NEW height:
++        // a culled block (3 rows) that registers its real height as it enters
++        // the viewport did NOT span the viewport before growing, so its
++        // growth pushes the content below it (what the user reads) downward
++        // and must be compensated. Only an anchor that ALREADY spanned the
++        // viewport (old bottom past the viewport bottom) grows out of sight
++        // and can skip the delta. (0186 compared the NEW bottom here, which
++        // zeroes the delta exactly when the culled block's growth crosses
++        // the viewport bottom - re-introducing the 0170 jump.)
++        const anchorBottomOld = anchorLayout.top + this._manualAnchorHeight;
 +        const heightDelta =
-+          anchorIsLast || anchorBottom >= this.verticalScrollBar.scrollPosition + this.viewport.height
++          anchorIsLast || anchorBottomOld >= this.verticalScrollBar.scrollPosition + this.viewport.height
 +            ? 0
 +            : anchorLayout.height - this._manualAnchorHeight;
 +        // Y-delta (0168): track the content ABOVE THE VIEWPORT. When the
