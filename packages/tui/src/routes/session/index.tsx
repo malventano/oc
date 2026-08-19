@@ -107,6 +107,17 @@ const GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW = "go_upsell_account_rate_limit_don
 const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
 const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
 
+// Position-keyed draft stash for undo/redo navigation. When the user has a
+// typed-but-unsubmitted draft in the input field and walks away with undo/
+// redo, the draft is preserved here (keyed by the message id of the position
+// it belongs to, or "bottom" for the live session tail) and restored when they
+// navigate back. In-memory only: a draft is ephemeral UI state - it dies with
+// the process and never enters the session DB (which records submitted
+// history). Without this, undo populates the reverted prompt and redo to the
+// bottom clears the field, losing the user's draft on the round trip.
+const draftStash = new Map<string, PromptInfo>()
+const DRAFT_STASH_BOTTOM = "bottom"
+
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
 type RetryAction = Extract<SessionStatus, { type: "retry" }>["action"]
@@ -289,6 +300,32 @@ export function Session() {
       },
       { input: "", parts: [] as PromptInfo["parts"] },
     )
+  // Draft-stash navigation helpers. The stash is keyed by the position the
+  // draft belongs to: the message id of the revert point, or a bottom key
+  // scoped to the current last-user-message id (so a NEW submit naturally
+  // orphans the pre-submit draft - the key stops matching). A position's
+  // "expected" prompt (message-derived) is not a user draft and is never
+  // stashed; only text the user actually typed beyond that survives the
+  // undo/redo round trip.
+  const expectedPromptAt = (messageID: string | undefined): PromptInfo =>
+    messageID ? promptInfoFromParts(sync.data.part[messageID] ?? []) : { input: "", parts: [] as PromptInfo["parts"] }
+  const currentDraftKey = (): string => {
+    const revertID = session()?.revert?.messageID
+    if (revertID) return revertID
+    const lastUser = messages().findLast((m) => m.role === "user")
+    return `${DRAFT_STASH_BOTTOM}:${lastUser?.id ?? "none"}`
+  }
+  // Stash the field's content for the position it currently occupies, but only
+  // when it is a genuine user draft (differs from the position's message text).
+  const stashCurrentDraft = () => {
+    if (!prompt) return
+    const cur = prompt.current
+    if (!cur.input && cur.parts.length === 0) return
+    const key = currentDraftKey()
+    const expected = expectedPromptAt(session()?.revert?.messageID)
+    if (cur.input === expected.input && cur.parts.length === expected.parts.length) return
+    draftStash.set(key, cur)
+  }
   const foregroundTasks = createMemo(() =>
     sync.data.capabilities.experimentalBackgroundSubagents
       ? messages().flatMap((message) =>
@@ -782,6 +819,9 @@ export function Session() {
         if (status?.type !== "idle") await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
         const message = messagesBeforeRevert().findLast((item) => item.role === "user")
         if (!message) return
+        // Preserve a typed-but-unsubmitted draft at the current position so it
+        // survives the round trip (undo then redo back to the same spot).
+        stashCurrentDraft()
         void sdk.client.session
           .revert({
             sessionID: route.sessionID,
@@ -802,7 +842,7 @@ export function Session() {
         if (!parts.some((part) => part.type === "text" && part.metadata?.kind === "question_answers")) {
           const restore = () => {
             if (prompt) {
-              prompt.set(promptInfoFromParts(parts))
+              prompt.set(draftStash.get(message.id) ?? promptInfoFromParts(parts))
               return
             }
             setTimeout(restore, 50)
@@ -825,13 +865,18 @@ export function Session() {
         const messageID = session()?.revert?.messageID
         if (!messageID) return
         const message = messages().find((x) => x.role === "user" && x.id > messageID)
+        // Preserve the current draft before moving forward (undo->redo round
+        // trip: the draft at the departure position must survive and come back
+        // when the user returns to it).
+        stashCurrentDraft()
         if (!message) {
           void sdk.client.session.unrevert({
             sessionID: route.sessionID,
           })
+          const bottomKey = currentDraftKey()
           const clear = () => {
             if (prompt) {
-              prompt.set({ input: "", parts: [] })
+              prompt.set(draftStash.get(bottomKey) ?? { input: "", parts: [] })
               return
             }
             setTimeout(clear, 50)
@@ -845,7 +890,7 @@ export function Session() {
         })
         const restore = () => {
           if (prompt) {
-            prompt.set(promptInfoFromParts(sync.data.part[message.id] ?? []))
+            prompt.set(draftStash.get(message.id) ?? promptInfoFromParts(sync.data.part[message.id] ?? []))
             return
           }
           setTimeout(restore, 50)
