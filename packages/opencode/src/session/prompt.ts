@@ -1699,9 +1699,56 @@ const layer = Layer.effect(
               // summary instead of the polluted context.
               stallFires++
               if (stallFires < 3) {
-                const redirect = StallGuard.detect(handle.message.finish, handle.stallText, handle.stallHadToolCall)
-                note += `\n\n${redirect!.redirect}`
-                steerPrompt = redirect!.redirect
+                // 0203 de-poison recovery: no <system-interrupt> discourse.
+                // The verbose redirect text, when quoted into tool outputs
+                // and analysis, persisted in the model's context and kept
+                // re-sending the stall reminder (2026-08-19 pcap evidence).
+                // Instead: trim the offending tail (loop-guard-style),
+                // resume from the clean prefix with a plain "Continue.", and
+                // surface the fire ONLY in the TUI banner (StallGuardError).
+                const detection = StallGuard.detect(handle.message.finish, handle.stallText, handle.stallHadToolCall)
+                if (detection?.signature === "eaten-call") {
+                  // Fabricated tool-error pair: the eaten-call turn is
+                  // complete from the model's view (the parser ate the call),
+                  // so it must be TOLD via the standard failed-tool-call
+                  // shape it already recovers from by re-emitting. Name "tool"
+                  // is a placeholder (the real one was eaten); the error text
+                  // drives recovery.
+                  const toolError =
+                    "Tool calls are not accepted in reasoning - re-emit yours in the output channel using your normal tool-calling format."
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    messageID: handle.message.id,
+                    sessionID,
+                    type: "tool",
+                    callID: ulid(),
+                    tool: "tool",
+                    state: {
+                      status: "error",
+                      input: {},
+                      error: toolError,
+                      time: { start: Date.now(), end: Date.now() },
+                    },
+                  })
+                  note += `\n\n${toolError}`
+                } else if (detection?.trimAt != null) {
+                  // De-poison the offending tail: trim the text part at the
+                  // stall start so the model resumes from its own clean
+                  // intent, not the stale colon/tag remnant.
+                  const parts = yield* MessageV2.parts(handle.message.id).pipe(
+                    Effect.provideService(Database.Service, database),
+                  )
+                  const target = [...parts].reverse().find((p) => p.type === "text")
+                  if (
+                    target &&
+                    target.text.length > detection.trimAt &&
+                    target.text.slice(0, detection.trimAt).trim().length >= TRIM_MIN_PRESERVED
+                  ) {
+                    yield* sessions.updatePart({ ...target, text: target.text.slice(0, detection.trimAt) })
+                    note += `\n\nPremature-stop tail removed from context; continuing.`
+                  }
+                }
+                steerPrompt = "Continue."
               } else if (autoCompactRounds === 0) {
                 if (compactingPrompt) {
                   note += `\n\nStall guard fired 3 times this turn - the compaction summary is stalling. No nested auto-compaction; the summary retries with the steer.`
