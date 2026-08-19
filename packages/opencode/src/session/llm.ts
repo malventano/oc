@@ -7,11 +7,13 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Context, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
+import type { LanguageModelV3 } from "@ai-sdk/provider"
 import type { LLMEvent } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
+import { RDT } from "@/provider/rdt"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
@@ -116,6 +118,22 @@ const live: Layer.Layer<
         flags,
         isWorkflow,
       })
+
+      // RDT (oc-spec 17): when the provider opts in via options.deltaTransport
+      // === "responses", wrap the model so the transport is /v1/responses with
+      // previous_response_id chaining (wire win). Chain state is in-memory per
+      // session; a restart falls back to a full-send, which is the seed path.
+      let transportModel: LanguageModelV3 = language
+      if (RDT.enabled(item)) {
+        transportModel = RDT.wrap(language, {
+          sessionID: input.sessionID,
+          modelID: input.model.id,
+          baseURL: String(item.options?.baseURL ?? ""),
+          apiKey: info !== undefined && "key" in info ? info.key : undefined,
+          providerKey: input.model.providerID.split(".")[0],
+          headers: prepared.headers,
+        })
+      }
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -328,7 +346,7 @@ const live: Layer.Layer<
           maxRetries: input.retries ?? 0,
           messages: prepared.messages,
           model: wrapLanguageModel({
-            model: language,
+            model: transportModel,
             middleware: [
               {
                 specificationVersion: "v3" as const,
