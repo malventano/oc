@@ -102,11 +102,25 @@ export type StallDetection = {
   signature: StallSignature
   detail: string
   redirect: string
+  /**
+   * Character offset in the text where the offending tail starts - the
+   * de-poison trim point (0203): everything at/after trimAt is removed from
+   * the stored text before the turn continues, so the model's context is
+   * clean of the stale reminder artifact. null = nothing to trim (silent has
+   * no text, let-me has a valid intent statement worth keeping).
+   */
+  trimAt: number | null
 }
 
 // The full DSML tool-call closing chain: only this shape means a real call
 // was dropped (parser consumed the opener, the model never finished it).
-const EATEN_CALL_REMNANT = "</parameter></invoke></tool_calls>"
+// Whitespace-tolerant between the tags: real stranded chains carry newlines
+// (the parser leaks the closer line-by-line), so the contiguous string never
+// matched live output - the 2026-08-18 17:10 eaten-call (full raw DSML block
+// as text, `</parameter>\n</invoke>\n</tool_calls>`) fell through to
+// stray-closer. `\s*` between the three tags + `\s*$` at the end covers both
+// the contiguous and the multi-line shapes.
+const EATEN_CALL_END = /<\/parameter>\s*<\/invoke>\s*<\/tool_calls>\s*$/
 
 // Any other closing tag at the very end of the text: degenerate-end family
 // (gibberish with a stray fragment) or an unrecognized remnant shape. Since
@@ -139,31 +153,42 @@ export function detect(finish: string | undefined, text: string, hadToolCall: bo
       signature: "silent",
       detail: "response produced no visible output",
       redirect: STALL_REDIRECT_SILENT,
+      trimAt: null,
     }
   }
   // End-anchored checks only: real remnants end the text, and mid-text
   // matches false-positive on replies that quote the signature (2026-08-15).
   // The full chain also matches STRAY_CLOSER_END, so check it first.
   const norm = text.replaceAll(FULLWIDTH_BAR, "/")
-  if (norm.endsWith(EATEN_CALL_REMNANT)) {
+  const eaten = EATEN_CALL_END.exec(norm)
+  if (eaten) {
     return {
       signature: "eaten-call",
       detail: "stranded tool-call markup in response (eaten tool call)",
       redirect: STALL_REDIRECT_EATEN,
+      // Trim from the chain opener (index 0 of the match) so the whole
+      // stranded block leaves the context.
+      trimAt: eaten.index,
     }
   }
-  if (STRAY_CLOSER_END.test(norm)) {
+  const stray = STRAY_CLOSER_END.exec(norm)
+  if (stray) {
     return {
       signature: "stray-closer",
       detail: "response ended with a stray markup fragment",
       redirect: STALL_REDIRECT_STRAY_CLOSER,
+      trimAt: stray.index,
     }
   }
-  if (/:\s*$/.test(text)) {
+  const colon = /:\s*$/.exec(text)
+  if (colon) {
     return {
       signature: "colon",
       detail: "response ended mid-sentence",
       redirect: STALL_REDIRECT_COLON,
+      // Trim the trailing colon + whitespace only; the sentence before is
+      // the model's own useful intent (de-poison, keep the prefix).
+      trimAt: colon.index,
     }
   }
   // Intent-without-action: announced a tool action but delivered no tool call
@@ -173,6 +198,9 @@ export function detect(finish: string | undefined, text: string, hadToolCall: bo
       signature: "let-me",
       detail: "stated an intent to perform an action but no tool call was delivered",
       redirect: STALL_REDIRECT_LET_ME,
+      // The "let me <verb>" intent statement is valid prose worth keeping;
+      // the missing action is recovered by the plain continue.
+      trimAt: null,
     }
   }
   return null

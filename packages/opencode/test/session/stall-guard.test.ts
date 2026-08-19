@@ -28,7 +28,7 @@ describe("stall-guard detect", () => {
     expect(StallGuard.detect("unknown", "Let me do the thing:", false)).toBeNull()
   })
 
-  test("eaten-call signature: stranded DSML closing tags", () => {
+  test("eaten-call signature: stranded DSML closing tags (contiguous)", () => {
     const hit = StallGuard.detect(
       "stop",
       "Let me verify the install is intact and check the new version.</parameter></invoke></tool_calls>",
@@ -37,6 +37,39 @@ describe("stall-guard detect", () => {
     expect(hit).not.toBeNull()
     expect(hit!.signature).toBe("eaten-call")
     expect(hit!.detail).toBe("stranded tool-call markup in response (eaten tool call)")
+  })
+
+  test("eaten-call signature: whitespace-tolerant multi-line stranded chain (0203)", () => {
+    // Real eaten-call output carries newlines between the closing tags
+    // (2026-08-18 17:10 session msg_015da03410, the parser leaked the closer
+    // line-by-line); the contiguous string never matched live output.
+    const text =
+      "\n\n<tool_calls>\n<invoke name=\"bash\">\n<parameter name=\"command\" string=\"true\">cd /root/oc/opencode/repos/opencode/packages/opencode/src && rg -rn 'restart' tool/ cli/ session/ 2>/dev/null | head</parameter>\n</invoke>\n</tool_calls>"
+    const hit = StallGuard.detect("stop", text, false)
+    expect(hit).not.toBeNull()
+    expect(hit!.signature).toBe("eaten-call")
+    // trimAt = the chain opener, so the whole stranded block leaves context
+    expect(hit!.trimAt).toBe(text.indexOf("</parameter>"))
+  })
+
+  test("stray-closer signature: single stranded closing tag", () => {
+    const hit = StallGuard.detect("stop", "some garbage text </response>", false)
+    expect(hit).not.toBeNull()
+    expect(hit!.signature).toBe("stray-closer")
+  })
+
+  test("stray-closer signature: trimAt points at the stranded tag", () => {
+    const text = "meaningful prefix\n\n<garbage tag=\"x\">\n</div>"
+    const hit = StallGuard.detect("stop", text, false)!
+    expect(hit.signature).toBe("stray-closer")
+    expect(hit.trimAt).toBe(text.indexOf("</div>"))
+  })
+
+  test("colon signature: trimAt points at the trailing colon", () => {
+    const hit = StallGuard.detect("stop", "Now let me verify the install:\n\n", false)!
+    expect(hit.signature).toBe("colon")
+    // the trim keeps the sentence prefix, drops only the colon + whitespace
+    expect("Now let me verify the install:\n\n".slice(0, hit.trimAt)).toBe("Now let me verify the install")
   })
 
   test("silent signature: finish=stop with no text and no tool call", () => {
