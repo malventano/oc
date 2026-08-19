@@ -144,15 +144,17 @@ export const {
       vcs: undefined,
     })
 
-    // Cap TUI-rendered messages at 100. Runs on EVERY new message (mid-turn,
-    // so a very long agent turn can't grow the store unbounded) and on
-    // prompt submit. Pruning removes only the OLDEST messages - the far end
-    // of the session view, above the user's reading position - which the
-    // scrollbox's block-anchored manual scroll (opentui 0168/0170/0183)
-    // keeps stable even while scrolled back: the anchor survives and the
-    // y-delta compensates, and a pruned (destroyed) anchor falls back to a
-    // distance-to-bottom anchor. It never removes the live turn's newest
-    // messages, so the streaming footers stay intact.
+    // Cap TUI-rendered messages at 100. Runs on prompt submit only (0204:
+    // the mid-turn call this once had in message.updated was reverted - the
+    // freeze it was guarding against was 0195's per-delta turnStreamedChars
+    // re-walk, not the store length, and a mid-turn prune mutates the
+    // rendered chain while the turn is live). Pruning removes only the
+    // OLDEST messages - the far end of the session view, above the user's
+    // reading position - which the scrollbox's block-anchored manual scroll
+    // (opentui 0168/0170/0183) keeps stable even while scrolled back: the
+    // anchor survives and the y-delta compensates, and a pruned (destroyed)
+    // anchor falls back to a distance-to-bottom anchor. It never removes the
+    // live turn's newest messages, so the streaming footers stay intact.
     function pruneMessages(sessionID: string) {
       const messages = store.message[sessionID]
       if (!messages || messages.length <= 100) return
@@ -371,7 +373,6 @@ export const {
               draft.splice(result.index, 0, event.properties.info)
             }),
           )
-          pruneMessages(event.properties.info.sessionID)
           break
         }
         case "message.removed": {
@@ -709,9 +710,9 @@ export const {
           syncingSessions.set(sessionID, task)
           return task
         },
-        // Belt-and-suspenders: the per-message prune (message.updated) keeps
-        // the store at <= 100 during a turn, so this is normally a no-op; it
-        // catches any drift at the prompt boundary.
+        // The 100-message cap lives here now (0204: the mid-turn message.updated
+        // prune was reverted - a long turn can grow the store past 100 until
+        // the next submit, which is the tradeoff the revert accepts).
         prune(sessionID: string) {
           pruneMessages(sessionID)
         },
