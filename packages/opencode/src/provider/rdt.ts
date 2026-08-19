@@ -314,13 +314,19 @@ const mapUsage = (u: Record<string, unknown> | undefined): LanguageModelV3Usage 
 // ---------------------------------------------------------------------------
 
 const makeStreamParser = (
-  finalize: (responseId: string | undefined) => void,
+  finalize: (responseId: string | undefined, advancePast: boolean, outputMsg?: V3Message) => void,
 ): TransformStream<Uint8Array, LanguageModelV3StreamPart> => {
   let buffer = ""
   let inReasoning = false
   let inText = false
   let sawToolCall = false
   let responseId: string | undefined
+  /** Accumulated output text of the CURRENT response (for the finalize hash:
+   *  hwm advances past a completed no-tool-call assistant row, so the chain
+   *  hash must cover inputMsgs + that output row, not just inputMsgs). */
+  let responseOutputText = ""
+  /** reasoning text accumulation for the same hash construction. */
+  let responseReasoningText = ""
   /** Streaming tool-call accumulation keyed by call_id. The server emits
    *  response.function_call_arguments.delta events (incremental JSON
    *  fragments) then a .done (full assembled arguments); output_item.done
@@ -360,10 +366,13 @@ const makeStreamParser = (
         }
         break
       }
-      case "response.reasoning_text.delta":
+      case "response.reasoning_text.delta": {
+        const delta = String(ev.delta ?? "")
+        responseReasoningText += delta
         if (inReasoning)
-          controller.enqueue({ type: "reasoning-delta", id: "reasoning-0", delta: String(ev.delta ?? "") })
+          controller.enqueue({ type: "reasoning-delta", id: "reasoning-0", delta })
         break
+      }
       case "response.reasoning_text.done":
       case "response.reasoning_part.done":
         if (inReasoning) {
@@ -377,9 +386,12 @@ const makeStreamParser = (
           controller.enqueue({ type: "text-start", id: "txt-0" })
         }
         break
-      case "response.output_text.delta":
-        controller.enqueue({ type: "text-delta", id: "txt-0", delta: String(ev.delta ?? "") })
+      case "response.output_text.delta": {
+        const delta = String(ev.delta ?? "")
+        responseOutputText += delta
+        controller.enqueue({ type: "text-delta", id: "txt-0", delta })
         break
+      }
       case "response.output_text.done":
         if (inText) {
           controller.enqueue({ type: "text-end", id: "txt-0" })
@@ -455,7 +467,26 @@ const makeStreamParser = (
       }
       case "response.completed": {
         responseId = (ev.response ?? {}).id
-        finalize(responseId)
+        // advancePast: a completed response WITHOUT a tool call is a final
+        // assistant message - the next request must NOT re-send it (hwm
+        // advances past it). A tool-call response leaves the call row in the
+        // resend window (the next request re-sends the tool call + its result
+        // so the server chain catches up), matching the resubmit semantics.
+        const outputMsg: V3Message | undefined =
+          responseOutputText.length > 0 || responseReasoningText.length > 0
+            ? ({
+                role: "assistant",
+                content: [
+                  ...(responseReasoningText.length > 0
+                    ? [{ type: "reasoning", text: responseReasoningText }]
+                    : []),
+                  ...(responseOutputText.length > 0
+                    ? [{ type: "text", text: responseOutputText }]
+                    : []),
+                ],
+              } as V3Message)
+            : undefined
+        finalize(responseId, !sawToolCall, outputMsg)
         const finishReason: LanguageModelV3FinishReason = sawToolCall
           ? { unified: "tool-calls", raw: undefined }
           : { unified: "stop", raw: undefined }
@@ -739,12 +770,25 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         if (state !== undefined && chained) {
           setState(ctx.sessionID, { ...state, failures: 0 })
         }
-        const finalize = (responseId: string | undefined) => {
+        const finalize = (responseId: string | undefined, advancePast: boolean, outputMsg?: V3Message) => {
           if (responseId !== undefined) {
+            // hwm = request input length + (this response added a FINAL
+            // assistant message with no tool call). A tool-call response is
+            // not final - its call row stays in the resend window so the
+            // next request re-sends call + result (resubmit semantics). This
+            // fixes the prior-turn-output re-send: without the +1, hwm
+            // pointed at the request's own input (excluding the response's
+            // output), so the NEXT request's slice(hwm) re-included the
+            // completed assistant row (~3.5K tokens re-sent per turn, a
+            // guaranteed cache miss every turn).
+            // prefixHash must cover the SAME hwm window the gate will hash on
+            // the next request (inputMsgs.slice(0, hwm) = inputMsgs + the
+            // final assistant row), so the stored hash includes outputMsg.
+            const chainMsgs = advancePast && outputMsg ? [...inputMsgs, outputMsg] : inputMsgs
             setState(ctx.sessionID, {
               responseId,
-              hwm: inputMsgs.length,
-              prefixHash: hashInput(inputMsgs),
+              hwm: inputMsgs.length + (advancePast ? 1 : 0),
+              prefixHash: hashInput(chainMsgs),
               chainId,
               modelID: ctx.modelID,
               failures: 0,
