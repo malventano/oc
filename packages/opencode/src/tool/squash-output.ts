@@ -4,30 +4,17 @@ import { unlink } from "node:fs/promises"
 import { Database } from "@opencode-ai/core/database/database"
 import * as Tool from "./tool"
 
-const DESCRIPTION = `Replace a past tool output in this session with a short summary you write, so future prompts see the small version instead of the full output. Use proactively: every turn re-reads every output in the chain, so long outputs you've finished with keep costing context.
+const DESCRIPTION = `Replace a past tool output in this session with a short summary, so future prompts see the small version instead of the full output.
 
-TIMING (NON-NEGOTIABLE): squash each output in the message immediately after it arrives, as the FIRST tool call of that message, before any other work. A rewrite at position P invalidates the cached prefix of everything AFTER P - the next prompt re-encodes the whole tail. Squashing early keeps that tail to just the squash call; deferring an early output's squash to the end of the turn invalidates the entire turn's cache. Never defer, never batch squash calls for outputs from earlier in the turn. If you missed the moment, squash anyway (one-time invalidation beats paying the full output on every future prompt), and with several pending, squash the NEWEST first - each rewrite invalidates after its own target.
+WHY: every prompt re-prefills every output already in the chain. An unexpectedly large output you won't reference again (ls, grep, docker logs, build logs) costs its full size on every future prompt until compaction - squashing it saves real tokens.
 
-WHEN to squash: outputs > ~2K tokens you won't reference again (ls, grep, docker logs, git diff/status, build logs) once you've extracted what you need from them.
+WHEN: only when the output is both unexpectedly large AND carries little you'll need again. Don't squash reference material you'll consult again, or files you're about to edit - small outputs' savings don't justify the rewrite.
 
-DON'T squash: reference material you'll consult again (skills, docs, configs you're studying), file contents you're about to edit (need originals for diffs), anything you'd re-read where the source may change first.
+HOW: call it in the message right after the big output arrives, before other work. A rewrite invalidates the cached prefix of everything after it, so squashing late busts the cache of all the output you've produced since - squash early and the miss covers only the squash call. If you missed the moment, squash anyway; the large output keeps costing on every future prompt.
 
-SUMMARY (required, non-empty): useless output → short phrase ("empty", "no matches", "0 errors"); useful output → include the findings, values, or lines you extracted. The summary is all you'll see going forward - if you'd need the full output again, don't squash. Must shrink the total: summary × parts must be smaller than the original (checked; single = summary < original).
+Your summary permanently replaces the original - include anything you might need later; non-hint reminders survive. The TUI record stays; only future prompts see the summary. Cannot squash this tool's own output.
 
-TARGET: omit for the most recent completed tool output; pass { part_id } for precision (ids appear in sessions-browse/search output); or { tool, input_contains } to match a tool by input substring (backslashes in the pattern are auto-doubled to match the JSON-escaped stored form). match: "all" applies the pattern to every match (aggregate length check).
-
-DEPTH (default 3): only outputs within the last 3 user turns. Deeper targets are refused - pass depth: -1 to reach any depth, including content below the compaction boundary (not in the current prompt; the change applies if that content re-enters the live chain; large prefix-cache invalidation).
-
-The TUI record stays; only future prompts see the summary. Cannot squash this tool's own output.
-
-POST-SQUASH STATE (read before squashing): the summary you write REPLACES the
-original output - the old text is destroyed. The rewrite updates the session
-DB and unlinks the dump file (if any); the original cannot be recovered via
-session tools. Non-hint reminders (timestamp) survive. Squashing does NOT
-change what earlier prompts in this conversation already showed you; it only
-changes what FUTURE prompts reconstruct. So any fact you might need later
-must be IN the summary - the summary is the only permanent record; anything
-left out of it is gone.`
+Target: omit for the most recent completed output, { part_id } for precision, or { tool, input_contains } for a pattern (match: "all" for every match). Depth (default 3): last 3 user turns; -1 reaches deeper incl. below the compaction boundary.`
 
 // SELF_LEGACY: plugin-era tool id ("squash_output"). Old sessions' parts
 // carry it, so both names must be excluded from squashing.
