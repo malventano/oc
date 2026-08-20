@@ -129,6 +129,14 @@ const toolResultString = (output: unknown): string => {
   if (typeof output !== "object") return String(output)
   const o = output as { type?: string; value?: unknown }
   if (o.type === "text") return String(o.value ?? "")
+  // error-text results must render as their PLAIN value string - the
+  // completions transport sends the value verbatim as the tool message content
+  // (a failed tool's error text, e.g. "No completed tool output found..."),
+  // so emitting the JSON object {"type":"error-text","value":...} diverges the
+  // responses seed render from the cached completions prefix (~71K tokens in on
+  // the oc-test-9 run, pcap-confirmed 2026-08-20 - a second full ~659K-token
+  // miss after the tool-dropping fix). Same shape as the "text" branch.
+  if (o.type === "error-text") return String(o.value ?? "")
   if (o.type === "json") return JSON.stringify(o.value ?? "")
   if (o.type === "content") {
     const parts = Array.isArray(o.value) ? (o.value as V3Part[]) : []
