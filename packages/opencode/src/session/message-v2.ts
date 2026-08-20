@@ -523,9 +523,10 @@ export function stream(sessionID: SessionID) {
     // stream() walked all 14k+ messages per step (278 pages, ~1.2s msgs-load
     // at deep sessions) even though filterCompacted only ever keeps the
     // newest compaction boundary + its tail. Stop once TWO COMPLETED
-    // compaction pairs have been loaded, walking newest-first. The window
-    // then covers the whole pre-compaction tail (everything newer than the
-    // 2nd-newest completed marker) plus one marker of safety margin - the
+    // compaction pairs have been loaded AND the newest completed marker's
+    // tail_start_id is inside the loaded window, walking newest-first. The
+    // window then covers the whole pre-compaction tail (everything newer than
+    // the 2nd-newest completed marker) plus one marker of safety margin - the
     // filterCompacted context, the epoch boundary + records, and
     // MessageV2.latest() all operate within it. A session with < 2 completed
     // pairs pages to the start naturally (next.more).
@@ -540,7 +541,17 @@ export function stream(sessionID: SessionID) {
     // chain, breaking the prefix-cache byte identity (witnessed 2026-08-18:
     // the compaction summary request full-missed - its chain lost a 37-message
     // pre-marker block and reordered the tail).
+    // The tail-reachability requirement closes the gap the 2-marker rule alone
+    // leaves open (witnessed 2026-08-19): a newest completed marker whose
+    // tail_start_id sits OLDER than the 2nd-newest completed marker (a tail
+    // computed from an earlier truncated window) falls outside the 2-marker
+    // window, so filterCompacted's retain cut never fires and the raw sliding
+    // walk window is sent verbatim - evicting the oldest messages every turn
+    // (pcap-verified: full ~200k re-prefill, cache.read pinned at the system
+    // prompt). Without the tail loaded, the wire prefix shifts each request.
     let compactionMarkers = 0
+    let retainTarget: MessageID | undefined
+    let retainLoaded = true
     const completed = new Set<string>()
     while (true) {
       const next = yield* page({ sessionID, limit: size, before }).pipe(
@@ -565,15 +576,23 @@ export function stream(sessionID: SessionID) {
           completed.add(item.info.parentID)
         }
         if (
-          compactionMarkers < 2 &&
           item.info.role === "user" &&
           item.parts.some((p): p is CompactionPart => p.type === "compaction") &&
           completed.has(item.info.id)
         ) {
-          compactionMarkers++
+          if (retainTarget === undefined && compactionMarkers === 0) {
+            // Newest completed marker. Its tail_start_id is the boundary
+            // filterCompacted must be able to reach for its deterministic
+            // retain cut to fire.
+            const part = item.parts.find((p): p is CompactionPart => p.type === "compaction")
+            retainTarget = part?.tail_start_id
+            retainLoaded = retainTarget === undefined
+          }
+          if (retainTarget !== undefined && item.info.id === retainTarget) retainLoaded = true
+          if (compactionMarkers < 2) compactionMarkers++
         }
       }
-      if (compactionMarkers >= 2) break
+      if (retainLoaded && compactionMarkers >= 2) break
       if (!next.more || !next.cursor) break
       before = next.cursor
     }
