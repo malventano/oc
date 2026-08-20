@@ -68,6 +68,11 @@ const toolResult = (tool: SessionMessage.AssistantTool, providerMetadata: Provid
 }
 
 const assistant = (message: SessionMessage.Assistant, model: Model) => {
+  // Aborted generations keep their partially-streamed content in the prompt:
+  // RDT's transport on a cancel RE-SUBMITS from the last accepted response,
+  // re-sending the partial output + the new user turn so the server chain
+  // catches up to a full-send (BUG_TURN_TIME resubmit-after-abort). Stripping
+  // here would remove the anchor text the resubmit needs for byte parity.
   const sameModel =
     String(message.model.providerID) === String(model.provider) && String(message.model.id) === String(model.id)
   const reuseProviderMetadata = sameModel && message.error === undefined
