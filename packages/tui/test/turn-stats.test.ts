@@ -6,8 +6,8 @@ import {
   foldTurnSteps,
   formatCount,
   newTurnLiveAccum,
+  pendingTally,
   settledReport,
-  shouldReanchorBase,
   streamedChars,
   streamRateFor,
   toolResultTokens,
@@ -230,40 +230,133 @@ test("settledReport: undefined when no step has any usage", () => {
   expect(settledReport(messages)).toBeUndefined()
 })
 
-test("shouldReanchorBase: re-anchors a stale base when a NEWER report shows LESS context (compaction)", () => {
-  // The base was frozen from the compaction summary's report, which read the
-  // whole pre-compaction context; the post-compaction turn's first step
-  // reports the real compacted total - strictly smaller -> re-anchor.
-  expect(
-    shouldReanchorBase({ at: "summary-asst", tokens: 294916 }, { id: "next-step-1", input: 77420 }),
-  ).toBe(true)
+test("pendingTally: fresh session before the first report - anchored 0, only the prompt + in-flight streamed", () => {
+  // The fresh-session gap: no step has reported yet, so the anchor is 0 and
+  // the display is just the just-submitted prompt + what streams. It is only a
+  // ~2s window - the first step-finish adopts the real wire input (next test).
+  const parts: Record<string, Part[]> = {
+    "user-0": [textPart("find the fineweb session")], // 24 chars -> 6
+    "asst-1": [textPart("y".repeat(80))], // 80 chars -> 20
+  }
+  const messages: Array<UserMessage | AssistantMessage> = [
+    user("user-0", 1000),
+    assistant({
+      parentID: "user-0",
+      id: "asst-1",
+      time: { created: 1500 },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
+  ]
+  const t = computeTurn(messages)
+  const p = pendingTally(messages, t, (id) => parts[id])
+  expect(p.anchored).toBe(0)
+  expect(p.inputPending).toBe(6)
+  expect(p.streamedPending).toBe(20)
 })
 
-test("shouldReanchorBase: holds the frozen base on normal growth (base + prompt)", () => {
-  // A newer report that GREW is normal turn progression - re-anchoring would
-  // introduce step-boundary flicker, so the frozen base must hold.
-  expect(
-    shouldReanchorBase({ at: "prev-final", tokens: 40000 }, { id: "step-1", input: 43000 }),
-  ).toBe(false)
+test("pendingTally: the first step-finish report becomes the anchor (exact wire input)", () => {
+  // The moment the first semi-turn completes, the counter must adopt the
+  // endpoint's reported input side (input + cache.read) - the original bug:
+  // a fresh session held near 0 through the whole first turn.
+  const messages: Array<UserMessage | AssistantMessage> = [
+    user("user-0", 1000),
+    assistant({
+      parentID: "user-0",
+      id: "asst-1",
+      time: { created: 1500, completed: 2000 },
+      tokens: { input: 23980, output: 84, reasoning: 0, cache: { read: 8, write: 0 } },
+    }),
+  ]
+  const t = computeTurn(messages)
+  const p = pendingTally(messages, t)
+  expect(p.anchored).toBe(23980 + 8)
+  // The anchor step's own output is not inside its report -> still pending.
+  expect(p.inputPending).toBe(84)
+  expect(p.streamedPending).toBe(0)
 })
 
-test("shouldReanchorBase: same message (no newer report yet) never re-anchors", () => {
-  expect(
-    shouldReanchorBase({ at: "step-1", tokens: 77420 }, { id: "step-1", input: 77420 }),
-  ).toBe(false)
+test("pendingTally: mid-turn tool gap - the anchor step's output + tool result are pending", () => {
+  const completed: ToolPart = {
+    ...toolPart("t-k"),
+    messageID: "asst-1",
+    state: {
+      status: "completed",
+      input: {},
+      output: "x".repeat(800),
+      title: "bash",
+      metadata: {},
+      time: { start: 0, end: 1 },
+    } as const,
+  }
+  const parts: Record<string, Part[]> = { "asst-1": [completed] }
+  const messages: Array<UserMessage | AssistantMessage> = [
+    user("user-0", 1000),
+    assistant({
+      parentID: "user-0",
+      id: "asst-1",
+      time: { created: 1500, completed: 2000 },
+      tokens: { input: 200, output: 20, reasoning: 30, cache: { read: 0, write: 0 } },
+    }),
+  ]
+  const t = computeTurn(messages)
+  const p = pendingTally(messages, t, (id) => parts[id])
+  expect(p.anchored).toBe(200)
+  // output + reasoning + the completed tool output (800 chars / 4 = 200).
+  expect(p.inputPending).toBe(20 + 30 + 200)
+  expect(p.streamedPending).toBe(0)
 })
 
-test("shouldReanchorBase: undefined settled report never re-anchors", () => {
-  expect(shouldReanchorBase({ at: "step-1", tokens: 77420 }, undefined)).toBe(false)
+test("pendingTally: prior-turn anchor - only the new prompt is pending", () => {
+  const parts: Record<string, Part[]> = { "user-1": [textPart("continue")] } // 8 chars -> 2
+  const messages: Array<UserMessage | AssistantMessage> = [
+    user("user-0", 1000),
+    assistant({
+      parentID: "user-0",
+      id: "asst-prev",
+      time: { created: 1000, completed: 2000 },
+      tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 0, write: 0 } },
+    }),
+    user("user-1", 3000),
+    assistant({
+      parentID: "user-1",
+      id: "asst-1",
+      time: { created: 4000 },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    }),
+  ]
+  const t = computeTurn(messages)
+  const p = pendingTally(messages, t, (id) => parts[id])
+  expect(p.anchored).toBe(100)
+  expect(p.inputPending).toBe(2)
+  expect(p.streamedPending).toBe(0) // asst-1 has no streamed parts yet
 })
 
-test("shouldReanchorBase: equal input is NOT a correction (strict less-than)", () => {
-  // The turn's first step can report the same context the base already holds
-  // (e.g. a zero-accumulation turn); re-anchoring would only flip the caller's
-  // anchored flag and wrongly drop the prompt estimate.
-  expect(
-    shouldReanchorBase({ at: "prev-final", tokens: 40000 }, { id: "step-1", input: 40000 }),
-  ).toBe(false)
+test("pendingTally: a compaction / model-switch SHRINK adopts the next report (no frozen hold)", () => {
+  // The compaction summary's report read the whole pre-compaction context
+  // (294900); the post-compaction turn's first step reports the real compacted
+  // total. the anchor is the NEWEST report - the high summary value does NOT
+  // hold, mirroring the old re-anchor correction at the first report landing.
+  const messages: Array<UserMessage | AssistantMessage> = [
+    user("user-0", 1000),
+    assistant({
+      parentID: "user-0",
+      id: "summary",
+      time: { created: 1000, completed: 2000 },
+      tokens: { input: 294900, output: 60, reasoning: 0, cache: { read: 16, write: 0 } },
+    }),
+    user("user-1", 3000),
+    assistant({
+      parentID: "user-1",
+      id: "post",
+      time: { created: 4000, completed: 5000 },
+      tokens: { input: 77400, output: 20, reasoning: 0, cache: { read: 20, write: 0 } },
+    }),
+  ]
+  const t = computeTurn(messages) // current turn rooted at user-1
+  const p = pendingTally(messages, t)
+  expect(p.anchored).toBe(77400 + 20)
+  expect(p.inputPending).toBe(20) // post's own output
+  expect(p.streamedPending).toBe(0)
 })
 
 test("formatCount: integers below 1000", () => {

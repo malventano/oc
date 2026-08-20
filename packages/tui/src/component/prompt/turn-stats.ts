@@ -178,22 +178,67 @@ export function settledReport(messages: Array<UserMessage | AssistantMessage>) {
   }
 }
 
+export type ContextPending = {
+  /** The latest completed step report's full wire input (input + cache.read +
+   *  cache.write): the endpoint's exact reported context, adopted the instant
+   *  each step-finish lands. 0 before the first report of a fresh session.
+   *  Fresh session, mid-turn re-anchor, compaction shrink, model switch are
+   *  all just re-anchors to the reported truth - no frozen turn-start base. */
+  anchored: number
+  /** Transcript content entered the conversation since the anchor that a
+   *  future request must re-send (billed at the cache rate): the anchor step's
+   *  own completion (real output + reasoning, not in its own report) + its
+   *  tool result, plus the turn's root prompt estimate while the anchor
+   *  predates the prompt (fresh turn / fresh session - no report of this turn
+   *  carries the prompt yet). */
+  inputPending: number
+  /** Tokens being GENERATED this instant: the in-flight step's streamed
+   *  estimate (its request is in flight, so new text is billed at the output
+   *  rate and counted up here until the next report adopts it). */
+  streamedPending: number
+}
+
 /**
- * Whether a frozen tally base should re-anchor mid-turn to a newer settled
- * report: the report is from a DIFFERENT message than the base was frozen
- * from AND shows LESS context than the frozen base. A newer report that grew
- * (the frozen base + the turn's prompt) is normal turn progression - the
- * frozen base holds so the display stays monotonic; only a report that SHRANK
- * the context re-anchors. That happens after a compaction/prune (the base was
- * captured from a report that read the full pre-compaction context - e.g. the
- * compaction summary request - and the next turn's first step reports the
- * real compacted total) or on a model/tokenizer switch.
+ * The anchor + pending split for the running total context/cost (spec 13).
+ * The counter ADOPTS every step-finish report the instant it lands (so each
+ * semi-turn completion snaps to the endpoint's exact input), and adds only the
+ * content since the anchor that no report carries yet. When the anchor is a
+ * step of the current turn its own completion + tool result are pending (its
+ * report covered the conversation up to, not including, them); a prior-turn or
+ * absent anchor contributes only the root prompt estimate (everything else is
+ * already inside the anchored continuation).
  */
-export function shouldReanchorBase(
-  base: { at?: string; tokens: number },
-  settled: { id: string; input: number } | undefined,
-): boolean {
-  return settled !== undefined && settled.id !== base.at && settled.input < base.tokens
+export function pendingTally(
+  messages: Array<UserMessage | AssistantMessage>,
+  turn: TurnStats,
+  getParts?: (messageID: string) => Part[] | undefined,
+): ContextPending {
+  const settled = settledReport(messages)
+  const anchored = settled?.input ?? 0
+
+  let inputPending = 0
+  let streamedPending = 0
+
+  // The anchor step when it is a step of the CURRENT turn (its content is the
+  // only not-yet-reported transcript since it). A prior-turn or absent anchor
+  // has nothing pending except the prompt.
+  const anchorStep = turn.parentID === undefined ? undefined : turn.steps.find((s) => s.id === settled?.id)
+
+  if (anchorStep === undefined) {
+    const root = messages.find((m): m is UserMessage => m.role === "user" && m.id === turn.parentID)
+    inputPending += promptTokenEstimate(root, getParts)
+  } else {
+    inputPending += anchorStep.tokens.output + anchorStep.tokens.reasoning
+    inputPending += toolResultTokens([anchorStep], getParts)
+  }
+
+  const inFlight = turn.steps.find((s) => !s.time.completed)
+  if (inFlight) {
+    const est = estimateStepTokens(inFlight, getParts?.(inFlight.id))
+    streamedPending = est.reasoning + est.output
+  }
+
+  return { anchored, inputPending, streamedPending }
 }
 
 /**
