@@ -337,7 +337,7 @@ Operations:
 - poll: Wait for command sent via run to complete. Requires paneId and suffix returned by run.
 - capture: Capture pane scrollback (match = return only the matching lines; ansi = raw escapes).
 - wait: Wait for shell prompt (for SSH/REPL after keys).
-- waitFor: Poll the pane capture until a regex MATCHES (or, with absent=true, DISAPPEARS). The state-based wait for TUI panes (the shell-prompt wait can't see TUI states): question panel popped ('esc dismiss'), model finished (busy spinner gone - absent), panel closed before the next hotkey (absent), compaction done ('▣  Compaction'). Polls every 500ms.
+- waitFor: Poll the pane capture until a regex MATCHES (or, with absent=true, DISAPPEARS). The state-based wait for TUI panes ONLY (the shell-prompt wait can't see TUI states): question panel popped ('esc dismiss'), model finished (busy spinner gone - absent), panel closed before the next hotkey (absent), compaction done ('▣  Compaction'). Polls every 500ms. NOT for shell commands or remote jobs - those end at a shell prompt and must use run (wait/poll) or capture; the tool refuses waitFor on shell panes.
 - probe: ONE capture -> {label: true/false} verdict for a map of patterns + the matching lines only. Context-light scraping (no pane dump): probe({panel: 'esc dismiss', busy: '⬝', review: '^Review$'}).
 - style: Color scrape - locate a pattern in the pane, decode the ANSI SGR at each occurrence -> [{text, fg: '#rrggbb', bg: '#rrggbb', bold}]. Opt-in color awareness (e.g. the success-green check, the diff red/green backgrounds, the muted-grey confirm) without the raw ANSI noise; match='all' for every occurrence.
 - log: Tail a file (default /tmp/oc-debug.log - the instrumented pane's stderr trail) for the PDBG-debugging loop.
@@ -608,6 +608,31 @@ USAGE NOTES:
     }
 
     if (op === "waitFor") {
+      // TUI-only enforcement, enforced at the pane level: waitFor watches pane
+      // states of the oc TUI window (spinner/panel) and nothing else. The only
+      // pane it may run on is the one opencode itself lives in (TMUX_PANE);
+      // every other pane is a work/shell pane whose commands end at a prompt
+      // and must be tracked with run (wait/poll) or capture. Refusing non-TUI
+      // panes removes both the stale-marker instant-match and the blind-wait
+      // failure modes on shell output.
+      const tuiPane = (process.env.TMUX_PANE || "").trim()
+      if (!tuiPane || args.paneId !== tuiPane) {
+        return {
+          title: "waitFor refused (non-TUI pane)",
+          output: JSON.stringify({ status: "error", message: `waitFor is for the oc TUI pane only (TMUX_PANE=${tuiPane || "(unset)"}); pane ${args.paneId} is a work/shell pane. Track shell commands with run (wait=true/false + poll) or capture.`, elapsed: 0 }, null, 2),
+          metadata: { status: "error", elapsed: 0 },
+        }
+      }
+      try {
+        const paneState = await checkPaneIdle(args.paneId)
+        if (paneState.promptType === "shell") {
+          return {
+            title: "waitFor refused (oc pane at shell prompt)",
+            output: JSON.stringify({ status: "error", message: `oc pane is at a shell prompt; nothing to wait for TUI-state on.`, elapsed: 0 }, null, 2),
+            metadata: { status: "error", elapsed: 0 },
+          }
+        }
+      } catch { /* pane may vanish; the loop below reports it */ }
       const timeoutSeconds = Math.min(args.timeoutSeconds ?? 120, 3600)
       const pattern = new RegExp(args.pattern)
       const captureLines = Math.min(Math.max(args.lines ?? 50, 10), 200)
