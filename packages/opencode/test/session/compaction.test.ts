@@ -1171,6 +1171,84 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
+    "walkback counts only REAL completed pairs - virtual compacts must not stop the walk short of the newest real pair (188c)",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const test = yield* TestInstance
+      const session = yield* ssn.create({})
+      const marker = (auto: boolean, virtual: boolean) =>
+        SessionNs.Service.use((s) =>
+          Effect.gen(function* () {
+            const msg = yield* s.updateMessage({
+              id: MessageID.ascending(),
+              role: "user",
+              sessionID: session.id,
+              model: ref,
+              agent: "build",
+              time: { created: Date.now() },
+            })
+            yield* s.updatePart({
+              id: PartID.ascending(),
+              messageID: msg.id,
+              sessionID: session.id,
+              type: "compaction",
+              auto,
+              ...(virtual ? { virtual: true } : {}),
+            })
+            return msg
+          }),
+        )
+      // A virtual pair = virtual marker + synthetic summary that LOOKS complete
+      // (summary:true, finish, no error) - the exact shape that populates
+      // stream()'s `completed` set like a real pair.
+      const virtualPair = () =>
+        Effect.gen(function* () {
+          const m = yield* marker(false, true)
+          yield* createSummaryAssistantMessage(session.id, m.id, test.directory, `virtual summary ${m.id}`)
+        })
+      // The newest REAL completed pair (marker + summary).
+      const realPair = () =>
+        Effect.gen(function* () {
+          const m = yield* marker(false, false)
+          yield* createSummaryAssistantMessage(session.id, m.id, test.directory, `real summary ${m.id}`)
+        })
+
+      // Real pair sits 55+ messages below two virtual pairs: the 2-marker cap
+      // WITHOUT the 188c fix stops on the two virtual markers (page 1) and the
+      // real pair lands on the next 50-message page, never entering the window.
+      yield* virtualPair()
+      for (let i = 0; i < 55; i++) {
+        yield* createUserMessage(session.id, `filler ${i}`)
+      }
+      yield* virtualPair()
+      yield* realPair()
+
+      const msgs = yield* MessageV2.stream(session.id)
+      const ids = msgs.map((msg) => msg.info.id)
+      const realMarkerId = ids.find((id) => /^msg_/.test(id) && msgs.some((m) => m.info.id === id && m.info.role === "user"))
+      const realSummary = msgs.find(
+        (m) => m.info.role === "assistant" && m.info.summary && m.info.parentID === realMarkerId,
+      )
+      // 188c: the walk pages past the virtual markers to the newest REAL pair,
+      // so the real marker AND its summary are in the window. Without it the
+      // walk stops on the virtual pair and neither appears.
+      expect(realMarkerId).toBeDefined()
+      expect(realSummary).toBeDefined()
+      // The virtual markers are still in the window too (they are filtered by
+      // filterCompacted, not by the walk) - confirm the walk did not skip them
+      // entirely and stopped only at the real pair boundary.
+      const virtualCount = msgs.filter((m) => m.info.role === "user" && m.parts.some((p) => p.type === "compaction" && p.virtual === true)).length
+      expect(virtualCount).toBe(2)
+      // And the filtered output keeps the newest real pair at the front.
+      const filtered = MessageV2.filterCompacted(msgs)
+      const filteredIds = filtered.map((m) => m.info.id)
+      expect(filteredIds).toContain(realMarkerId)
+      expect(filtered.some((m) => m.info.id === realSummary?.info.id)).toBe(true)
+    }),
+    { git: true },
+  )
+
+  itCompaction.instance(
     "allows plugins to disable synthetic continue prompt",
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
