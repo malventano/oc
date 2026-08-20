@@ -139,6 +139,31 @@ export function trimDiff(diff: string): string {
   return trimmedLines.join("\n")
 }
 
+// Files whose lines exceed this render jsdiff's default 4-line hunk context
+// (diff 8.x) as near-full-width rows above AND below every change (bundles,
+// dumps, dense single-line tool code). For those files the extra context rows
+// are mostly what the change touches, so thin the hunk to 1 context line each
+// side; normal files keep the default.
+const LONG_LINE_CONTEXT_CUTOFF = 100
+
+function isLongLineFile(text: string): boolean {
+  let longest = 0
+  for (const line of text.split("\n")) {
+    if (line.length > longest) longest = line.length
+  }
+  return longest > LONG_LINE_CONTEXT_CUTOFF
+}
+
+export function diffPatch(name: string, before: string, after: string): string {
+  const old = normalizeLineEndings(before)
+  const novo = normalizeLineEndings(after)
+  const patch = trimDiff(createTwoFilesPatch(name, name, old, novo))
+  if (patch && isLongLineFile(old)) {
+    return trimDiff(createTwoFilesPatch(name, name, old, novo, "", "", { context: 1 }))
+  }
+  return patch
+}
+
 type Plan = {
   sourcePath: string
   targetPath: string
@@ -458,14 +483,7 @@ export const EditTool = Tool.define(
               continue
             }
 
-            plan.diff = trimDiff(
-              createTwoFilesPatch(
-                plan.targetPath,
-                plan.targetPath,
-                normalizeLineEndings(plan.before),
-                normalizeLineEndings(plan.after),
-              ),
-            )
+            plan.diff = diffPatch(plan.targetPath, plan.before, plan.after)
             yield* ctx.ask({
               permission: "edit",
               patterns: [path.relative(instance.worktree, plan.targetPath)],
@@ -505,14 +523,7 @@ export const EditTool = Tool.define(
             }
 
             // Re-diff after formatting so the rendered diff matches disk.
-            plan.diff = trimDiff(
-              createTwoFilesPatch(
-                plan.targetPath,
-                plan.targetPath,
-                normalizeLineEndings(plan.before),
-                normalizeLineEndings(plan.after),
-              ),
-            )
+            plan.diff = diffPatch(plan.targetPath, plan.before, plan.after)
             for (const change of diffLines(plan.before, plan.after)) {
               if (change.added) plan.additions += change.count || 0
               if (change.removed) plan.deletions += change.count || 0
