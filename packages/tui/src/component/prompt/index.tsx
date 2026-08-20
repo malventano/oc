@@ -39,17 +39,7 @@ import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
-import {
-  computeTurn,
-  estimateStepTokens,
-  formatCount,
-  liveTokensForSteps,
-  promptTokenEstimate,
-  settledReport,
-  shouldReanchorBase,
-  toolResultTokens,
-  turnLiveTokens,
-} from "./turn-stats"
+import { computeTurn, formatCount, pendingTally, settledReport } from "./turn-stats"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -301,109 +291,44 @@ export function Prompt(props: PromptProps) {
     return msg.slice(0, index)
   })
 
-  // The current turn: steps rooted at the last assistant message's parent user
-  // message. Tokens/cost land per step end (session.next.step.ended), so the
-  // running totals tick at step boundaries.
-  const turn = createMemo(() => {
-    if (!props.sessionID) return
-    return computeTurn(sessionMessages())
-  })
-  // Turn-liveness: the server's session status ("busy" covers streaming AND
-  // tool-execution gaps where no step is mid-stream), OR'd with a step being
-  // in flight so the counter starts the instant the stream begins.
-  const turnActive = createMemo(() => {
-    if (!props.sessionID) return false
-    const status = sync.data.session_status?.[props.sessionID]?.type
-    if (status !== undefined && status !== "idle") return true
-    return turn()?.active ?? false
-  })
-
-  // Frozen per-session baselines for the live tally: the DB cost and settled
-  // context captured at each session's turn START and held while it is busy.
-  // The live tally accumulates on this fixed start, so it never drops
-  // mid-turn (no step-boundary flicker) and only re-anchors to fresh DB
-  // values when the session goes idle. Keyed by session+turn-root so a new
-  // turn re-captures. `at` records which settled report the base was frozen
-  // from; `anchored` marks a mid-turn re-anchor (the base then already
-  // includes the current turn's prompt, so the caller drops its estimate).
-  const tallyBases = new Map<string, { tokens: number; at?: string; anchored?: boolean }>()
-  // Per-session held display: the last busy value, kept through the
+  // Per-session held display: the last busy cost, kept through the
   // busy->idle->DB-update window so the cost does not flicker back to the
   // lagging session-row value. Released when the DB catches up or the turn is
   // cancelled.
   const heldDisplays = new Map<string, number>()
 
-  // Live reasoning/output for the active turn: real tokens for completed
-  // steps + streamed-text estimates for the in-flight step, so the counters
-  // tick up continuously instead of jumping at step boundaries.
-  const liveTurn = createMemo(() => {
-    if (!turnActive()) return
-    const t = turn()
-    if (!t) return
-    return turnLiveTokens(t, (id) => sync.data.part[id])
-  })
-
-  // The live tally for ONE session: the frozen DB cost and context at its
-  // turn start, plus the turn's running spend estimate - the cached-input
-  // re-send of the (frozen context + prompt + streamed output) at the
-  // cache.read rate, plus the streamed (reasoning+output) at the output rate
-  // (the server's cost formula, session.ts). Busy sessions keep the frozen
-  // baseline + live tally; idle sessions report their current DB cost.
+  // The live tally for ONE session: the DB cost baseline plus the turn's
+  // running spend estimate, and the RUNNING TOTAL CONTEXT (latest-anchor, spec
+  // 13). Busy sessions add the anchor's not-yet-reported pending content; idle
+  // sessions report the settled report (the last step-finish's exact input
+  // side).
   const liveTallyForSession = (sessionID: string) => {
     const messages = sessionID === props.sessionID ? sessionMessages() : (sync.data.message[sessionID] ?? [])
     const t = computeTurn(messages)
     const busy = (sync.data.session_status?.[sessionID]?.type ?? "idle") !== "idle" || t.active
-    const key = sessionID + ":" + (t.parentID ?? "")
     const currentCost = sync.session.get(sessionID)?.cost ?? 0
-    const settledInput = settledReport(messages)?.input ?? 0
+    const getParts = (id: string) => sync.data.part[id]
+
+    // Latest-anchor context: the endpoint's reported input at every step-finish
+    // plus only the content since the anchor that no report carries yet (see
+    // pendingTally).
+    const pending = pendingTally(messages, t, getParts)
 
     // The in-flight step's spend estimate (the only thing a request pays for
-    // while it streams): the current request's input (settled input side +
-    // prompt + tool results) at the cache.read rate, plus the streamed
-    // (reasoning+output) at the output rate.
-    const getParts = (id: string) => sync.data.part[id]
+    // while it streams): the current request's input (the anchored context +
+    // the pending transcript content - both re-sent and cached) at the
+    // cache.read rate, plus the streamed (reasoning+output) at the output rate
+    // (the server's cost formula, session.ts).
     const inFlight = t.steps.findLast((s) => !s.time.completed)
-    const toolTokens = toolResultTokens(t.steps, getParts)
     let liveAmount = 0
     if (busy && inFlight) {
       const model = sync.data.provider.find((p) => p.id === inFlight.providerID)?.models[inFlight.modelID]
       const cost = model?.cost
       if (cost && (cost.output || cost.cache?.read)) {
-        const est = estimateStepTokens(inFlight, getParts(inFlight.id))
-        const streamed = est.reasoning + est.output
-        const prompt = messages.find((m): m is UserMessage => m.role === "user" && m.id === t.parentID)
-        const promptEst = promptTokenEstimate(prompt, getParts)
-        const contextNow = (settledReport(messages)?.input ?? 0) + promptEst + toolTokens
-        liveAmount = (contextNow * (cost.cache?.read ?? 0) + streamed * cost.output) / 1_000_000
+        liveAmount =
+          ((pending.anchored + pending.inputPending) * (cost.cache?.read ?? 0) + pending.streamedPending * cost.output) /
+          1_000_000
       }
-    }
-
-    // Context base: frozen settled input side at the turn start (for the
-    // running context display). Re-anchored mid-turn only when a NEWER settled
-    // report (this turn's first completed step) shows LESS context than the
-    // frozen base - the base was captured from a report that read the full
-    // pre-compaction context (the compaction summary request reads the whole
-    // conversation, so its own report stays high), and the post-compaction
-    // turn's real report corrects it. In the normal case the newer report
-    // grew (base + prompt) and the frozen base holds, keeping the monotonic
-    // display. The re-anchored base already includes the turn's prompt, so
-    // the caller drops its estimate (`anchored`).
-    let tokens = settledInput
-    let anchored = false
-    if (busy) {
-      const settled = settledReport(messages)
-      let base = tallyBases.get(key)
-      if (!base) {
-        base = { tokens: settledInput, at: settled?.id, anchored: false }
-        tallyBases.set(key, base)
-      } else if (shouldReanchorBase(base, settled)) {
-        base = { tokens: settled!.input, at: settled!.id, anchored: true }
-        tallyBases.set(key, base)
-      }
-      tokens = base.tokens
-      anchored = base.anchored ?? false
-    } else {
-      tallyBases.delete(key)
     }
 
     // Display = the DB baseline + the in-flight estimate, HELD through the
@@ -425,7 +350,12 @@ export function Prompt(props: PromptProps) {
     }
     if (busy) heldDisplays.set(sessionID, display)
 
-    return { cost: display, live: 0, tokens, toolTokens, anchored }
+    // Running total context: the anchor (the last report) + the pending
+    // content while busy; at rest just the report. Updates to the exact
+    // input side at every step-finish.
+    const contextTotal = pending.anchored + (busy ? pending.inputPending + pending.streamedPending : 0)
+
+    return { cost: display, live: 0, contextTotal }
   }
 
   // Subtree tally (the viewed session + all descendants), mirroring the cost
@@ -445,38 +375,19 @@ export function Prompt(props: PromptProps) {
     return { cost, live }
   })
 
-  // Estimated tokens of the turn's root user message (the prompt just
-  // submitted) - the input sent to the endpoint the instant the turn starts,
-  // which the frozen base does not yet include. Gives the footbar context
-  // its jump at turn start.
-  const turnPromptTokens = createMemo(() => {
-    const t = turn()
-    if (!t?.parentID) return 0
-    const prompt = sessionMessages().find((m): m is UserMessage => m.role === "user" && m.id === t.parentID)
-    return promptTokenEstimate(prompt, (id) => sync.data.part[id])
-  })
-
   // The usage slot shows the RUNNING TOTAL CONTEXT of the current view: the
-  // frozen base (the settled context at the turn's start - the "starting"
-  // number) plus the prompt just submitted (the input sent the instant the
-  // turn starts - the jump) plus the reasoning and output streamed so far in
-  // the turn, so it increments additively and lands on the new total when the
-  // turn ends. At rest it shows the real endpoint report from the turn's
+  // latest-anchor tally (spec 13) - the newest step-finish report's exact
+  // input side (adopted the instant it lands, so each semi-turn completion
+  // snaps to the endpoint's value) plus only the not-yet-reported content
+  // since it. At rest it shows the real endpoint report from the turn's
   // final step - selected by ANY usage (input/output/reasoning), not
   // `output > 0`, so reasoning-only or tool-call final steps can't leave
-  // stale values up. The cost is the subtree tally: the frozen DB costs at
-  // each session's turn start plus the live running tallies, so it counts up
-  // monotonically and only re-anchors to the fresh DB values when the turn
-  // ends.
+  // stale values up. The cost is the subtree tally: the DB costs at each
+  // session's turn start plus the live running tallies.
   const usage = createMemo(() => {
     if (!props.sessionID) return
     const msg = sessionMessages()
-    const active = turnActive()
-    const tally = liveTallyForSession(props.sessionID)
-    const live = active ? liveTurn() : undefined
-    const total = active
-      ? tally.tokens + (tally.anchored ? 0 : turnPromptTokens()) + (live ? live.reasoning + live.output : 0) + tally.toolTokens
-      : tally.tokens
+    const total = liveTallyForSession(props.sessionID).contextTotal
     if (total <= 0) return
     const settled = settledReport(msg)
     const model = settled
