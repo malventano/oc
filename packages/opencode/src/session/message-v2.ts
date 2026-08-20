@@ -549,6 +549,16 @@ export function stream(sessionID: SessionID) {
     // walk window is sent verbatim - evicting the oldest messages every turn
     // (pcap-verified: full ~200k re-prefill, cache.read pinned at the system
     // prompt). Without the tail loaded, the wire prefix shifts each request.
+    // VIRTUAL markers (188c, witnessed 2026-08-20 pcap-verified): a virtual
+    // compact (TUI undo/redo artifact, compaction.ts virtual()) writes a
+    // synthetic summary with summary:true + finish, so it populates the
+    // `completed` set exactly like a real pair. Counting it toward the 2-marker
+    // cap lets the walk STOP on two virtual markers sitting above the newest
+    // REAL pair, which then lands just past the 50-message page boundary and
+    // never enters the window - filterCompacted's real-pair re-insertion finds
+    // nothing and the seed loses the compaction summary, diverging from the
+    // cached chain (full ~47k re-prefill, cache.read 389k of 437k). Virtual
+    // markers must not count toward the cap nor set retainTarget.
     let compactionMarkers = 0
     let retainTarget: MessageID | undefined
     let retainLoaded = true
@@ -577,13 +587,15 @@ export function stream(sessionID: SessionID) {
         }
         if (
           item.info.role === "user" &&
-          item.parts.some((p): p is CompactionPart => p.type === "compaction") &&
+          item.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual !== true) &&
           completed.has(item.info.id)
         ) {
           if (retainTarget === undefined && compactionMarkers === 0) {
-            // Newest completed marker. Its tail_start_id is the boundary
+            // Newest completed REAL marker. Its tail_start_id is the boundary
             // filterCompacted must be able to reach for its deterministic
-            // retain cut to fire.
+            // retain cut to fire. Virtual markers are excluded so a run of
+            // TUI-undo compacts above the newest real pair cannot stop the
+            // walk before the real pair is reached (188c).
             const part = item.parts.find((p): p is CompactionPart => p.type === "compaction")
             retainTarget = part?.tail_start_id
             retainLoaded = retainTarget === undefined
