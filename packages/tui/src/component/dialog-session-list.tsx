@@ -87,7 +87,16 @@ export function DialogSessionList() {
       return session ? [session] : []
     })
     const query = search().trim().toLowerCase()
-    return [...result.map((session) => synced.get(session.id) ?? session), ...extra]
+    // The server-fetched rows are the AUTHORITATIVE source for ordering and
+    // grouping: they are re-queried from the DB every time the dialog opens, so
+    // `time.updated` (the sort key AND the group label) is the fresh "last
+    // active". The sync store must NOT shadow them - its copies of sessions
+    // hosted by OTHER oc instances go stale (a session's own instance keeps its
+    // store live; other shared-DB instances never receive events for it), so a
+    // shadow would group a row by an old date while the order sorts by fresh
+    // recency. The store is used only for the `extra` rows (current + pinned)
+    // that may fall outside the fetched page.
+    return [...result, ...extra]
       .filter((session) => !deleted().has(session.id))
       .filter((session) => !query || session.title.toLowerCase().includes(query))
   })
