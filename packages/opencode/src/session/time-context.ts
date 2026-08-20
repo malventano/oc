@@ -29,8 +29,10 @@ export function stampToolOutput(output: { output?: string; [key: string]: unknow
   output.output += `\n\n<system-reminder>${isoZ(Date.now())}</system-reminder>`
 }
 
-/** Threshold for the squash hint: ~2K tokens at ~4 chars/token (the squash-output tool's own bar). */
-export const SQUASH_HINT_MIN_CHARS = 8192
+/** Threshold for the squash hint: ~6.4K tokens at ~4 chars/token - the
+ * truncation ceiling (50 KiB, truncate.ts) caps in-chain outputs, so the
+ * hint targets the top of that band (~0.6% of a 1M-token window). */
+export const SQUASH_HINT_MIN_CHARS = 25_600
 
 /**
 * Append a squash-output hint reminder to very large tool outputs that lack

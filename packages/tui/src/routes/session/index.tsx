@@ -3417,6 +3417,10 @@ function LiveToolStream(props: {
   release?: boolean
   spinner?: boolean
   onClick?: () => void
+  // Content rendered between the BlockTool title and the streamed code
+  // (squash-output's label line) - distinct from `children`, which renders
+  // AFTER the code in the same box.
+  above?: JSX.Element
   children?: JSX.Element
 }) {
   const { theme, syntax } = useTheme()
@@ -3561,6 +3565,9 @@ function LiveToolStream(props: {
   )
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.spinner ?? props.streaming} onClick={props.onClick}>
+      {/* above: label/content between the title and the streamed code
+          (squash-output's "summary" line) - never shifts the code's margin. */}
+      {props.above}
       <Show when={props.content.length > 0}>
         <GrowOnly rows={rows()} release={props.release}>
           {code}
@@ -4368,6 +4375,10 @@ function TodoWrite(props: ToolProps) {
 
 function SquashOutput(props: ToolProps) {
   const { theme } = useTheme()
+  // Stream the model's summary argument like write/bash: the
+  // tool-input-delta -> state.raw mechanism feeds the live body while
+  // pending; the landed input takes over once the call lands.
+  const stream = useToolStream(props, { bodyKey: "summary", title: () => undefined })
   const results = createMemo(() =>
     Array.isArray(props.metadata.results)
       ? props.metadata.results.flatMap((item) => {
@@ -4382,11 +4393,22 @@ function SquashOutput(props: ToolProps) {
   )
   const count = createMemo(() => numberValue(props.metadata.count) ?? 0)
   const aggregateOriginal = createMemo(() => numberValue(props.metadata.aggregateOriginal))
-  const summaryLen = createMemo(() => numberValue(props.metadata.summaryLen) ?? 0)
   const maxTurnsBack = createMemo(() => numberValue(props.metadata.maxTurnsBack))
   const belowBoundary = props.metadata.belowBoundary === true
+  // Live summary length: the streamed body while pending/running (updates
+  // per delta), the final metadata value once the call lands.
+  const summaryLen = createMemo(() =>
+    stream.streaming() ? stream.display().length : (numberValue(props.metadata.summaryLen) ?? stream.display().length),
+  )
+  const active = () => stream.streaming() || stream.status() === "running"
 
+  const liveTitle = createMemo(() => {
+    const parts = ["Squashing output"]
+    if (summaryLen() > 0) parts.push(`${summaryLen().toLocaleString()} chars`)
+    return `# ${parts.join(" · ")}`
+  })
   const title = createMemo(() => {
+    if (active()) return liveTitle()
     const parts = [`Squashed ${count()} output${count() !== 1 ? "s" : ""}`]
     if (maxTurnsBack() !== undefined) parts.push(`${maxTurnsBack()} turn${maxTurnsBack() !== 1 ? "s" : ""} back`)
     if (aggregateOriginal() !== undefined) {
@@ -4400,25 +4422,34 @@ function SquashOutput(props: ToolProps) {
     return `# ${parts.join(" · ")}`
   })
 
+  const completed = () => !stream.streaming()
 
   return (
     <Switch>
-      <Match when={count() > 0}>
-        <BlockTool title={title()} part={props.part}>
-          <box flexDirection="column" gap={1}>
-            <box flexDirection="row" gap={1}>
-              <text fg={theme.textMuted}>summary:</text>
-              <text fg={theme.text}>{stringValue(props.input.summary) ?? props.output ?? ""}</text>
-            </box>
-
-            <Show when={belowBoundary}>
-              <text fg={theme.warning}>below compaction boundary (applies if it re-enters the live chain)</text>
-            </Show>
-          </box>
-        </BlockTool>
+      <Match when={stream.streaming() || count() > 0}>
+        {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
+            completed - the summary's code element persists, so nothing
+            remounts at completion. The "summary" label sits ABOVE the text
+            (via the `above` slot) instead of inline, so it never shifts
+            the content's left margin. */}
+        <LiveToolStream
+          part={props.part}
+          title={title()}
+          streaming={stream.streaming()}
+          content={stream.display()}
+          // Prose, not code: stream in its final color (white) - no
+          // textMuted -> text flip at completion.
+          fg={theme.text}
+          release={completed()}
+          gutter={false}
+          above={<text fg={theme.textMuted}>summary</text>}
+        >
+          <Show when={completed() && belowBoundary}>
+            <text fg={theme.warning}>below compaction boundary (applies if it re-enters the live chain)</text>
+          </Show>
+        </LiveToolStream>
       </Match>
       <Match when={true}>
-
         <InlineTool icon="♻" pending="Squashing output..." failure="Squash failed" complete={false} part={props.part}>
           Squashing output
         </InlineTool>
