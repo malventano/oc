@@ -656,65 +656,26 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
 
 export function filterCompacted(msgs: Iterable<WithParts>) {
   const all = [...msgs]
-  const result = [] as WithParts[]
-  const completed = new Set<string>()
-  let retain: MessageID | undefined
-  for (const msg of all) {
-    result.push(msg)
-    if (retain) {
-      if (msg.info.id === retain) break
-      continue
-    }
-    if (msg.info.role === "user" && completed.has(msg.info.id)) {
-      const part = msg.parts.find((item): item is CompactionPart => item.type === "compaction")
-      if (!part) continue
-      if (!part.tail_start_id) break
-      retain = part.tail_start_id
-      if (msg.info.id === retain) break
-      continue
-    }
-    if (msg.info.role === "user" && completed.has(msg.info.id) && msg.parts.some((part) => part.type === "compaction"))
-      break
-    if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
-      completed.add(msg.info.parentID)
-  }
-  result.reverse()
-
-  const compactionIndex = result.findLastIndex(
-    (msg) =>
-      msg.info.role === "user" &&
-      msg.parts.some((item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined),
-  )
-  const compaction = result[compactionIndex]
-  const part = compaction?.parts.find(
-    (item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined,
-  )
-  const summaryIndex = compaction
-    ? result.findIndex(
-        (msg, index) =>
-          index > compactionIndex &&
-          msg.info.role === "assistant" &&
-          msg.info.summary &&
-          msg.info.parentID === compaction.info.id,
-      )
-    : -1
-  const tailIndex = part?.tail_start_id ? result.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
-  const ordered = (() => {
-    if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
-      return [
-        ...result.slice(compactionIndex, summaryIndex + 1),
-        ...result.slice(tailIndex, compactionIndex),
-        ...result.slice(summaryIndex + 1),
-      ]
-    }
-    return result
-  })()
+  // Serial-fold model: the raw log IS the event stream (message.time_created
+  // ascending: marker, summary, tail, continue all land at their wall-clock
+  // positions). Compaction is a fold, not a re-sort: the NEWEST completed
+  // real pair is lifted to the front (summary represents everything before
+  // its boundary), everything at-or-after the boundary follows in physical
+  // order, and older pairs stay at their physical positions inside the tail.
+  //
+  // The previous implementation walked newest-first, kept a 2-marker retain
+  // slice, then spliced the newest marker+summary to the front via a
+  // conditional `ordered` block (tailIndex < compactionIndex &&
+  // summaryIndex > compactionIndex). When those conditions did NOT hold it
+  // returned the raw sliding window verbatim - a second, different shape that
+  // diverged from the spliced chain between requests (full prefix re-prefill,
+  // e.g. the guard-driven auto-compaction continue miss, 2026-08-20). The
+  // fold always emits the newest completed pair first by construction, so the
+  // branch is gone and byte stability is structural.
+  const chronological = [...all].reverse() // oldest first
 
   // Virtual compaction markers and their synthetic summaries are TUI
-  // artifacts: they must never reach the model request. The retain cut above
-  // targets the newest marker's tail; when that tail is newer than the last
-  // REAL compaction pair (a virtual compact subtracting another marker), the
-  // pair is cut too, so it is re-inserted at the front of the result.
+  // artifacts: they must never reach the model request.
   const virtualIds = new Set<string>()
   for (const msg of all) {
     if (msg.info.role !== "user") continue
@@ -724,23 +685,72 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   const isVirtualArtifact = (m: WithParts) =>
     virtualIds.has(m.info.id) || (m.info.role === "assistant" && virtualIds.has(m.info.parentID ?? ""))
 
-  // Find the NEWEST COMPLETED real (non-virtual) compaction pair: stream
-  // order is newest-first, so the first real marker WITH a finished summary
-  // is the newest completed pair. An in-flight marker (the compaction turn
-  // itself - no summary yet) must NOT satisfy the re-insertion: it is always
-  // already in the output, so the unshift would never fire and the completed
-  // pair dropped by the virtual cut stays dropped - the request then
-  // diverges from the cached chain at the first message (full prefix miss on
-  // the compaction prompt submission). Only the newest pair can be cut by
-  // the retain logic above, so older pairs need no re-insertion.
-  let realMarker: WithParts | undefined
-  let realSummary: WithParts | undefined
-  const chronological = [...all].reverse()
+  // Find the NEWEST COMPLETED compaction pair (real OR virtual - stream order
+  // is newest-first, so the first marker WITH a finished summary is the
+  // newest). A virtual compact (TUI undo/redo artifact) advances the retained
+  // window exactly like a real one: it sets the boundary the fold starts
+  // from, and its own marker+note (synthetic summary) are then filtered out
+  // of the emitted tail by the virtual cut below. An in-flight marker (the
+  // compaction turn itself - no summary yet) must NOT satisfy the lift: it
+  // has no summary to represent the prefix, and stays in place so the summary
+  // request still sees it (inject-method contract).
+  let newestMarker: WithParts | undefined
+  let newestSummary: WithParts | undefined
   for (const msg of all) {
     if (msg.info.role !== "user") continue
-    if (!msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual !== true)) {
-      continue
+    if (!msg.parts.some((p): p is CompactionPart => p.type === "compaction")) continue
+    const summary = chronological.find(
+      (s) => s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id,
+    )
+    if (!summary) continue
+    newestMarker = msg
+    newestSummary = summary
+    break
+  }
+
+  const candidate: WithParts[] = []
+  if (newestMarker && newestSummary) {
+    // Fold the effective newest completed pair to the front: a real marker
+    // renders as the "[Compacted summary of the prior conversation]"
+    // placeholder, its summary carries the actual text. A virtual pair is
+    // lifted the same way but its marker+note are dropped by the single
+    // virtual cut applied below. Both are skipped when the fold reaches
+    // their physical positions.
+    candidate.push(newestMarker, newestSummary)
+    const liftedMarker = newestMarker.info.id
+    const liftedSummary = newestSummary.info.id
+    const boundary = newestMarker.parts.find(
+      (p): p is CompactionPart => p.type === "compaction" && p.tail_start_id !== undefined,
+    )?.tail_start_id
+    let started = boundary === undefined
+    for (const msg of chronological) {
+      if (msg.info.id === liftedMarker || msg.info.id === liftedSummary) continue
+      if (!started) {
+        if (msg.info.id === boundary) started = true
+        else continue // everything before the boundary is folded into the summary
+      }
+      candidate.push(msg)
     }
+  } else {
+    // No completed pair: the whole chain is live, chronological verbatim.
+    candidate.push(...chronological)
+  }
+  // One virtual cut over the whole candidate: virtual markers, their
+  // synthetic summaries, and any virtual-tail messages never reach the model.
+  const out = candidate.filter((m) => !isVirtualArtifact(m))
+
+  // When the effective newest pair was VIRTUAL, the cut above dropped it along
+  // with its synthetic note, and if its tail_start_id sat at/past the newest
+  // REAL pair (a virtual compact subtracting another marker), that real pair
+  // was cut too. Its summary is still what represents the pre-boundary
+  // history to the model, so re-insert it at the front (marker + summary).
+  // Only the NEWEST real pair can be cut this way - older pairs sit below in
+  // the retained region and are never dropped by the folding boundary.
+  let realMarker: WithParts | undefined
+  let realSummary: WithParts | undefined
+  for (const msg of all) {
+    if (msg.info.role !== "user") continue
+    if (!msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual !== true)) continue
     const summary = chronological.find(
       (s) => s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id,
     )
@@ -749,8 +759,6 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
     realSummary = summary
     break
   }
-
-  const out = ordered.filter((m) => !isVirtualArtifact(m))
   if (realMarker && !out.some((m) => m.info.id === realMarker!.info.id)) {
     out.unshift(...(realSummary ? [realMarker, realSummary] : [realMarker]))
   }
