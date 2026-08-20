@@ -226,17 +226,24 @@ const lowerMessage = (msg: V3Message): Record<string, unknown>[] => {
     return [{ role: "user", content: items }]
   }
   if (msg.role === "tool") {
-    const first = content.find((p) => p.type === "tool-result")
-    if (first) {
-      return [
-        {
-          type: "function_call_output",
-          call_id: String(first.toolCallId ?? ""),
-          output: toolResultString(first.output),
-        },
-      ]
+    // A V3 tool message carries an array of tool-result parts - one per
+    // completed (possibly concurrent) tool call. The responses wire needs one
+    // function_call_output PER result: previously `content.find()` kept only
+    // the FIRST part, silently dropping every other result from the seed and
+    // diverging the render from the cached completions prefix (~28.9K tokens
+    // in on the oc-test-8 run, pcap-confirmed 2026-08-20 - a full ~696K-token
+    // miss on the first responses prompt after the completions->responses
+    // switch). The chat transport emits one `role:"tool"` message per result,
+    // so this must emit one item per part to stay byte-identical.
+    const results = content.filter((p) => p.type === "tool-result")
+    if (results.length === 0) {
+      return [{ type: "function_call_output", call_id: "", output: "" }]
     }
-    return [{ type: "function_call_output", call_id: "", output: "" }]
+    return results.map((r) => ({
+      type: "function_call_output",
+      call_id: String(r.toolCallId ?? ""),
+      output: toolResultString(r.output),
+    }))
   }
   // assistant: flatten into top-level items (reasoning, then message, then
   // function calls - the server's stored output item order).
