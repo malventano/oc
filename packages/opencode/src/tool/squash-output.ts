@@ -155,6 +155,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           const results = []
           let maxTurnsBack = 0
           let maxPartsBack = 0
+          let maxIntervening = 0
           let belowBoundary = false
           for (const u of updates) {
             const turnsBackRow = yield* db
@@ -167,6 +168,16 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
               .pipe(Effect.orDie)
             const partsBack = (partsBackRow as { c: number }).c
             maxPartsBack = Math.max(maxPartsBack, partsBack)
+            // Intervening TOOL work between the target and this squash - the
+            // LATE signal. Structural parts (step-start/step-finish/reasoning/
+            // the intro text/this call itself) always land after any target,
+            // so counting ALL parts flagged every in-turn squash as late. Only
+            // real tool calls (or a cross-turn squash) mean the moment passed.
+            const interveningRow = yield* db
+              .get(sql`SELECT COUNT(*) AS c FROM part p WHERE p.session_id = ${sessionID} AND json_extract(p.data, '$.type') = 'tool' AND json_extract(p.data, '$.tool') NOT IN (${SELF_ID}, ${SELF_LEGACY}) AND p.time_created > ${u.row.time_created}`)
+              .pipe(Effect.orDie)
+            const intervening = (interveningRow as { c: number }).c
+            maxIntervening = Math.max(maxIntervening, intervening)
             if (cutoff > 0 && u.row.time_created <= cutoff) belowBoundary = true
 
             u.data.state.output = params.summary + u.stamp
@@ -187,7 +198,10 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           const lines = results
             .map((r) => `Squashed ${r.tool} output (${r.originalLen} chars → ${params.summary.length} char summary)`)
             .join("\n")
-          const late = maxPartsBack > 2 ? " LATE SQUASH - issue squash-output in the message right after the target output arrives." : ""
+          const late =
+            maxTurnsBack > 0 || maxIntervening > 0
+              ? " LATE SQUASH - issue squash-output in the message right after the target output arrives."
+              : ""
           const note = `\n\nDepth: ${maxTurnsBack} user turn(s) back of ${totalTurns}; target ${maxPartsBack} part(s) behind the live edge - the rewrite invalidates the cached prefix from the target forward.${late}`
           const boundaryNote = belowBoundary
             ? `\nBelow the compaction boundary: not in the current prompt; applies if/when it re-enters the live chain.`
