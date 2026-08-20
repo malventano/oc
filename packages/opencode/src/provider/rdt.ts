@@ -35,17 +35,19 @@ import type { Provider } from "@/provider/provider"
 type ChainState = {
   responseId: string
   /** Number of non-system messages the server holds (the chain length).
-   *  This is the count of REQUEST input messages (N). A completed no-tool-call
-   *  response adds ONE final assistant row to the server chain; `advanceBy`
-   *  records that so the next delta slice skips it (hwm/prefixHash stay at the
-   *  N known items - the +1 row's bytes aren't stable here). */
+   *  This is the count of REQUEST input messages (N). Every completed response
+   *  adds its full assistant output row to the server chain; `advanceBy` is
+   *  always 1 so the next delta slice starts at the tool result / next user
+   *  turn (hwm/prefixHash stay at the N known items - the +1 row's bytes aren't
+   *  stable here). */
   hwm: number
   /** sha256 over the first hwm non-system messages (what the server holds). */
   prefixHash: string
-  /** 1 when the last accepted response added a final (no-tool-call) assistant
-   *  row - the next request's delta must skip it (it is already in the server
-   *  chain). 0 for tool-call responses (the call row stays in the resend
-   *  window - resubmit semantics). */
+  /** Always 1 (2026-08-20 deep-dive finding): the server reconstructs the FULL
+   *  previous output (reasoning + text + tool calls) in construct_input_messages,
+   *  so the client's next delta starts at the tool result / next user turn and
+   *  never re-sends the assistant row. Re-sending it would double-count the
+   *  assistant turn against the server's own re-add. */
   advanceBy: number
   /**
    * Chain identity: sha256 of the newest compaction summary's output (the
@@ -323,7 +325,7 @@ const mapUsage = (u: Record<string, unknown> | undefined): LanguageModelV3Usage 
 // ---------------------------------------------------------------------------
 
 const makeStreamParser = (
-  finalize: (responseId: string | undefined, advanceByNext: boolean) => void,
+  finalize: (responseId: string | undefined) => void,
 ): TransformStream<Uint8Array, LanguageModelV3StreamPart> => {
   let buffer = ""
   let inReasoning = false
@@ -464,12 +466,19 @@ const makeStreamParser = (
       }
       case "response.completed": {
         responseId = (ev.response ?? {}).id
-        // advanceBy: a completed response WITHOUT a tool call is a final
-        // assistant message - the next request must NOT re-send it (the server
-        // chain already holds it). A tool-call response leaves the call row in
-        // the resend window (the next request re-sends the tool call + its
-        // result so the server chain catches up - resubmit semantics).
-        finalize(responseId, !sawToolCall)
+        // advanceBy is 1 for ALL responses (2026-08-20, deep-dive finding):
+        // the server's chained reconstruction (construct_input_messages) re-adds
+        // the FULL previous output - reasoning + text + tool calls - via
+        // construct_chat_messages_with_tool_call, so the client must NOT re-send
+        // the assistant row for ANY turn (tool-call rows included). Re-sending it
+        // would double-count the assistant turn against the server's own re-add.
+        // The delta after any completed response is therefore just
+        // [tool result (if any), new user turn]. Verified: with the server full
+        // re-add, the chained reconstruction is byte-identical to a full-send.
+        // (Previously advanceBy was 0 for tool-call responses - resubmit
+        // semantics - because the server's OLD text-only re-add dropped the
+        // reasoning + function_call rows and the client had to re-send them.)
+        finalize(responseId)
         const finishReason: LanguageModelV3FinishReason = sawToolCall
           ? { unified: "tool-calls", raw: undefined }
           : { unified: "stop", raw: undefined }
@@ -753,13 +762,16 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         if (state !== undefined && chained) {
           setState(ctx.sessionID, { ...state, failures: 0 })
         }
-        const finalize = (responseId: string | undefined, advanceByNext: boolean) => {
+        const finalize = (responseId: string | undefined) => {
           if (responseId !== undefined) {
             setState(ctx.sessionID, {
               responseId,
               hwm: inputMsgs.length,
               prefixHash: hashInput(inputMsgs),
-              advanceBy: advanceByNext ? 1 : 0,
+              // Always 1 (see the response.completed comment above): the server
+              // reconstructs the full assistant row, so the client delta starts
+              // at the tool result / next user turn, never the assistant row.
+              advanceBy: 1,
               chainId,
               modelID: ctx.modelID,
               failures: 0,
