@@ -585,6 +585,14 @@ export function stream(sessionID: SessionID) {
         ) {
           completed.add(item.info.parentID)
         }
+        // 188b tail-reachability: retainLoaded flips true when the NEWEST
+        // completed real marker's tail_start_id MESSAGE is loaded - whatever
+        // kind of message it is (a marker id or a plain user message). This
+        // MUST be checked for every item, not inside the marker branch below:
+        // retainTarget is a tail_start_id, which is almost always a plain
+        // message, so an inner check never fires and the walk pages the whole
+        // session (2026-08-20, pcap/sim verified: 197 pages -> 5 pages).
+        if (retainTarget !== undefined && item.info.id === retainTarget) retainLoaded = true
         if (
           item.info.role === "user" &&
           item.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual !== true) &&
@@ -600,10 +608,15 @@ export function stream(sessionID: SessionID) {
             retainTarget = part?.tail_start_id
             retainLoaded = retainTarget === undefined
           }
-          if (retainTarget !== undefined && item.info.id === retainTarget) retainLoaded = true
           if (compactionMarkers < 2) compactionMarkers++
         }
       }
+      // Stop once TWO completed real markers are loaded AND the newest one's
+      // tail_start_id is reachable. The tail-reachability bound is what 188b
+      // intended (the pre-fix dead placement let the walk page the whole
+      // session, ~197 pages on the 2026-08-20 session -> 25). The 2nd marker
+      // stays as the safety margin that keeps short-of-tail virtual/in-flight
+      // edge cases from truncating the window (188c/0194 regression tests).
       if (retainLoaded && compactionMarkers >= 2) break
       if (!next.more || !next.cursor) break
       before = next.cursor
