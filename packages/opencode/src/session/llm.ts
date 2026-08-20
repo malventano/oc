@@ -129,7 +129,12 @@ const live: Layer.Layer<
           sessionID: input.sessionID,
           modelID: input.model.id,
           baseURL: String(item.options?.baseURL ?? ""),
-          apiKey: info !== undefined && "key" in info ? info.key : undefined,
+          apiKey:
+            info !== undefined && "key" in info
+              ? info.key
+              : typeof item.options?.apiKey === "string"
+                ? item.options.apiKey
+                : undefined,
           providerKey: input.model.providerID.split(".")[0],
           headers: prepared.headers,
         })
