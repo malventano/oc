@@ -106,8 +106,11 @@ export type StallDetection = {
    * Character offset in the text where the offending tail starts - the
    * de-poison trim point (0203): everything at/after trimAt is removed from
    * the stored text before the turn continues, so the model's context is
-   * clean of the stale reminder artifact. null = nothing to trim (silent has
-   * no text, let-me has a valid intent statement worth keeping).
+   * clean of the stale reminder artifact. For eaten-call/stray-closer the
+   * trim extends back to the outermost opener of a CONTIGUOUS leaked markup
+   * block so the whole leaked call leaves context (0216); closers-only /
+   * inline leaks fall back to the closer index. null = nothing to trim
+   * (silent has no text, let-me has a valid intent statement worth keeping).
    */
   trimAt: number | null
 }
@@ -121,6 +124,36 @@ export type StallDetection = {
 // stray-closer. `\s*` between the three tags + `\s*$` at the end covers both
 // the contiguous and the multi-line shapes.
 const EATEN_CALL_END = /<\/parameter>\s*<\/invoke>\s*<\/tool_calls>\s*$/
+
+// Strip the WHOLE leaked call, not just its closed tail: walk back from the
+// stranded closer over the contiguous markup lines (each starts with '<' and
+// ends with '>') to the start of the outermost opener. The retained message
+// ends at clean prose instead of a half-DSML prefix (`<tool_calls><invoke>...
+// <parameter name="command">"cmd"`) that a text part can never turn into a real
+// call - the model re-emits the call fresh from the prose (0216, recorded
+// evidence: msg_01e18e029-era RDT leaks). Falls back to the closer index when
+// the marking is not contiguous (closers-only eaten-call / inline leaks).
+function wholeCallTrimAt(text: string, closeIndex: number): number {
+  // The closer chain can sit MID-line (single-line `<parameter ...>cmd</parameter>`),
+  // so walk by TERMINATING newlines: each newline index t terminates exactly one
+  // line (content [lastNewlineBefore(t)+1, t)); stepping t up walks the block's
+  // lines. Back-to-back blank lines are distinct lines and cannot dead-loop.
+  let t = text.indexOf("\n", closeIndex)
+  if (t === -1) t = text.length
+  let blockStart = closeIndex
+  for (let i = 0; i < 80; i++) {
+    const p = text.lastIndexOf("\n", t - 1)
+    const lineStart = p === -1 ? 0 : p + 1
+    const line = text.slice(lineStart, t)
+    if (!/^\s*<.*>\s*$/.test(line)) break
+    blockStart = lineStart
+    if (lineStart === 0) break
+    const prevT = text.lastIndexOf("\n", lineStart - 1)
+    if (prevT === -1) break
+    t = prevT
+  }
+  return blockStart
+}
 
 // Any other closing tag at the very end of the text: degenerate-end family
 // (gibberish with a stray fragment) or an unrecognized remnant shape. Since
@@ -182,9 +215,10 @@ export function detect(
       signature: "eaten-call",
       detail: "stranded tool-call markup in response (eaten tool call)",
       redirect: STALL_REDIRECT_EATEN,
-      // Trim from the chain opener (index 0 of the match) so the whole
-      // stranded block leaves the context.
-      trimAt: eaten.index,
+      // Trim the whole leaked call (extended back to the outermost opener,
+      // 0216) so the whole stranded block - openers + args + closers - leaves
+      // context; falls back to the closer chain when nothing is contiguous.
+      trimAt: wholeCallTrimAt(norm, eaten.index),
     }
   }
   const stray = STRAY_CLOSER_END.exec(norm)
@@ -193,7 +227,7 @@ export function detect(
       signature: "stray-closer",
       detail: "response ended with a stray markup fragment",
       redirect: STALL_REDIRECT_STRAY_CLOSER,
-      trimAt: stray.index,
+      trimAt: wholeCallTrimAt(norm, stray.index),
     }
   }
   const colon = /:\s*$/.exec(text)
