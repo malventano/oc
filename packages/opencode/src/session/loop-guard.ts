@@ -61,6 +61,27 @@ const LOW_DIVERSITY_MAX_UNIQUE = 10
 // 2026-08-15 case hit 26-52 per window; legit output has zero.
 const FFFD_BURST_THRESHOLD = 10
 
+// Short-frame "let me" intent recycling (2026-08-21, evidence msg_01af49bbe...):
+// a loop whose frames are UNDER the 60-char segment floor escapes every other
+// signature (verified-replay miss in the 2026-08-19 "let me" loop - 600
+// segments all < 60 chars, alternating 4 phrasings, 15,207 chars, guard silent
+// until a manual abort). The tell is the recycled INTENT DECLARATION framing
+// ("Let me check / look / inspect / ..."), not trigram similarity (alternating
+// frames share a prefix, not trigrams) nor raw-letter diversity (17 > 10).
+const SHORT_FRAME_MIN_NORM = 12 // "let me check" -> 12 normalized chars
+const SHORT_FRAME_MAX_NORM = 59 // just under SEGMENT_MIN_NORM_CHARS
+const SHORT_FRAME_WINDOW = 12 // rolling short-segments window
+const SHORT_FRAME_DENSITY = 0.75 // >= 9 of 12 short frames start with intent
+const SHORT_FRAME_MAX_DISTINCT = 12 // how many phrase-shapes may recycle
+const SHORT_FRAME_MAX_SPAN = 16 // the intent frames must be CONTIGUOUS (window
+// spans <= 16 segments of the stream). Discriminates a real recycling loop
+// (frames back-to-back, span ~11-12) from legit interspersed "let me X" that
+// alternates with tool output / prose (research message: frames span 134
+// segments; code-use narration: dozens apart). Without this, legit work that
+// uses "let me look at X / let me read Y / let me grep Z" as running narration
+// over real tool actions would fire.
+const INTENT_PREFIX = /^let me\b/
+
 // A concrete reference the model is actually reasoning about: code span,
 // dotted member, multi-segment path, snake/camel/Pascal identifier. A segment
 // introducing a NEW one resets the lexical-stall run (spares genuine per-file
@@ -174,6 +195,19 @@ class TextLoopDetector {
   #lexStallRun = 0
   #lexRunStart = 0
   #anchorWindow: Set<string>[] = []
+  // Short-frame "let me" intent-recycling window (2026-08-21): rolling low of
+  // raw offset + normalized form per short segment (12-59 norm chars), so the
+  // handler below can measure recycled-intent density over a saturated window.
+  #shortFrames: { start: number; norm: string; seg: number }[] = []
+  // Monotonic segment counter shared by the short-frame path and the near-dup
+  // path, so `seg` puts every emitted segment on one timeline (discriminates
+  // contiguous recycling from interspersed legit work).
+  #shortSegCount = 0
+  // The raw offset where the current contiguous run of intent frames began,
+  // so the loop-trim anchor de-posions the WHOLE looped region (not just the
+  // oldest window-retained frame). Reset when an intent frame is followed by
+  // a non-intent short segment.
+  #shortRunStart: number | null = null
 
   push(delta: string): LoopHit | null {
     if (!delta) return null
@@ -258,6 +292,9 @@ class TextLoopDetector {
     this.#lexStallRun = 0
     this.#lexRunStart = 0
     this.#anchorWindow = []
+    this.#shortFrames = []
+    this.#shortSegCount = 0
+    this.#shortRunStart = null
   }
 
   #consumeSegment(raw: string, start: number): LoopHit | null {
@@ -266,7 +303,47 @@ class TextLoopDetector {
     // would inflate near-duplicate similarity into false stalls.
     const segment = raw.replace(/^[ \t]*#{1,6}[ \t].*$/gm, "").replace(/^[ \t]*\*{2,3}.+?\*{2,3}[ \t]*$/gm, "")
     const normalized = normalizeSegment(segment)
-    if (normalized.length < SEGMENT_MIN_NORM_CHARS) return null
+    // Every consumed chunk is one tick on the shared segment timeline (used by
+    // the short-frame contiguity gate to tell back-to-back recycling from
+    // interspersed tool work / prose).
+    this.#shortSegCount++
+    if (normalized.length < SEGMENT_MIN_NORM_CHARS) {
+      // Short-frame path: segments under the near-dup floor never enter the
+      // cluster window, so loops built from short repeated frames WOULD escape
+      // entirely (2026-08-19 evidence: 600 segments, all 12-59 chars, 15,207
+      // raw chars, guard silent). Measure recycled intent-declaration density
+      // here instead - the tell the phrase-recycling loop shares even though
+      // its frames alternate wording and its raw letters stay > 10 distinct.
+      if (normalized.length >= SHORT_FRAME_MIN_NORM && normalized.length <= SHORT_FRAME_MAX_NORM) {
+        const isIntent = INTENT_PREFIX.test(normalized)
+        // Track the contiguous intent run start (the de-poison anchor). Any
+        // non-intent short segment inside the run breaks it - the loop signal
+        // is intent frames back-to-back, not scattered ones.
+        if (!isIntent) this.#shortRunStart = null
+        else if (this.#shortRunStart === null) this.#shortRunStart = start
+        this.#shortFrames.push({ start, norm: normalized, seg: this.#shortSegCount })
+        if (this.#shortFrames.length > SHORT_FRAME_WINDOW) this.#shortFrames.shift()
+        if (this.#shortFrames.length >= SHORT_FRAME_WINDOW) {
+          const intent = this.#shortFrames.filter((f) => INTENT_PREFIX.test(f.norm)).length
+          const distinct = new Set(this.#shortFrames.map((f) => f.norm)).size
+          const span = this.#shortFrames[this.#shortFrames.length - 1].seg - this.#shortFrames[0].seg
+          if (
+            intent >= SHORT_FRAME_DENSITY * SHORT_FRAME_WINDOW &&
+            distinct <= SHORT_FRAME_MAX_DISTINCT &&
+            span <= SHORT_FRAME_MAX_SPAN
+          ) {
+            return {
+              hit: `${intent} of the last ${SHORT_FRAME_WINDOW} sentence fragments start with an intent declaration, recycle only ${distinct} phrasings, and are contiguous over ${span} segments`,
+              // The whole contiguous intent run, not just the oldest window
+              // frame, is the looped region - trim from where the run began.
+              trimAt: this.#shortRunStart ?? this.#shortFrames[0].start,
+            }
+          }
+        }
+      }
+      // Non-short or low-density short content: no loop signal.
+      return null
+    }
 
     const fingerprint = trigramShingles(normalized)
     let cluster = 1
