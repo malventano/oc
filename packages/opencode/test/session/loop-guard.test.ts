@@ -184,4 +184,100 @@ describe("LoopGuard new signatures (2026-08-15 evidence)", () => {
   })
 })
 
+describe("LoopGuard short-frame intent recycling (2026-08-21 evidence)", () => {
+  // The 2026-08-19 evidence loop (msg_01af49bbe001IpZAtqDjZ5iT3H): 15,207 raw
+  // chars, ~600 segments all under the 60-char near-dup floor, alternating a
+  // handful of "let me check/look/inspect" phrasings. Escaped every other
+  // signature (replay-verified null); only the recycled intent-declaration
+  // density catches it.
+  const INTENT_FRAMES = [
+    "Let me check the marker's parts.",
+    "Let me look at the marker parts.",
+    "Let me check.",
+    "Let me look.",
+    "Let me inspect the marker.",
+    "Let me check the marker message.",
+  ]
+
+  test("fires when 9+ of 12 short frames recycle intent-declarations", () => {
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 14; i++) {
+      hit = guard.pushText(INTENT_FRAMES[i % INTENT_FRAMES.length] + SEP)
+    }
+    expect(hit?.hit).toContain("intent declaration")
+    expect(hit?.hit).toContain("recycle only")
+    // trimAt = the first short frame's offset (0 here, no prefix; the segment
+    // math rounds by trailing-boundary whitespace, so a handful of chars is
+    // fine) - the loop runs from the very first intent frame, so the de-poison
+    // anchor drops the whole looped region while keeping the preserved prefix.
+    expect(typeof hit?.trimAt).toBe("number")
+    expect(hit!.trimAt).toBeLessThan(8)
+  })
+
+  test("does not fire on spaced-out legit short frames (window span gate)", () => {
+    const guard = LoopGuard.make()
+    // The research-message class: "Let me look at X / Let me read Y / Let me
+    // grep Z" used as RUNNING NARRATION over real interspersed tool work. The
+    // intent ratio can climb toward the bar, but the frames are spread far
+    // apart (each followed by several prose/code segments), so the contiguity
+    // gate (span <= 16 segments) refuses to fire. Genuine recycling loops keep
+    // the frames back-to-back (span ~11-12) and must NOT be distingushed to
+    // silence.
+    const spanApart = [
+      "Let me look at the transform file.",
+      "The transformed payload carries the epoch reference in its metadata.",
+      "Verifying the types definition against the schema export.",
+      "Let me read the full type table.",
+      "The annotation block sits after the model config section.",
+      "Let me check the config file layout.",
+      "Resolving the provider options from the merged config.",
+      "Let me search for the correct entry point.",
+      "The bootstrap order handles lazy loading of the services.",
+      "Let me read all the files that construct the request.",
+      "Cross-referencing with the session store path.",
+      "Let me look for the file that owns the prompt assembly.",
+    ]
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 3; i++) {
+      for (const segment of spanApart) {
+        hit = guard.pushText(segment + SEP)
+        if (hit) break
+      }
+      if (hit) break
+    }
+    expect(hit).toBeNull()
+  })
+
+  test("contiguity is the discriminator: contiguous frame clusters still fire at high distinct (loop-209 class)", () => {
+    const guard = LoopGuard.make()
+    // The 2026-08-19 209-lets loop recycled ~12 distinct phrasings - above the
+    // old 6-bar that would have missed it - but kept them CONTIGUOUS (span ~12).
+    const varied = [
+      "Let me check the subagent artifacts and bug folder structure.",
+      "Let me check the rest of the tmp opencode artifacts.",
+      "Let me see the tsv dir artifacts and bug folder.",
+      "Let me look at the remaining artifacts.",
+      "Let me check tmp opencode subdirs and the bug fodder.",
+      "Let me see the rest.",
+      "Let me check the remaining tmp items and bug dir.",
+      "Let me check subagent artifacts and bug folder.",
+      "Let me see the rest of tmp opencode artifacts.",
+      "Let me get the subagent outputs and bug folder.",
+      "Let me list the relevant dirs.",
+      "Let me check.",
+    ]
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 2; i++) {
+      for (const frame of varied) {
+        hit = guard.pushText(frame + SEP)
+        if (hit) break
+      }
+      if (hit) break
+    }
+    expect(hit?.hit).toContain("intent declaration")
+    expect(hit?.hit).toContain("contiguous over")
+  })
+})
+
 
