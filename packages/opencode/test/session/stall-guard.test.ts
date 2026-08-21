@@ -48,8 +48,27 @@ describe("stall-guard detect", () => {
     const hit = StallGuard.detect("stop", text, false)
     expect(hit).not.toBeNull()
     expect(hit!.signature).toBe("eaten-call")
-    // trimAt = the chain opener, so the whole stranded block leaves context
-    expect(hit!.trimAt).toBe(text.indexOf("</parameter>"))
+    // trimAt = the outermost opener, so the whole leaked call leaves context
+    expect(hit!.trimAt).toBe(text.indexOf("<tool_calls"))
+  })
+
+  test("eaten-call / stray-closer: contiguous leaked call trims to the whole block (0216)", () => {
+    const text =
+      "Let me verify the install.\n\n<tool_calls>\n<invoke name=\"bash\">\n<parameter name=\"command\" string=\"true\">cd /root/oc && cat status.json</parameter>\n</invoke>\n</tool_calls>"
+    const hit = StallGuard.detect("stop", text, false)!
+    expect(hit.signature).toBe("eaten-call")
+    // the openers AND the command leave context; the prose before the block survives
+    expect(hit.trimAt).toBe(text.indexOf("<tool_calls"))
+    expect(text.slice(0, hit.trimAt!)).toBe("Let me verify the install.\n\n")
+    expect(text.slice(0, hit.trimAt!)).not.toContain("<invoke")
+    expect(text.slice(0, hit.trimAt!)).not.toContain("status.json")
+  })
+
+  test("eaten-call: closers-only (no contiguous opener) falls back to the closer (0216)", () => {
+    const text = "coherent busy prose right here</parameter>\n</invoke>\n</tool_calls>"
+    const hit = StallGuard.detect("stop", text, false)!
+    expect(hit.signature).toBe("eaten-call")
+    expect(hit.trimAt).toBe(text.indexOf("</parameter>"))
   })
 
   test("stray-closer signature: single stranded closing tag", () => {
@@ -58,11 +77,13 @@ describe("stall-guard detect", () => {
     expect(hit!.signature).toBe("stray-closer")
   })
 
-  test("stray-closer signature: trimAt points at the stranded tag", () => {
+  test("stray-closer signature: trimAt points at the stranded block (0216)", () => {
     const text = "meaningful prefix\n\n<garbage tag=\"x\">\n</div>"
     const hit = StallGuard.detect("stop", text, false)!
     expect(hit.signature).toBe("stray-closer")
-    expect(hit.trimAt).toBe(text.indexOf("</div>"))
+    // contiguous markup block above the closer: trim to the block start
+    expect(hit.trimAt).toBe(text.indexOf("<garbage"))
+    expect(text.slice(hit.trimAt!)).toBe("<garbage tag=\"x\">\n</div>")
   })
 
   test("colon signature: trimAt points at the trailing colon", () => {
@@ -70,6 +91,14 @@ describe("stall-guard detect", () => {
     expect(hit.signature).toBe("colon")
     // the trim keeps the sentence prefix, drops only the colon + whitespace
     expect("Now let me verify the install:\n\n".slice(0, hit.trimAt)).toBe("Now let me verify the install")
+  })
+
+  test("stray-closer: inline leak (no contiguous markup lines) keeps the closer trim (0216)", () => {
+    const text = "check the flag: <tool_calls><invoke name=\"edit\">baseline</invoke>"
+    const hit = StallGuard.detect("stop", text, false)!
+    expect(hit.signature).toBe("stray-closer")
+    // single-line leak: the line does not start with '<', so no block walk
+    expect(hit.trimAt).toBe(text.indexOf("</invoke>"))
   })
 
   test("silent signature: finish=stop with no text and no tool call", () => {
