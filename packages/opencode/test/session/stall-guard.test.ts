@@ -107,4 +107,17 @@ describe("stall-guard detect", () => {
     expect(StallGuard.detect("stop", "No code change warranted.", false)).toBeNull()
     expect(StallGuard.detect("stop", "the designed flow.", false)).toBeNull()
   })
+
+  test("compaction-continue steps are fully exempt (0214)", () => {
+    // A normal resume response legitimately ends at stop with a colon /
+    // mid-sentence shape: every endpoint signature must be skipped for the
+    // continuation step (would otherwise burn the shared fire budget toward
+    // needless auto-compaction at the 3rd/6th fire and halt at the 9th).
+    expect(StallGuard.detect("stop", "The next step is to check the flag meaning and run it against the old bytes:", false, true)).toBeNull()
+    expect(StallGuard.detect("stop", "test test test", false, true)).toBeNull()
+    expect(StallGuard.detect("stop", "", false, true)).toBeNull()
+    // ... and the non-continuation case still fires for the same text.
+    expect(StallGuard.detect("stop", "The next step is to check the flag meaning and run it against the old bytes:", false)).not.toBeNull()
+    expect(StallGuard.detect("stop", "", false)).not.toBeNull()
+  })
 })

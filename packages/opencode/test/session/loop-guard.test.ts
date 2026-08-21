@@ -89,6 +89,21 @@ describe("LoopGuard near-duplicate segments", () => {
       expect(guard.pushText(distinctParagraph(i) + SEP)).toBeNull()
     }
   })
+
+  test("a post-compaction re-loop still fires on a fresh detector (0214 keeps the loop guard active on compaction-continue)", () => {
+    // 0214 exempts the STALL guard for compaction-continue steps only - its
+    // endpoint signatures fire on every normal resume. The loop guard's
+    // repetition detectors must NOT be exempted: a model that re-loops after
+    // the auto-compaction resume is exactly the pathology the guard exists for,
+    // and its detector state resets at the message boundary (processor.ts), so
+    // this exercises the post-resume re-loop on that fresh state.
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (const segment of NEAR_DUP_SEQUENCE) {
+      hit = guard.pushText(segment + SEP)
+    }
+    expect(hit?.hit).toContain("near-identical segments")
+  })
 })
 
 describe("LoopGuard lexical stall", () => {
