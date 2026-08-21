@@ -66,6 +66,12 @@ type Input = {
 
   loopGuardEnabled?: boolean
   stallGuardEnabled?: boolean
+  /**
+   * The step's parent is the synthetic compaction-continue message (0214):
+   * the stall guard is exempted for it (see stall-guard.ts detect()). The
+   * loop guard stays active on compaction-continue steps.
+   */
+  stallGuardCompactionContinue?: boolean
 }
 
 export interface Interface {
@@ -95,6 +101,7 @@ interface ProcessorContext extends Input {
   loopGuardChannel: "reasoning" | "text" | "tool-input" | null
   loopTrimAt: number | null
   toolInputDetector: ReturnType<typeof LoopGuard.makeDetector> | undefined
+  stallGuardCompactionContinue: boolean
   stallText: string
   stallHadToolCall: boolean
   stallFired: boolean
@@ -153,6 +160,7 @@ const layer = Layer.effect(
         stallFired: false,
         stallHit: null,
         stallGuardEnabled: input.stallGuardEnabled ?? true,
+        stallGuardCompactionContinue: input.stallGuardCompactionContinue ?? false,
         restartClosed: false,
       }
       let aborted = false
@@ -881,8 +889,18 @@ const layer = Layer.effect(
           // ends BY DESIGN at the restart tool result (finish set to "stop"
           // above), so a premature-stop signature (text ending in ":") must
           // not re-open the turn with a steer.
-          if (ctx.stallGuardEnabled && !ctx.restartClosed && !ctx.assistantMessage.error) {
-            const hit = StallGuard.detect(ctx.assistantMessage.finish, ctx.stallText, ctx.stallHadToolCall)
+          if (
+            ctx.stallGuardEnabled &&
+            !ctx.restartClosed &&
+            !ctx.stallGuardCompactionContinue &&
+            !ctx.assistantMessage.error
+          ) {
+            const hit = StallGuard.detect(
+              ctx.assistantMessage.finish,
+              ctx.stallText,
+              ctx.stallHadToolCall,
+              ctx.stallGuardCompactionContinue,
+            )
             if (hit) {
               ctx.stallFired = true
               ctx.stallHit = hit.detail

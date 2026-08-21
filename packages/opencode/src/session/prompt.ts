@@ -1358,6 +1358,17 @@ const layer = Layer.effect(
             yield* sessions.updateMessage(msg)
           })
 
+          // 0214: the step's parent is the synthetic compaction-continue user
+          // message when the newest user message is the auto-compaction
+          // continuation. The stall guard is exempted for it (its endpoint
+          // signatures fire on every normal resume; see stall-guard.ts); the
+          // loop guard stays active so a post-compaction RE-loop is still
+          // caught.
+          const stallGuardCompactionContinue =
+            msgs
+              .findLast((m) => m.info.role === "user")
+              ?.parts.some((p) => p.type === "text" && p.synthetic && p.metadata?.compaction_continue) ?? false
+
           const handle = yield* processor
             .create({
               assistantMessage: msg,
@@ -1369,8 +1380,13 @@ const layer = Layer.effect(
               // makes the summary turn loop too - the unguarded summary ran
               // 42s of block spam until the user cancelled. The 3rd-fire
               // auto-compaction is skipped for compaction turns (recursion).
+              // The stall guard's compaction-continue exemption is the 0214
+              // exception (stallGuardCompactionContinue above): a continuation
+              // response legitimately ends at stop with a colon - exempting it
+              // only, the loop guard claim above still holds.
               loopGuardEnabled,
               stallGuardEnabled,
+              stallGuardCompactionContinue,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 

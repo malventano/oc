@@ -142,8 +142,24 @@ const LET_ME_VERBS =
   "read|check|look|verify|query|fetch|inspect|open|run|test|list|get|find|search|see|grep|examine|review|confirm|cat|ls|curl|stat|dig"
 const LET_ME_START = new RegExp(`^\\s*let me\\s+(${LET_ME_VERBS})\\b`, "i")
 
-/** Pure detection: given the step's finish reason and accumulated text, classify. */
-export function detect(finish: string | undefined, text: string, hadToolCall: boolean): StallDetection | null {
+/**
+ * Pure detection: given the step's finish reason and accumulated text, classify.
+ *
+ * `compactionContinue` exempts the step entirely: the model's response to an
+ * auto-compaction continuation message legitimately ends at `stop` with a
+ * colon/mid-sentence shape (it is RESUMPTION of an interrupted task), so the
+ * endpoint-shape signatures fire on every normal resume - burning the shared
+ * fire budget toward needless auto-compaction/halt (0214). The loop guard stays
+ * active there: its detectors are repetition-based, so a legit resume does not
+ * trip them and a post-compaction RE-loop is still caught.
+ */
+export function detect(
+  finish: string | undefined,
+  text: string,
+  hadToolCall: boolean,
+  compactionContinue = false,
+): StallDetection | null {
+  if (compactionContinue) return null
   if (finish !== "stop") return null
   if (text.length === 0) {
     // No text at all: only fire when no tool call happened - a turn that
