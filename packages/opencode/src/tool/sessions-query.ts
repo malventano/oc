@@ -17,18 +17,22 @@ REQUIRED vs OPTIONAL args differ per op:
 | transaction | statements, confirm | - |
 | checkpoint | - | mode |
 | backup | outputPath | - |
+| schema | - | - |
 
 Operations:
 - query: Run SELECT sql (read-only; only SELECT/WITH/EXPLAIN/PRAGMA allowed). Returns json/csv/table (default json).
 - list-tables: List all tables.
-- describe-table: Get table schema (columns, indexes, foreign keys).
+- describe-table: Get table schema (columns, indexes, foreign keys) INCLUDING json-extract keys of any data/metadata content blob.
+- schema: Get ALL tables' real columns + data-blob keys in one call - run this BEFORE querying to avoid no-such-column retries.
 - execute: Run write SQL (INSERT/UPDATE/DELETE/PRAGMA). Requires confirm="yes".
 - transaction: Run multiple SQL statements in a transaction. Requires confirm="yes".
 - checkpoint: Run PRAGMA wal_checkpoint. Modes: TRUNCATE (default), PASS, RERESTART.
-- backup: Create DB backup copy. Checkpoints WAL first.`
+- backup: Create DB backup copy. Checkpoints WAL first.
+
+Content is stored as JSON: the message/part/event data column holds {role,text} / {type,text}; session.metadata and message.data have more keys. Query it with json_extract(data, '$.role') rather than data.role (avoid no-such-column errors). Prefer browse ops for anchored page reads instead of hand-rolled SQL.`
 
 export const Parameters = Schema.Struct({
-  op: Schema.Literals(["query", "list-tables", "describe-table", "execute", "transaction", "checkpoint", "backup"]).annotate({
+  op: Schema.Literals(["query", "list-tables", "describe-table", "schema", "execute", "transaction", "checkpoint", "backup"]).annotate({
     description: "Operation to perform",
   }),
   sql: Schema.optional(Schema.String).annotate({ description: "SQL query or statement (required for query/execute)" }),
@@ -67,6 +71,68 @@ function toTable(rows: Record<string, unknown>[]) {
 
 const READONLY_PREFIX = /^(SELECT|WITH|EXPLAIN|PRAGMA)\b/i
 
+// The DB's `message`/`part`/`event` tables store their real content in a JSON
+// `data` blob (`{role,text}` / `{type,text}`) - nearly all "no such column:
+// m.role / p.type" failures came from the agent guessing scalar columns for
+// data that actually lives inside the blob. Surface the blob keys in
+// describe/schema + on error so the agent can write json_extract from the
+// start.
+const JSON_PAYLOAD_FIELDS = ["data", "metadata", "options"]
+
+const tableInfo = (db: Database.Interface["db"], table: string): Effect.Effect<unknown, never, never> =>
+  db.all(sql`PRAGMA table_info(${sql.raw(`"${table.replace(/[^A-Za-z0-9_]/g, "")}"`)})`).pipe(Effect.orDie) as Effect.Effect<unknown, never, never>
+
+// probeJsonKeys: for each JSON payload column on the table, collect the union
+// of top-level keys across a sample of rows (so describe/schema tell the agent
+// the content lives in the blob, written with json_extract).
+const probeJsonKeys = Effect.fn("sessions-query.probeJsonKeys")(function* (db: Database.Interface["db"], table: string) {
+  const cleaned = table.replace(/[^A-Za-z0-9_]/g, "")
+  const cols = (yield* tableInfo(db, cleaned)) as { name: string; type: string }[]
+  const out: { key: string; keys: string[] }[] = []
+  for (const field of JSON_PAYLOAD_FIELDS) {
+    if (!cols.some((c) => c.name === field)) continue
+    const rows = (yield* db
+      .all(
+        sql`SELECT ${sql.raw(field)} FROM ${sql.raw(`"${cleaned}"`)} WHERE ${sql.raw(field)} IS NOT NULL AND ${sql.raw(field)} != '' LIMIT 200`,
+      )
+      .pipe(Effect.orDie)) as Record<string, unknown>[]
+    const keys = new Set<string>()
+    for (const r of rows) {
+      const v = r[field]
+      if (typeof v !== "string") continue
+      try {
+        const parsed = JSON.parse(v)
+        if (parsed && typeof parsed === "object") for (const k of Object.keys(parsed)) keys.add(k)
+      } catch {
+        // row not JSON - skip
+      }
+    }
+    if (keys.size) out.push({ key: field, keys: [...keys].sort() })
+  }
+  return out
+})
+
+// hintedError: on a no-such-column/function failure, append the referenced
+// table's real columns + JSON payload keys so the failed call teaches the
+// correction instead of prompting a second blind guess.
+const hintedError = Effect.fn("sessions-query.hintedError")(function* (db: Database.Interface["db"], sqlText: string, raw: unknown) {
+  const msg = String((raw as { message?: unknown })?.message ?? raw)
+  if (!msg.includes("no such column") && !msg.includes("no such function")) return new Error(msg)
+  const tables = [...new Set([...sqlText.matchAll(/\b(?:from|join)\s+["']?([A-Za-z_][A-Za-z0-9_]*)/gi)].map((m) => m[1]))]
+  if (!tables.length) return new Error(msg)
+  let hint = ""
+  for (const t of tables) {
+    const cleaned = t.replace(/["']/g, "")
+    const cols = (yield* tableInfo(db, cleaned)) as { name: string; type: string }[]
+    if (!cols.length) continue
+    const jsonKeys = yield* probeJsonKeys(db, cleaned)
+    const parts = [`"${cleaned}" columns: ${cols.map((c) => c.name).join(", ")}`]
+    for (const j of jsonKeys) parts.push(`content '{${j.keys.join(", ")}}' lives in ${j.key} (use json_extract(${j.key}, '$.key'))`)
+    hint = (hint ? hint + "\n" : "") + parts.join("; ")
+  }
+  return new Error(`${msg}\n\nschema: ${hint}`)
+})
+
 export const SessionsQueryTool = Tool.define<typeof Parameters, Metadata, Database.Service>(
   "sessions-query",
   Effect.gen(function* () {
@@ -102,7 +168,18 @@ export const SessionsQueryTool = Tool.define<typeof Parameters, Metadata, Databa
             const stmt = params.sql!.trim()
             if (!READONLY_PREFIX.test(stmt)) throw new Error("query op only allows SELECT/WITH/EXPLAIN/PRAGMA (use execute for writes)")
             const format = params.format
-            const rows = yield* db.all(sql`${sql.raw(stmt)}`).pipe(Effect.orDie)
+            // db.all defects on a sqlite error; catchDefect recomputes the
+            // hinted message and re-defects so the failed call teaches the
+            // real schema (columns + json payload keys) instead of a bare
+            // "no such column".
+            const rows = (yield* db.all(sql`${sql.raw(stmt)}`).pipe(
+              Effect.orDie,
+              // After orDie, the sqlite failure is a defect; catch it, compute
+              // the hinted message, re-die so the failed call teaches the real
+              // schema (columns + json payload keys) instead of a bare
+              // "no such column".
+              Effect.catchDefect((e) => hintedError(db as any, stmt, e).pipe(Effect.andThen((hint) => Effect.die(hint)))),
+            )) as unknown[]
             return { title: "query", output: formatRows(rows, format), metadata: {} }
           }
 
@@ -118,11 +195,28 @@ export const SessionsQueryTool = Tool.define<typeof Parameters, Metadata, Databa
             const columns = yield* db.all(sql`PRAGMA table_info(${sql.raw(`"${t}"`)})`).pipe(Effect.orDie)
             const indexes = yield* db.all(sql`PRAGMA index_list(${sql.raw(`"${t}"`)})`).pipe(Effect.orDie)
             const foreignKeys = yield* db.all(sql`PRAGMA foreign_key_list(${sql.raw(`"${t}"`)})`).pipe(Effect.orDie)
+            const jsonKeys = yield* probeJsonKeys(db, t)
             return {
               title: "describe",
-              output: JSON.stringify({ tableName: t, columns, indexes, foreignKeys }, null, 2),
+              output: JSON.stringify({ tableName: t, columns, indexes, foreignKeys, jsonKeys }, null, 2),
               metadata: {},
             }
+          }
+
+          if (op === "schema") {
+            const tables = (yield* db
+              .all(sql`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+              .pipe(Effect.orDie)) as { name: string }[]
+            const out: Record<string, { columns: string[]; json?: { key: string; keys: string[] }[] }> = {}
+            for (const { name } of tables) {
+              const cols = (yield* db.all(sql`PRAGMA table_info(${sql.raw(`"${name.replace(/"/g, "")}"`)})`).pipe(
+                Effect.orDie,
+              )) as { name: string; type: string }[]
+              out[name] = { columns: cols.map((c) => c.name) }
+              const jsonKeys = yield* probeJsonKeys(db, name)
+              if (jsonKeys.length) out[name]!.json = jsonKeys
+            }
+            return { title: "schema", output: JSON.stringify(out, null, 2), metadata: {} }
           }
 
           if (op === "execute") {

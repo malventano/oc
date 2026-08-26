@@ -181,10 +181,25 @@ export const SessionsBrowseTool = Tool.define<typeof Parameters, Metadata, Datab
 
             if (params.around_message_id) {
               const w = Math.min(20, Math.max(1, params.window ?? 10))
+              // Accept a PART id (prt_*) too - agents routinely pass one as the
+              // anchor; resolve it to its parent message, else use the id as a
+              // message id directly.
+              const partRow = (yield* db
+                .get(sql`SELECT message_id FROM part WHERE id = ${params.around_message_id} AND session_id = ${params.sessionId}`)
+                .pipe(Effect.orDie)) as { message_id: string } | null
               const anchor = yield* db
-                .get(sql`SELECT time_created FROM message WHERE id = ${params.around_message_id} AND session_id = ${params.sessionId}`)
+                .get(
+                  sql`SELECT time_created FROM message WHERE id = ${partRow?.message_id ?? params.around_message_id} AND session_id = ${params.sessionId}`,
+                )
                 .pipe(Effect.orDie)
-              if (!anchor) throw new Error(`around_message_id not found in session: ${params.around_message_id}`)
+              if (!anchor) {
+                // Seldom-hit path; name real nearby ids so the next call lands.
+                const sample = (yield* db
+                  .all(sql`SELECT id FROM message WHERE session_id = ${params.sessionId} ORDER BY time_created DESC LIMIT 3`)
+                  .pipe(Effect.orDie)) as { id: string }[]
+                const names = sample.map((r) => r.id).join(", ")
+                throw new Error(`around_message_id not found in session: ${params.around_message_id}. Try: ${names}`)
+              }
               const at = (anchor as { time_created: number }).time_created
 
               const before = yield* db
