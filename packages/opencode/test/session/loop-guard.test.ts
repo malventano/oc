@@ -249,34 +249,89 @@ describe("LoopGuard short-frame intent recycling (2026-08-21 evidence)", () => {
     expect(hit).toBeNull()
   })
 
-  test("contiguity is the discriminator: contiguous frame clusters still fire at high distinct (loop-209 class)", () => {
+  // loop-209 class frames: ~12 varied "let me check ..." phrasings with
+  // recycled "bug folder" - the recycled content-bigram trips the intent-frame
+  // thrash (0217) FIRST (fires ~3 frames before the short-frame span gate),
+  // which is correct: the loop is caught at the earliest reliable evidence.
+  const LOOP209 = [
+    "Let me check the subagent artifacts and bug folder structure.",
+    "Let me check the rest of the tmp opencode artifacts.",
+    "Let me see the tsv dir artifacts and bug folder.",
+    "Let me look at the remaining artifacts.",
+    "Let me check tmp opencode subdirs and the bug fodder.",
+    "Let me see the rest.",
+    "Let me check the remaining tmp items and bug dir.",
+    "Let me check subagent artifacts and bug folder.",
+    "Let me see the rest of tmp opencode artifacts.",
+    "Let me get the subagent outputs and bug folder.",
+    "Let me list the relevant dirs.",
+    "Let me check.",
+  ]
+  test("contiguity is the discriminator: contiguous frame clusters still fire (loop-209 class)", () => {
     const guard = LoopGuard.make()
-    // The 2026-08-19 209-lets loop recycled ~12 distinct phrasings - above the
-    // old 6-bar that would have missed it - but kept them CONTIGUOUS (span ~12).
-    const varied = [
-      "Let me check the subagent artifacts and bug folder structure.",
-      "Let me check the rest of the tmp opencode artifacts.",
-      "Let me see the tsv dir artifacts and bug folder.",
-      "Let me look at the remaining artifacts.",
-      "Let me check tmp opencode subdirs and the bug fodder.",
-      "Let me see the rest.",
-      "Let me check the remaining tmp items and bug dir.",
-      "Let me check subagent artifacts and bug folder.",
-      "Let me see the rest of tmp opencode artifacts.",
-      "Let me get the subagent outputs and bug folder.",
-      "Let me list the relevant dirs.",
-      "Let me check.",
-    ]
     let hit: LoopGuard.LoopHit | null = null
     for (let i = 0; i < 2; i++) {
-      for (const frame of varied) {
+      for (const frame of LOOP209) {
         hit = guard.pushText(frame + SEP)
         if (hit) break
       }
       if (hit) break
     }
-    expect(hit?.hit).toContain("intent declaration")
-    expect(hit?.hit).toContain("contiguous over")
+    expect(hit).not.toBeNull()
+    // Either signature may win: short-frame ("intent declaration ... recycle
+    // only ...") or the fused-narration thrash ("intent-frame thrash:", fires
+    // earliest on the recycled "bug folder" bigram).
+    expect(hit!.hit).toMatch(/intent declaration|intent-frame thrash/)
+  })
+
+  test("intent-frame thrash: fires on a fused narration loop (0217, B200 evidence msg_03f28149b)", () => {
+    const guard = LoopGuard.make()
+    const text =
+      'Now let me record the tp1pp2 anomaly note and update the clean orchestrator to include the confirmed survivors (tp8, tp4, tp4pp2, tp2pp2 - dropping the borderline tp2/tp1pp2 per the screen threshold). Let me add the anomaly note to the runbook, then launch the clean phase:\n\nLet me add the anomaly note and then proceed. First the anomaly note:\n\nRecord the tp1pp2 double-run anomaly in the runbook, then launch the clean phase on the 4 confirmed survivors.\n\nLet me append the anomaly note:\n\nAppending the anomaly note to the runbook:\n\nRecording the anomaly:</parameter>'
+    const hit = guard.pushText(text)
+    expect(hit).not.toBeNull()
+    expect(hit!.hit).toContain("intent-frame thrash")
+    expect(hit!.hit).toContain("anomaly note")
+    // run-start anchor: the loop began with the first intent frame (offset 4 =
+    // "Now " lead-in), so the whole thrash region leaves context
+    expect(hit!.trimAt).toBeLessThanOrEqual(4)
+  })
+
+  test("intent-frame thrash: fires on the recycled-goal booster (0217, B200 evidence msg_03f294e9500)", () => {
+    const guard = LoopGuard.make()
+    const text =
+      'Found #65. Now let me add #66-68 (and the spread table), appending after line 353. Let me view the exact line context to append cleanly:\n\nLet me now add the new skill entries #66-68 after #65. I\'ll edit right after the #65 line:\n\nNow adding the new skill learnings. Editing after #65:Adding skill entries #66-68 after line 353 now.\n\nI\'ll insert after the #65 bullet:Let me add the new pitfall IDs to the skill now.\n\nEditing the skill to append #66-68:Let me make the edit now.Inserting the new skill bullets after #65:\n\nMaking the edit now.\n\nI need to invoke the edit tool. Adding entries after #65:Editing the skill file now.\n\nLet me call the edit tool to add #66-68 after #65 now. Invoking it now.'
+    const hit = guard.pushText(text)
+    expect(hit).not.toBeNull()
+    expect(hit!.hit).toContain("intent-frame thrash")
+  })
+
+  test("intent-frame thrash: does not fire on healthy single-intent narration (0217)", () => {
+    const guard = LoopGuard.make()
+    const healthy =
+      "That's the MP CPU-offload example (kv_both). Let me find the actual P/D disaggregation examples in the container.\n\n" +
+      "Both engines are same-version (all phases vLLM 0.28.0 + LMCache 0.5.4). Let me fix the stale version claims in the docs and record the verified reality.\n\n" +
+      "Still in engine-boot. The runner's banner-check window may have expired into the 90s sleep. Let me wait and check the process tree plus screen verdict."
+    expect(guard.pushText(healthy)).toBeNull()
+  })
+
+  test("intent-frame thrash: fires on text but not reasoning (0217 channel gate)", () => {
+    // The fused-narration loop is a TEXT-channel pathology (B200 evidence:
+    // "reasoning + tool-arg content stay perfectly coherent"). The detector
+    // constructor now gates thrash: text channel on, reasoning channel off -
+    // healthy reasoning is intent-framed narration about one artifact, so the
+    // recycled "anomaly note" bigram there is normal (the 2026-08-26 live FP:
+    // this build's own reasoning was cut by the un-gated 0217).
+    const loop =
+      'Let me record the tp1 anomaly note and update the runbook to confirm survivors (tp8, tp4). Let me add the anomaly note now. ' +
+      'Adding the anomaly note to the runbook. Let me record the anomaly note next. ' +
+      'Recording the anomaly note. Let me append the anomaly note after the entry. ' +
+      'Appending the anomaly note to the runbook now. Let me record the anomaly note in the status. ' +
+      'Recording the anomaly note for the runbook. Let me update the runbook with the anomaly note.'
+    const text = LoopGuard.make()
+    expect(text.pushText(loop)?.hit).toContain("intent-frame thrash")
+    const reasoning = LoopGuard.make()
+    expect(reasoning.pushReasoning(loop)).toBeNull()
   })
 })
 
