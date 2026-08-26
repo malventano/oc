@@ -3067,7 +3067,12 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
   if (/^module\.exports|require\(['"]/m.test(head)) return "javascript"
   if (/^package main\b|^func \w+\(/m.test(head)) return "go"
   if (/^fn (?:main|\w+)\(|^use std::|^impl\b/m.test(head)) return "rust"
-  if (/^def \w+\(|^class \w+:|^from \w+ import|^import \w+(?: as \w+)?$/m.test(head)) return "python"
+  // Comma-delimited module lists (import os, sys, re - the probe-script
+  // opener) end with the LAST module, so the trailing $ anchor must accept
+  // `, \w+` repeats. JS imports (import React, {x} from 'react', import * as
+  // x from '...') never reach this rule: the ` from ...` suffix fails the $
+  // anchor and they fall to their own JS rules below.
+  if (/^def \w+\(|^class \w+:|^from \w+ import|^import \w+(?: as \w+)?(?:\s*,\s*\w+(?: as \w+)?)*$/m.test(head)) return "python"
   if (/^public (?:static )?(?:class|void|final)\b|^class \w+ \{$/m.test(head)) return "java"
   if (/^fun main|^fun \w+\(/m.test(head)) return "kotlin"
   // cpp/c: any std header without a .h extension is cpp (iostream, vector,
