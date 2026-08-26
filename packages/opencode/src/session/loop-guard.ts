@@ -82,6 +82,62 @@ const SHORT_FRAME_MAX_SPAN = 16 // the intent frames must be CONTIGUOUS (window
 // over real tool actions would fire.
 const INTENT_PREFIX = /^let me\b/
 
+// Intent-frame thrash (2026-08-26 evidence, B200 profiling session): a
+// narration burst that ESCAPES the short-frame detector (0215) because the
+// frames are fused with no blank-line separation ("Editing now:Let me make the
+// edit", "sh:the clean...") - so normalized segments push past the 60-char
+// near-dup floor - AND the scope of phrasings exceeds 12 distinct. The tell
+// that survives fusing is the RECYCLED GOAL: adjacent pairs of content words
+// ("orchestrator tiles", "confirmed survivors") re-appear across many intent
+// sentences, while healthy narration names a DIFFERENT artifact every time
+// ("transform file" vs "type table" vs "prompt assembly" - no pair repeats).
+type ThrashFrame = { start: number; norm: string; words: string[]; pairs: string[] }
+const THRASH_WINDOW = 1000 // raw-text channel window scanned per delta
+const THRASH_MIN_FRAMES = 6 // intent-tone frames required before judgement
+const THRASH_MIN_NORM = 10 // shortest useful intent frame ("let me check")
+const THRASH_MAX_NORM = 260 // fused run-ons run long; cap as one sentence
+const THRASH_BIGRAM_REPEAT = 3 // a content-bigram in >= this many = recycle
+// Fuse-aware split: a zero-width lookahead at each intent MOUTH starts a frame
+// even mid-sentence, so ":Let me" / "now:I'll" / "TILES update and launch" all
+// fragment out of the fused jam without consuming the mouth itself.
+const THRASH_SPLIT =
+  /(?=\b(?:let me|let'?s|i'?ll|i'?m (?:going|about|trying|want|hop) to|i'?m? ?(?:need|want|should|will|would|can|have) to|now (?:let me|i|we)|updating|editing|recording|appending|checking|verifying|launching|running|continuing|reviewing|inspecting|monitoring|waiting|prepping|preparing|cleaning|removing|adding|rebuilding|restarting|rechecking|setting up|installing|pushing)\b)/i
+// Intent-tone test against the NORMALIZED frame ("I'll update..." ->
+// "i ll update..."; apostrophes/punctuation are gone). Gerund openers included:
+// the loop re-uses them as the mouth alongside "let me".
+const THRASH_INTENT =
+  /^(let me|let s|i ll|now (let me|let s|i|we)|i (need|want|should|will|would|can|could|have|am (going|about)|m (going|about))|updating|editing|recording|appending|checking|verifying|launching|running|continuing|reviewing|inspecting|monitoring|waiting|prepping|preparing|cleaning|removing|adding|rebuilding|restarting|rechecking|setting up|installing|pushing)\b/i
+// Words that don't count toward a goal: grammar + the intent mouths, so the
+// recycled-goal bigrams surface content ("orchestrator tiles") not frame shape.
+const THRASH_STOP = new Set([
+  "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "at", "for",
+  "with", "from", "it", "its", "this", "that", "these", "those", "now", "just",
+  "then", "up", "out", "back", "here", "there", "if", "is", "are", "was", "were",
+  "be", "been", "do", "does", "did", "done", "so", "as", "by", "i", "we", "you",
+  "me", "my", "our", "your", "it s", "it ll", "yes", "yeah", "no", "ok", "okay",
+  "alright", "right", "well", "maybe", "perhaps", "likely", "probably", "please",
+  // intent mouths (normalized): let me / i ll / i m / gerunds / need-want
+  "let", "me", "let", "let s", "i ll", "i m", "need", "want", "should", "will",
+  "would", "can", "could", "may", "might", "have", "has", "had", "go", "going",
+  "to", "about", "trying", "hoping", "try", "do", "prep", "prepping", "prepare",
+  "preparing", "also", "again", "still", "first", "next", "finally", "then",
+  "update", "updating", "edit", "editing", "record", "recording", "append",
+  "appending", "check", "checking", "verify", "verifying", "launch", "launching",
+  "run", "running", "continue", "continuing", "review", "reviewing", "inspect",
+  "inspecting", "monitor", "monitoring", "wait", "waiting", "clean", "cleaning",
+  "remove", "removing", "add", "adding", "rebuild", "rebuilding", "restart",
+  "restarting", "recheck", "rechecking", "set", "setting", "install", "installing",
+  "push", "pushing", "start", "starting", "stop", "stopping", "make", "maker",
+  "take", "see", "look", "ensure", "confirm", "confirming", "work", "working",
+  "mark", "marker", "get", "getting", "give", "use", "using", "put", "write",
+  "writing", "read", "reading", "say", "tell", "proceed", "pressing", "press",
+])
+// Concrete artifact the model is reasoning about (code spans, dotted members,
+// paths, snake/camel/Pascal identifiers) - reuse the near-dup anchor to veto
+// recycle when the loop suddenly names something new (progress beats trashing).
+const THRASH_ANCHOR =
+  /`[^`]+`|\b\w{2,}\.[a-zA-Z]\w{0,4}\b|[\w-]+(?:\/[\w-]+){2,}|\b\w+_\w+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b/g
+
 // A concrete reference the model is actually reasoning about: code span,
 // dotted member, multi-segment path, snake/camel/Pascal identifier. A segment
 // introducing a NEW one resets the lexical-stall run (spares genuine per-file
@@ -208,10 +264,40 @@ class TextLoopDetector {
   // oldest window-retained frame). Reset when an intent frame is followed by
   // a non-intent short segment.
   #shortRunStart: number | null = null
+  // Intent-frame thrash accumulator: raw text-channel tail (THRASH_WINDOW)
+  // with its absolute base offset, plus the persistent run-start anchor for
+  // the de-poison trim (kept across the window slice so a run longer than
+  // THRASH_WINDOW still trims from its true origin).
+  #textRaw = ""
+  #textBase = 0
+  #thrashRunStart: number | null = null
+
+  // Thrash (intent-frame recycled-goal scan) is a TEXT-channel signature:
+  // healthy reasoning is intent-framed narration about one artifact, so
+  // recycled content bigrams are its NORM, not a loop signal. The original
+  // 0217 ran thrash on BOTH channels through the shared push() and cut
+  // healthy reasoning mid-investigation (2026-08-26 live FP, reverted then
+  // re-landed gated); this flag gates the scan at construction time -
+  // reasoning detector off, text on.
+  #scanThrashEnabled = false
+
+  constructor(opts?: { thrash?: boolean }) {
+    this.#scanThrashEnabled = opts?.thrash === true
+  }
 
   push(delta: string): LoopHit | null {
     if (!delta) return null
     this.#rawLen += delta.length
+    // Feed the thrash accumulator (fuse-aware frame scan), keeping a sliding
+    // window of the last THRASH_WINDOW raw chars with an absolute base.
+    if (this.#scanThrashEnabled) {
+      this.#textRaw += delta
+      if (this.#textRaw.length > THRASH_WINDOW) {
+        const dropped = this.#textRaw.length - THRASH_WINDOW
+        this.#textRaw = this.#textRaw.slice(dropped)
+        this.#textBase += dropped
+      }
+    }
     this.#tail += delta
     if (this.#tail.length > VERBATIM_TAIL_WINDOW) {
       this.#tail = this.#tail.slice(-VERBATIM_TAIL_WINDOW)
@@ -266,6 +352,13 @@ class TextLoopDetector {
         raw = this.#pending.slice(0, SEGMENT_CHAR_CAP)
         this.#pending = this.#pending.slice(SEGMENT_CHAR_CAP)
       } else {
+        // Residue: nothing new segmented for the near-dup / short-frame paths.
+        // Fall through to the intent-frame thrash scan (the fused narration
+        // loop never yields clean segments, so only this raw-pass catches it).
+        if (this.#scanThrashEnabled) {
+          const thrash = this.#scanThrash()
+          if (thrash) return thrash
+        }
         return null
       }
       // The extracted segment started at (rawLen - pending.length) BEFORE the
@@ -295,6 +388,74 @@ class TextLoopDetector {
     this.#shortFrames = []
     this.#shortSegCount = 0
     this.#shortRunStart = null
+    this.#textRaw = ""
+    this.#textBase = 0
+    this.#thrashRunStart = null
+  }
+
+  #scanThrash(): LoopHit | null {
+    const raw = this.#textRaw
+    if (raw.length < 300) return null
+    const chunks = raw.split(THRASH_SPLIT)
+    if (chunks.length < THRASH_MIN_FRAMES + 1) return null
+    // Frames: each chunk after the lead-in starts at an intent mouth; the
+    // lead-in chunk (index 0) is ordinary prose that precedes the run.
+    let off = this.#textBase
+    let framesTotal = 0
+    const intents: ThrashFrame[] = []
+    for (const chunk of chunks) {
+      if (chunk === "") continue
+      framesTotal++
+      const start = off
+      off += chunk.length
+      const norm = normalizeSegment(chunk)
+      if (norm.length < THRASH_MIN_NORM) {
+        // Too short to be a goal-statement frame; still counts as a frame so
+        // the density gate doesn't get fooled by one-word "let me" noise.
+        continue
+      }
+      if (!THRASH_INTENT.test(norm)) continue
+      const words = norm.split(" ").filter((w) => w && !THRASH_STOP.has(w))
+      const pairs: string[] = []
+      for (let i = 1; i < words.length; i++) pairs.push(`${words[i - 1]} ${words[i]}`)
+      intents.push({ start, norm, words, pairs })
+      if (intents.length === 4) {
+        // Seed the persistent run anchor as soon as an intent run is plausible;
+        // extended while the frame continues recycling.
+        this.#thrashRunStart = this.#thrashRunStart ?? intents[0].start
+      }
+    }
+    if (intents.length < THRASH_MIN_FRAMES) return null
+    // Density: intent frames must dominate the window (>= 1 of 3) - a stray
+    // "let me" inside a telemetry dump must not trip the sign.
+    if (intents.length * 3 < framesTotal) return null
+    // Keep only normable intent frames within the sentence cap; the recycle
+    // evidence lives across the WHOLE run (frames reach peak variety early and
+    // degenerate to one-liners at the tail, too short to carry pairs), so count
+    // pairs over all of them - the anchor veto still guards legitimate work.
+    const counted = intents.filter((f) => f.norm.length <= THRASH_MAX_NORM)
+    if (counted.length < THRASH_MIN_FRAMES) return null
+    const pairCounts = new Map<string, number>()
+    const priorAnchors = new Set<string>()
+    let recycle: { pair: string; count: number } | null = null
+    for (let i = 0; i < counted.length; i++) {
+      const f = counted[i]
+      if (i < counted.length - 1) for (const a of f.words.join(" ").matchAll(THRASH_ANCHOR)) priorAnchors.add(a[0])
+      for (const pair of f.pairs) {
+        const n = (pairCounts.get(pair) ?? 0) + 1
+        pairCounts.set(pair, n)
+        if (n >= THRASH_BIGRAM_REPEAT) recycle = { pair, count: n }
+      }
+    }
+    if (!recycle) return null
+    const last = counted[counted.length - 1]
+    for (const a of last.words.join(" ").matchAll(THRASH_ANCHOR)) {
+      if (!priorAnchors.has(a[0])) return null // new artifact named - progress
+    }
+    return {
+      hit: `intent-frame thrash: "${recycle.pair.trim()}" recycled ${recycle.count}x across ${counted.length} intent sentences (fused narration loop)`,
+      trimAt: this.#thrashRunStart ?? counted[0].start,
+    }
   }
 
   #consumeSegment(raw: string, start: number): LoopHit | null {
@@ -418,8 +579,12 @@ export function makeDetector(): {
 }
 
 export function make(): LoopGuardState {
-  const reasoning = new TextLoopDetector()
-  const text = new TextLoopDetector()
+  // Thrash is TEXT-channel-only: healthy reasoning narrates its intent around
+  // one artifact (recycled content bigrams are the norm, not a loop signal) -
+  // running thrash there was the live 2026-08-26 FP. Reasoning keeps its own
+  // signatures (near-dup / lex-stall / short-frame).
+  const reasoning = new TextLoopDetector({ thrash: false })
+  const text = new TextLoopDetector({ thrash: true })
   return {
     pushReasoning: (delta) => reasoning.push(delta),
     pushText: (delta) => text.push(delta),
