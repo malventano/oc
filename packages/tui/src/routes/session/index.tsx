@@ -2506,6 +2506,15 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={display() === "squash-output"}>
           <SquashOutput {...toolprops} />
         </Match>
+        <Match
+          when={
+            display() === "sessions-query" ||
+            display() === "sessions-browse" ||
+            display() === "sessions-manage"
+          }
+        >
+          <SessionsTool {...toolprops} />
+        </Match>
         <Match when={true}>
           <GenericTool {...toolprops} />
         </Match>
@@ -4458,6 +4467,81 @@ function SquashOutput(props: ToolProps) {
   )
 }
 
+function SessionsTool(props: ToolProps) {
+  const { theme } = useTheme()
+  const ctx = use()
+  // The session tools' calls are text-bearing: sessions-query streams the SQL
+  // (the "session query text"), browse/manage stream their op. Same
+  // useToolStream + LiveToolStream treatment as write/edit - a PERSISTENT
+  // block, present from the moment the model starts composing the call, so
+  // the completed output leans into a block that is already there instead of
+  // popping in at completion (the GenericTool fallback that produced the
+  // pop-in).
+  const bodyKey = props.tool === "sessions-query" ? "sql" : "op"
+  const stream = useToolStream(props, { bodyKey, title: () => undefined })
+  const running = createMemo(() => stream.status() === "running")
+  const completed = createMemo(() => !stream.streaming() && !running())
+  const toolName = createMemo(() =>
+    props.tool === "sessions-query" ? "sessions-query" : props.tool === "sessions-browse" ? "sessions-browse" : "sessions-manage",
+  )
+  // The op discriminator (query / session-search / list-tables ...) goes in
+  // the title once it lands; the body text (SQL) streams as the content.
+  const op = createMemo(() => stringValue(props.input.op) ?? "")
+  const title = createMemo(() => {
+    const name = toolName()
+    if (!completed()) return op() ? `# Running ${name} ${op()}` : `# Running ${name}`
+    return op() ? `# ${name} ${op()}` : `# ${name}`
+  })
+  const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
+  const [expanded, setExpanded] = createSignal(false)
+  const maxLines = 8
+  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
+  const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
+  const limited = createMemo(() => {
+    if (expanded() || !collapsed().overflow) return output()
+    return collapsed().output
+  })
+  const showBlock = () => stream.streaming() || running() || props.output !== undefined
+
+  return (
+    <Show
+      when={showBlock()}
+      fallback={
+        <InlineTool icon="⚙" pending={`Preparing ${toolName()}...`} complete={false} part={props.part}>
+          {toolName()}
+        </InlineTool>
+      }
+    >
+      {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
+          completed - the composed SQL's code element persists, so nothing
+          remounts at completion. The title toggles "# Running sessions-query
+          <op>" <-> "# sessions-query <op>" in place; the spinner runs while
+          streaming/running; fg brightens textMuted -> theme.text at
+          completion. The completed OUTPUT renders as block children after
+          the code, collapsed to 8 lines with click-to-expand like generic
+          tool output. */}
+      <LiveToolStream
+        part={props.part}
+        title={title()}
+        streaming={stream.streaming()}
+        content={stream.display()}
+        // Prose/query, not code - stream in muted, brighten at completion.
+        fg={stream.streaming() || running() ? theme.textMuted : theme.text}
+        release={completed()}
+        gutter={false}
+        onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+      >
+        <Show when={completed() && output()}>
+          <text fg={theme.text}>{limited()}</text>
+          <Show when={collapsed().overflow}>
+            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+          </Show>
+        </Show>
+      </LiveToolStream>
+    </Show>
+  )
+}
+
 function Question(props: ToolProps) {
   const { theme } = useTheme()
   const questions = createMemo(() => parseQuestions(props.input.questions))
@@ -4562,6 +4646,10 @@ const toolDisplays = new Set([
   "execute",
 
   "squash-output",
+
+  "sessions-query",
+  "sessions-browse",
+  "sessions-manage",
 ])
 
 export function toolDisplay(tool: string) {
