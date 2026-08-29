@@ -1978,6 +1978,25 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   // change it; part deltas don't (the messages array is stable), so this
   // memo does NOT recompute per delta.
   const inFlightStep = createMemo(() => turnStepsMemo().find((s) => !s.time.completed))
+  // The step whose parts feed the LIVE counters. Normally inFlightStep (the
+  // first non-completed step). Fallback: when the turn is ACTIVE but no
+  // non-completed step is in the client message window (a missed
+  // message.updated create over an SSE reconnect, or sync() rebuilding from a
+  // stale snapshot while the first stream starts - the fullSyncedSessions
+  // dedup means a partial gap never re-syncs), count the newest turn step's
+  // parts instead so tok / tok-s keep moving instead of freezing until the
+  // next boundary event (BUG_FOOTER_LIVE_STATS_STALE). A genuinely completed
+  // turn resolves undefined here too (newest step completed), so the folded
+  // totals stand.
+  const liveSourceStep = createMemo(() => {
+    const inFlight = inFlightStep()
+    if (inFlight) return inFlight
+    if (!showLive()) return undefined
+    const steps = turnStepsMemo()
+    const last = steps.at(-1)
+    if (!last) return undefined
+    return last.time.completed === undefined ? last : undefined
+  })
   // The in-memory turn accumulator, folded as a MEMO so the fold lands in the
   // same reactive flush as the message update that completed the step - the
   // live memos below read the folded result immediately (no one-frame dip,
@@ -2034,7 +2053,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   // Live tokens: the folded real values (completed steps) + the in-flight
   // step's streamed-text estimate. Per part delta this is O(1) over the
   // completed turn - just the one in-flight step's parts walk.
-  const turnLive = createMemo(() => turnLiveFromAccum(turnAccum(), inFlightStep(), (id) => sync.data.part[id]))
+  const turnLive = createMemo(() => turnLiveFromAccum(turnAccum(), liveSourceStep(), (id) => sync.data.part[id]))
 
   // Completed-step footer duration: the final step's elapsed time from the
   // turn's start (the in-memory start) to its own completion.
@@ -2150,11 +2169,11 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const turnStreamedChars = createMemo(() => {
     const acc = turnAccum()
     let chars = acc?.chars ?? 0
-    const inFlight = inFlightStep()
-    if (inFlight) chars += streamedChars(sync.data.part[inFlight.id])
+    const live = liveSourceStep()
+    if (live) chars += streamedChars(sync.data.part[live.id])
     return chars
   })
-  const streamKey = createMemo(() => turnStepsMemo().find((s) => !s.time.completed)?.id ?? "")
+  const streamKey = createMemo(() => liveSourceStep()?.id ?? "")
   const streamRateMemo = createMemo(() => streamRateFor(turnKey, streamKey(), turnStreamedChars()))
   const rateDisplay = createMemo(() => {
     if (!props.last) return

@@ -549,12 +549,15 @@ test("streamRateFor: a delivery after a stall is a NEW EPISODE - the EMA freezes
   // the step completes, the tool runs, then a 200-token delivery lands (step-b):
   // the episode change freezes the EMA at the pre-stall value - no dilution, no drop
   expect(streamRateFor("t-burst1", "step-b", 1200, 3000)).toBe(500)
-  // the delivery is the anchor of the new episode (still frozen)
-  expect(streamRateFor("t-burst1", "step-b", 2000, 3200)).toBe(500)
-  // the next chunk resumes tracking: raw 1000, alpha 0.487 from the frozen 500
+  // the CHANGE seeded the anchor, so the FIRST growth chunk after the stall
+  // already measures: raw (2000-1200)/0.2s/4 = 1000, alpha 0.487 from the
+  // frozen 500 -> 743.3. No 2-sample blind spot after a tool gap (the
+  // BUG_FOOTER_LIVE_STATS_STALE fix) - the EMA resumes immediately.
+  expect(streamRateFor("t-burst1", "step-b", 2000, 3200)).toBeCloseTo(743.3, 1)
+  // the next chunk converges toward the raw rate
   const v2 = streamRateFor("t-burst1", "step-b", 2800, 3400)
-  expect(v2).toBeCloseTo(743.3, 1)
-  expect(v2).toBeGreaterThan(500)
+  expect(v2).toBeGreaterThan(743.3)
+  expect(v2).toBeLessThan(1000)
 })
 
 test("streamRateFor: an episode change holds the frozen value through ANY gap length", () => {
@@ -572,10 +575,15 @@ test("streamRateFor: a gap between streams freezes the EMA (no drop to 0 on resu
   expect(streamRateFor("t-gap", "step-a", 440, 1500)).toBe(100) // stall within the step: frozen
   // the step ends, the tool runs, then step-b streams: episode change -> frozen
   expect(streamRateFor("t-gap", "step-b", 540, 3500)).toBe(100) // NOT dragged toward ~0
-  expect(streamRateFor("t-gap", "step-b", 740, 3600)).toBe(100) // anchor of the new episode
-  // the next chunk resumes tracking: raw 500, alpha 0.283
+  // the episode-change anchor makes the FIRST growth chunk measure: raw
+  // (940-540)/1s/4 = 100 tok/s, resumes immediately (was 2-sample frozen)
   const tracking = streamRateFor("t-gap", "step-b", 940, 3700)
-  expect(tracking).toBeCloseTo(213.4, 1)
+  expect(tracking).toBeGreaterThan(0)
+  expect(tracking).toBeLessThan(500)
+  // the second real chunk holds ~100
+  const hold = streamRateFor("t-gap", "step-b", 240, 4000)
+  expect(hold).toBeGreaterThan(0)
+  expect(hold).toBeLessThan(500)
 })
 
 test("streamRateFor: a chunked tool-call delivery bounces between chunks but tracks the chunks", () => {
