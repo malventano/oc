@@ -333,6 +333,53 @@ describe("LoopGuard short-frame intent recycling (2026-08-21 evidence)", () => {
     const reasoning = LoopGuard.make()
     expect(reasoning.pushReasoning(loop)).toBeNull()
   })
+
+  test("intent-frame thrash: backtick code spans are atomic, not recycled prose (0223, DSV4-Flash FP)", () => {
+    // The long-running download-monitor workflow (ses_0ef150898ffeAOiy - "Optimizing
+    // GLM MPT" title, model DSV4-Flash, msg_04c2dd4fd001, 2026-08-29). The
+    // narration legitimately references the
+    // `hf download` CLI command across 7 intent sentences while PROGRESSING
+    // through real steps (let it run, set up a completion check, record state,
+    // wait, run the symlink-finalize, verify MODEL). The old normalizeSegment
+    // split the backtick span into the plain word pair "hf download",
+    // synthesizing a recycled content-bigram that fired thrash on healthy
+    // workflow narration. Backtick spans must normalize to a SINGLE
+    // underscore-joined token (atomic concrete artifact, same policy as the
+    // near-dup anchor), so the pair never forms.
+    const healthy =
+      "Found it - **the repo's files have a per-file HEAD that advertises an HTTP 3xx redirect chain through r2, and the actual transfer is being served at ~20 MB/s even though we request `--limit-rate 50m`**. The 20-21 MB/s is the remote CDN (Cloudflare/R2) throttling this connection, not our cap. The earlier flat-dir wget hit a full 50.0M/s on the SAME 1040 MB `model-00001`, so this is **connection-specific rate variance from the redirect target** - not our limiter.\n\n" +
+      "This is an ambient variance on the HF/R2 side. Our cap is 50; the server is delivering ~21-50 depending on the resolved edge. Nothing to fix in our setup - it just means ETA is ~2x (closer to 2.5h at ~20-50 variable). The throttle guarantee (≤50) holds; the actual achievable is the CDN's give.\n\n" +
+      "Let me let it run. When the blob pass completes, the finalize `hf download` then creates symlinks. I'll set up a completion check. Let me record the state and monitor longer-term.\n\n" +
+      'Given the variance, the honest ETA is "when the CDN allows" - the hard cap is guaranteed at 50, the floor is the server\'s current edge speed. I\'ll leave the pane running and check back at intervals; the moment all 144 blobs are present I\'ll run the `hf download` symlink-finalize + verify `MODEL` resolves by id.\n\n' +
+      "While it cooks, let me verify one thing - that the `hf download"
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < healthy.length; i += 24) {
+      hit = guard.pushText(healthy.slice(i, i + 24))
+      if (hit) break
+    }
+    expect(hit).toBeNull()
+  })
+
+  test("intent-frame thrash: backtick atomic spans still catch the monitor-loop class (B200 evidence)", () => {
+    // The B200 monitor-loop evidence survives the backtick-atomic change: the
+    // recycled pair is plain-prose status filler ("campaign continues",
+    // "tp1pp8 progress"), NOT a code span - the anchor veto (which would see
+    // many distinct code spans as progress) must not swallow these. This pins
+    // the 0217 evidence class against the 0223 normalization change.
+    const loop =
+      "Continuing to monitor. The spread proceeds as scheduled. Next boundary check. Campaign continues. Monitoring. " +
+      "Continuing the monitor loop for the remaining tiles. Let me check the next box state now. Campaign continues. " +
+      "The runbook tp1pp8 row update done. Let me continue monitoring. Continuing. Check. Monitoring. The campaign continues. " +
+      "Let me run the next periodic check. Campaign continues. `tp1pp8 serving` check. Monitoring. Continuing.\n\n"
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 3; i++) {
+      hit = guard.pushText(loop)
+      if (hit) break
+    }
+    expect(hit).not.toBeNull()
+    expect(hit!.hit).toContain("intent-frame thrash")
+    expect(hit!.hit).toContain("campaign continues")
+  })
 })
-
-

@@ -175,8 +175,17 @@ export type LoopHit = {
 function normalizeSegment(segment: string): string {
   return segment
     .toLowerCase()
-    .replace(/`([^`]*)`/g, " $1 ")
-    .replace(/[^a-z0-9]+/g, " ")
+    // Backtick code spans stay ATOMIC (a single underscore-joined token): a
+    // quoted command or path is a concrete artifact the model may legitimately
+    // reference many times while progressing (e.g. monitoring `hf download` -
+    // the GLM-5.3 workflow), NOT recycled prose. Spanning them out as
+    // space-separated words made multi-word commands ("hf download",
+    // "cacheflow_server.py --port 8090") synthesize recycled content-bigrams
+    // and fired thrash on healthy long-running workflows (2026-08-28 GLM MPT
+    // FP). The underscore-joined form also matches the snake anchor, so the
+    // span doubles as a concrete artifact for the progress veto.
+    .replace(/`([^`]*)`/g, (_m: string, inner: string) => "_" + inner.replace(/[^a-z0-9]+/g, "_") + "_")
+    .replace(/[^a-z0-9_]+/g, " ")
     .split(/\s+/)
     .filter((token) => /[a-z]/.test(token))
     .join(" ")
