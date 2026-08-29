@@ -459,10 +459,15 @@ export function streamRateFor(
   // A new streaming episode (a step completed, or a new one began): the old
   // window belongs to a stream that ended. Drop it and freeze the EMA through
   // the change - the value holds across tool-call / TTFT gaps regardless of
-  // their length. The next sample anchors the fresh window.
+  // their length. The change itself SEEDS the anchor sample so the very next
+  // growth chunk counts a real delta instead of eating an extra frozen sample
+  // (BUG_FOOTER_LIVE_STATS_STALE: the old [] seed forced TWO samples after
+  // each episode change before the rate moved - on short streams with wide
+  // batching that reads as "frozen per semi-turn").
   if (streamKey !== st.streamKey) {
     st.streamKey = streamKey
-    st.samples = []
+    const anchored: [number, number][] = st.cumulative === 0 && st.samples.length === 0 ? [] : [[now, chars]]
+    st.samples = anchored
     st.cumulative = chars
     st.lastTime = now
     return st.smoothed
