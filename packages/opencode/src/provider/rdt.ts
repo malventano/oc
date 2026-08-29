@@ -26,6 +26,7 @@ import type {
   LanguageModelV3StreamPart,
   LanguageModelV3Usage,
 } from "@ai-sdk/provider"
+import { APICallError } from "@ai-sdk/provider"
 import type { Provider } from "@/provider/provider"
 
 // ---------------------------------------------------------------------------
@@ -770,7 +771,20 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
           const disabled = failures >= MAX_CONSECUTIVE_FAILURES
           setState(ctx.sessionID, { ...state, failures, disabled })
         }
-        throw err
+        if (isAbort) throw err
+        // Wrap the raw fetch failure as a retryable APICallError (parity
+        // with the completions path, whose postToApi -> handleFetchError
+        // wraps bun connect failures the same way). A bare rethrow feeds
+        // MessageV2.fromError's Unknown branch, whose message matches no
+        // RETRYABLE_MESSAGE_PATTERNS entry - the session fails IMMEDIATELY
+        // instead of retrying with backoff until the model comes back.
+        throw new APICallError({
+          message: `Cannot connect to API: ${err instanceof Error ? err.message : String(err)}`,
+          cause: err,
+          url,
+          requestBodyValues: body,
+          isRetryable: true,
+        })
       }
 
       if (res.ok) {
