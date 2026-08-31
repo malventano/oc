@@ -416,6 +416,7 @@ type StreamRateState = {
 // within ~300ms; a stall freezes it (no samples -> no EMA update).
 const STREAM_RATE_TAU_MS = 300
 
+
 // The streaming-rate window state is SHARED across every footer instance:
 // each mid-turn LLM call is a NEW assistant message with its OWN footer
 // component, and a per-component tracker would reset on every step swap
@@ -473,6 +474,22 @@ export function streamRateFor(
     return st.smoothed
   }
   if (chars > st.cumulative) {
+    // STALL RE-ANCHOR (BUG_FOOTER_LIVE_STATS_STALE): more than a second
+    // passed since the last MEASURED growth chunk - a real pause (tool call
+    // / TTFT / user thinking) happened. Without this check
+    // the first post-gap chunk measures dt across the ENTIRE stall and drags
+    // smoothed toward 0, so the rate "climbs back up from 0" after every tool
+    // call. Re-anchor the window so the resume measures from the resume, not
+    // across the gap. Batch delivery stays sub-second (the window widens to
+    // 1024ms only while frames are actually rendering), so live streaming
+    // never reads as a stall. (The first-ever turn has no samples yet - the
+    // anchor branch below handles it.)
+    if (st.samples.length > 0 && now - st.lastTime > 1000) {
+      st.samples = [[now, chars]]
+      st.cumulative = chars
+      st.lastTime = now
+      return st.smoothed
+    }
     // The first sample of an episode anchors the window: no delta to measure
     // and zero streaming elapsed time, so it must not move the value (the new
     // stream's slow-start raw + near-1 alpha over the TTFT would drag the EMA
