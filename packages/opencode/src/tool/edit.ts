@@ -209,7 +209,11 @@ export const EditTool = Tool.define(
 
           // Basename resolution: headers render paths relative to the
           // instance dir (or absolute outside it); bare basenames resolve by
-          // walking the worktree (12 levels / 32 matches, 0057 caps).
+          // walking the worktree (12 levels / 32 matches, 0057 caps). The
+          // walk is bounded-parallel BFS (0226) - the old serial recursion
+          // waited on 38k sequential readdirs (~1.3s here) and made a bare
+          // [path] header visible as "patch streams in, 2s pause, diff snaps
+          // in" on large worktrees.
           const resolveSourcePath = (filePath: string): Effect.Effect<string> =>
             Effect.gen(function* () {
               const direct = resolvePath(filePath)
@@ -217,20 +221,36 @@ export const EditTool = Tool.define(
               const bare = !filePath.includes("/") && !filePath.includes("\\")
               if (info || !bare) return direct
               const matches: string[] = []
-              const walk = (dir: string, depth: number): Effect.Effect<void> => {
-                if (depth > 12 || matches.length >= 32) return Effect.void
+              // Bounded-parallel BFS (0226): the old walk recursed SERIALLY
+              // through every directory, so a bare-basename [path] header
+              // waited on 38k sequential readdirs (~1.3s on this box) before
+              // the edit's diff could render - the "patch streams in, sits,
+              // then the diff snaps in" lag on some files. All of a level's
+              // directory reads are independent: batch them into one
+              // bounded-concurrency Effect.all (32 deep - fast enough to keep
+              // the tree flat, shallow enough not to hammer the fd pool).
+              // Same caps as before: 12 levels, 32 matches, FOLDERS skip.
+              const walk = (dirs: string[], depth: number): Effect.Effect<void> => {
+                if (depth > 12 || dirs.length === 0 || matches.length >= 32) return Effect.void
                 return Effect.gen(function* () {
-                  const entries = yield* afs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))
-                  for (const entry of entries) {
-                    if (entry.type === "directory") {
-                      if (!FOLDERS.has(entry.name)) yield* walk(path.join(dir, entry.name), depth + 1)
-                    } else if (entry.type === "file" && entry.name === filePath) {
-                      matches.push(path.join(dir, entry.name))
+                  const entries = yield* Effect.all(
+                    dirs.map((dir) => afs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))),
+                    { concurrency: 32 },
+                  )
+                  const children: string[] = []
+                  for (let i = 0; i < dirs.length; i++) {
+                    for (const entry of entries[i]!) {
+                      if (entry.type === "directory") {
+                        if (!FOLDERS.has(entry.name)) children.push(path.join(dirs[i]!, entry.name))
+                      } else if (entry.type === "file" && entry.name === filePath) {
+                        matches.push(path.join(dirs[i]!, entry.name))
+                      }
                     }
                   }
+                  if (matches.length < 32) yield* walk(children, depth + 1)
                 })
               }
-              yield* walk(instance.directory, 0)
+              yield* walk([instance.directory], 0)
               if (matches.length === 0) return direct
               if (matches.length === 1) return matches[0]
               throw new Error(
