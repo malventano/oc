@@ -631,6 +631,31 @@ test("countTurnWalkParts: counts the steps AFTER the root user message (chronolo
   expect(r).toEqual({ tools: 3, reachedRoot: true, start: 1000, reasoning: 80, output: 25 })
 })
 
+test("streamRateFor: a stall re-anchors the window so the resume does not measure across the gap (0225)", () => {
+  // The user-visible bug (BUG_FOOTER_LIVE_STATS_STALE): text streams, a tool
+  // call runs (chars stop growing under the SAME streamKey), then text
+  // resumes. The old window kept its pre-gap samples, so the first post-gap
+  // chunk measured dt across the entire tool call and smoothed was dragged
+  // toward 0 - the rate "climbed back up from 0" after every tool call.
+  // The stall re-anchor resets the window when >1s passes since the last
+  // measured growth, so the resume measures from the resume.
+  streamRateFor("t-stall", "step-a", 0, 0)
+  streamRateFor("t-stall", "step-a", 800, 1000) // raw 200, snaps
+  streamRateFor("t-stall", "step-a", 1600, 2000) // steady 200
+  expect(streamRateFor("t-stall", "step-a", 1600, 3000)).toBe(200) // frozen, no growth
+  // tool executes - chars frozen for 4s (the real stall): no re-anchor yet
+  expect(streamRateFor("t-stall", "step-a", 1600, 7000)).toBe(200)
+  // resume: first growth NOW arrives after a >1s stall -> re-anchor, holds 200
+  // (no dt across the 4s gap -> no drag toward 0)
+  expect(streamRateFor("t-stall", "step-a", 2400, 7500)).toBe(200)
+  // the next chunk measures the actual resume rate from the re-anchor
+  const resumed = streamRateFor("t-stall", "step-a", 3200, 8000)
+  // the resume measures the true post-gap rate (~400 here: 800 chars/0.5s/4)
+  // instead of being dragged toward 0 by a dt spanning the tool call - any
+  // value well above 0 and near the real 400 proves the gap was excluded.
+  expect(resumed).toBeCloseTo(362.2, 1)
+})
+
 test("countTurnWalkParts: the root user message's created time anchors the clock even when found on an older page", () => {
   let st = countTurnWalkParts(
     [{ info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1")] }],
