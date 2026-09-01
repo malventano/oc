@@ -80,7 +80,40 @@ const SHORT_FRAME_MAX_SPAN = 16 // the intent frames must be CONTIGUOUS (window
 // segments; code-use narration: dozens apart). Without this, legit work that
 // uses "let me look at X / let me read Y / let me grep Z" as running narration
 // over real tool actions would fire.
-const INTENT_PREFIX = /^let me\b/
+ const INTENT_PREFIX = /^let me\b/
+
+// Micro-frame recycle (2026-09-01 evidence, B200 profiling session msg
+// 05b4a1afd0 / 05ae30d740 / 05ac336c60): the loop TYPE that escapes every
+// word-typed gate. The old signatures key on vocabulary (INTENT_PREFIX
+// "let me", THRASH_INTENT mouths, SHORT_FRAME_MIN_NORM=12 floor) - a loop
+// built from 1-2 word imperative/exclamatory frames ("Now." "Go." "Run."
+// "Execute." "Snapshot.") has 0 "let me" and most frames under 12 chars, so
+// it falls below ALL of them. The LOOP TYPE is structural, not lexical: a
+// dense run of short frames that recycle a tiny repertory with no numerals /
+// concrete anchors and no new-named artifact. Detect that directly.
+//
+// Frame test (word-agnostic "loop-type" shape): 2-14 normalized chars, a
+// letter, no digit, no concrete anchor. "Go." "Now." "Run." "Snapshot."
+// all pass; "sleep 1200s / 53% / INSTANCE_CONTEXT_B200.md" do not (digits /
+// anchors = progress markers).
+const MICRO_MIN_NORM = 2
+const MICRO_MAX_NORM = 14 // "sleep 1200s" (11) excluded by the digit test
+const MICRO_WINDOW = 14 // rolling frame window
+const MICRO_MIN_QUAL = 10 // >= 10 of 14 frames must be loop-type (density)
+const MICRO_MAX_DISTINCT = 8 // how many distinct loop-type shapes may recycle
+const MICRO_MIN_REPEAT = 0.5 // >= half the frames must repeat at least once
+const MICRO_MAX_SPAN = 16 // contiguous in the stream (window spans <= 16 segs)
+// Non-global copy of the anchor pattern: `.test()` on a `/g` regex is stateless
+// only if no /g flag is present (the concurrent matchAll call sites re-clone,
+// but MICRO_QUALIFY runs on every short segment and must not share lastIndex).
+const MICRO_ANCHOR_TEST =
+  /`[^`]+`|\b\w{2,}\.[a-zA-Z]\w{0,4}\b|[\w-]+(?:\/[\w-]+){2,}|\b\w+_\w+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z]+[A-Z]\w*\b/
+const MICRO_QUALIFY = (n: string) =>
+  n.length >= MICRO_MIN_NORM &&
+  n.length <= MICRO_MAX_NORM &&
+  /[a-z]/.test(n) &&
+  !/\d/.test(n) &&
+  !MICRO_ANCHOR_TEST.test(n)
 
 // Intent-frame thrash (2026-08-26 evidence, B200 profiling session): a
 // narration burst that ESCAPES the short-frame detector (0215) because the
@@ -264,6 +297,12 @@ class TextLoopDetector {
   // raw offset + normalized form per short segment (12-59 norm chars), so the
   // handler below can measure recycled-intent density over a saturated window.
   #shortFrames: { start: number; norm: string; seg: number }[] = []
+  // Micro-frame recycle window (2026-09-01): rolling record of the last
+  // MICRO_WINDOW segments that pass the loop-type shape test, plus every
+  // segment's seg offset so the span gate can tell a dense run from recycled
+  // frames scattered across real prose (mirrors the short-frame contiguity gate).
+  #microFrames: { start: number; norm: string; seg: number }[] = []
+  #microRunStart: number | null = null
   // Monotonic segment counter shared by the short-frame path and the near-dup
   // path, so `seg` puts every emitted segment on one timeline (discriminates
   // contiguous recycling from interspersed legit work).
@@ -395,6 +434,8 @@ class TextLoopDetector {
     this.#lexRunStart = 0
     this.#anchorWindow = []
     this.#shortFrames = []
+    this.#microFrames = []
+    this.#microRunStart = null
     this.#shortSegCount = 0
     this.#shortRunStart = null
     this.#textRaw = ""
@@ -477,6 +518,49 @@ class TextLoopDetector {
     // the short-frame contiguity gate to tell back-to-back recycling from
     // interspersed tool work / prose).
     this.#shortSegCount++
+    // Micro-frame recycle (2026-09-01): word-agnostic loop-TYPE detection.
+    // Record the segment if it is short enough to be a loop-type frame; a
+    // qualifying frame seeds the contiguous run, a non-qualifying one resets
+    // it (real prose interleaves and breaks the run). The window holds the
+    // last MICRO_WINDOW records regardless of qualification so the density
+    // gate can measure recycle vs interspersed work.
+    if (normalized.length < SEGMENT_MIN_NORM_CHARS) {
+      if (MICRO_QUALIFY(normalized)) {
+        if (this.#microRunStart === null) this.#microRunStart = start
+        this.#microFrames.push({ start, norm: normalized, seg: this.#shortSegCount })
+        if (this.#microFrames.length > MICRO_WINDOW) this.#microFrames.shift()
+        if (this.#microFrames.length >= MICRO_MIN_QUAL) {
+          // Density gate: >= MICRO_MIN_QUAL of the last MICRO_WINDOW stream
+          // positions must be loop-type frames. Non-qualifying segments are
+          // NOT in #microFrames (only qualifying ones are pushed), so the
+          // span gate (seg diff) is what bounds density: if the qualifying
+          // frames span more than MICRO_MAX_SPAN stream segments they are
+          // interspersed with real work, not a contiguous loop.
+          const last = this.#microFrames[this.#microFrames.length - 1]
+          const first = this.#microFrames[0]
+          const span = last.seg - first.seg
+          if (span <= MICRO_MAX_SPAN) {
+            const distinct = new Set(this.#microFrames.map((f) => f.norm)).size
+            const counts = new Map<string, number>()
+            for (const f of this.#microFrames) counts.set(f.norm, (counts.get(f.norm) ?? 0) + 1)
+            const repeats = this.#microFrames.filter((f) => (counts.get(f.norm) ?? 0) >= 2).length
+            if (distinct <= MICRO_MAX_DISTINCT && repeats / this.#microFrames.length >= MICRO_MIN_REPEAT) {
+              return {
+                hit: `${this.#microFrames.length} consecutive short frames recycle only ${distinct} phrasings (micro-frame loop)`,
+                trimAt: this.#microRunStart ?? this.#microFrames[0].start,
+              }
+            }
+          }
+        }
+      } else {
+        // Non-qualifying short segment: break the contiguous micro run (real
+        // prose or a progress marker interleaved), keep the window history.
+        this.#microRunStart = null
+      }
+    } else {
+      // Long segment: real content, breaks the run.
+      this.#microRunStart = null
+    }
     if (normalized.length < SEGMENT_MIN_NORM_CHARS) {
       // Short-frame path: segments under the near-dup floor never enter the
       // cluster window, so loops built from short repeated frames WOULD escape
