@@ -131,6 +131,35 @@ function providerMeta(metadata: Record<string, any> | undefined) {
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 
+// A serialized `<invoke name="X">...</invoke>` block inside an assistant TEXT
+// part. When the parser ALSO promoted the call to a real tool part in the SAME
+// message, the text copy is a LEAK (2026-09-01, B200 session: 10 of 15 recent
+// messages carried both a real executed tool AND the raw <invoke> markup in
+// text, re-seeding the model's format imitation loop). This helper strips only
+// the leaked copies from the MODEL REQUEST: a block is cropped iff the same
+// message has an executed tool part with the same name and a matching command
+// input. Prose/doc descriptions of a tool-call shape (NO matching executed tool
+// part) are never touched - the model keeps its ability to communicate the
+// format (print a tool-call example, write docs about the issue, etc.).
+const INVOKE_RE = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/g
+export function stripLeakedInvokes(text: string, tools: { tool: string; input: Record<string, unknown> }[]): string {
+  let leaked = false
+  const out = text.replace(INVOKE_RE, (whole, name: string, body: string) => {
+    // Extract the command parameter value (may carry `string="true"` attr).
+    const cmdMatch = /<parameter\s+name="command"(?:\s+[^\s>]*)*>([\s\S]*?)<\/parameter>/.exec(body)
+    const cmd = cmdMatch ? cmdMatch[1] : null
+    const matches = tools.some(
+      (t) => t.tool === name && t.input && (cmd === null ? false : t.input.command === cmd || JSON.stringify(t.input) === JSON.stringify({ command: cmd }) || String(t.input.command) === cmd),
+    )
+    if (!matches) return whole
+    leaked = true
+    // Crop the whole block: the call already executed (its real tool part and
+    // result remain in the request), so the text copy only re-seeds pollution.
+    return ""
+  })
+  return leaked ? out : text
+}
+
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
@@ -279,6 +308,15 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         if (part.type !== "reasoning") return false
         return part.metadata?.anthropic?.signature != null
       })
+      // Executed tool parts in THIS message: the match basis for stripping
+      // leaked <invoke> copies from the text (2026-09-01). Only completed
+      // calls count - and a doc/prose example with no matching executed tool is
+      // never stripped (the model keeps the ability to describe the format).
+      const executedTools = msg.parts.flatMap((part) =>
+        part.type === "tool" && part.state.status === "completed"
+          ? [{ tool: part.tool, input: part.state.input }]
+          : [],
+      )
       for (const part of msg.parts) {
         if (part.type === "text") {
           // stallTrimAt / loopTrimAt (guards, 2026-09-01): the guards mark the
@@ -298,6 +336,14 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
                 : null
           if (trimAt !== null && trimAt > 0) {
             base = base.slice(0, Math.min(trimAt, base.length))
+          }
+          // Leak-strip (2026-09-01): a serialized <invoke> in this text that
+          // matches an executed tool in the SAME message (same name + command)
+          // is a leaked copy of a call that already ran - crop just that block
+          // so it stops re-seeding the format-imitation loop. Prose/doc
+          // descriptions with no matching executed tool are untouched.
+          if (executedTools.length > 0) {
+            base = stripLeakedInvokes(base, executedTools)
           }
           const text = base === "" && hasSignedReasoning ? " " : base
           assistantMessage.parts.push({

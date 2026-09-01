@@ -294,6 +294,125 @@ describe("session.message-v2.toModelMessage", () => {
     expect(storedText.metadata?.["stallTrimAt"]).toBe(trimAt)
   })
 
+  test("leak-strip: serialized <invoke> matching an executed tool is cropped from the request, kept in storage (2026-09-01)", async () => {
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    const command = "timeout 30 ssh fgpu@10.100.10.113 'grep DONE /tmp/app.log'"
+    const full =
+      "Watchdog is dead. Let me check the success counter.\n\n" +
+      `<invoke name="bash">\n<parameter name="command">${command}</parameter>\n<parameter name="timeout">45000</parameter>\n</invoke>`
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [
+          { ...basePart(parentID, "p1"), type: "text", text: "continue" },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          {
+            ...basePart(msgID, "a1"),
+            type: "text",
+            text: full,
+          },
+          {
+            ...basePart(msgID, "t1"),
+            type: "tool" as const,
+            tool: "bash",
+            callID: "call1",
+            state: {
+              status: "completed" as const,
+              input: { command },
+              output: "done=12345",
+              time: { start: 0, end: 1 },
+            },
+          } as unknown as SessionV1.ToolPart,
+        ] as SessionV1.Part[],
+      },
+    ]
+    const result = await MessageV2.toModelMessages(input, model)
+    const assistant = result[1]
+    const textPart = (assistant.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")
+    // The leaked invoke is cropped from the REQUEST; the narration prose remains.
+    expect(textPart!.text).toContain("Watchdog is dead")
+    expect(textPart!.text).not.toContain("<invoke")
+    expect(textPart!.text).not.toContain(command)
+    // The tool part (with result) survives.
+    // The real (executed) tool call survives in the request.
+    expect((assistant.content as any[]).some((c) => c.type === "tool-call" && c.toolName === "bash")).toBe(true)
+    // The STORED part keeps the full text with the invoke (evidence intact).
+    expect((input[1].parts[0] as SessionV1.TextPart).text).toBe(full)
+  })
+
+  test("leak-strip: prose/doc describing a tool-call shape with NO matching executed tool is NOT cropped (2026-09-01)", async () => {
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    // The user asked what a tool call looks like; the model answers in prose,
+    // quoting the format - there is NO matching executed tool part.
+    const prose =
+      'A bash tool call looks like: <invoke name="bash"><parameter name="command">ls -la</parameter></invoke> - the parser runs it and returns the output.'
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [
+          { ...basePart(parentID, "p1"), type: "text", text: "what does a tool call look like?" },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          { ...basePart(msgID, "a1"), type: "text", text: prose },
+        ] as SessionV1.Part[],
+      },
+    ]
+    const result = await MessageV2.toModelMessages(input, model)
+    const assistant = result[1]
+    const textPart = (assistant.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")
+    // The doc example survives verbatim - the model keeps the ability to
+    // communicate the tool-call format (writing docs, explaining the issue).
+    expect(textPart!.text).toContain("<invoke name=\"bash\">")
+    expect(textPart!.text).toContain("ls -la")
+  })
+
+  test("leak-strip: invoke matching a DIFFERENT-tool executed part is kept (no false crop)", async () => {
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    const full =
+      'Status checked.\n\n<invoke name="bash">\n<parameter name="command">df -h</parameter>\n</invoke>'
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [
+          { ...basePart(parentID, "p1"), type: "text", text: "continue" },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          { ...basePart(msgID, "a1"), type: "text", text: full },
+          {
+            ...basePart(msgID, "t1"),
+            type: "tool" as const,
+            tool: "read",
+            callID: "call1",
+            state: {
+              status: "completed" as const,
+              input: { filePath: "/some/file" },
+              output: "contents",
+              time: { start: 0, end: 1 },
+            },
+          } as unknown as SessionV1.ToolPart,
+        ] as SessionV1.Part[],
+      },
+    ]
+    const result = await MessageV2.toModelMessages(input, model)
+    const assistant = result[1]
+    const textPart = (assistant.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")
+    // bash invoke vs read tool: no name match, so the text copy survives.
+    expect(textPart!.text).toContain("<invoke")
+  })
+
   test("loop-guard loopTrimAt trims the request but keeps the stored text (2026-09-01)", async () => {
     const parentID = "m-user"
     const msgID = "m-assistant"
@@ -2015,5 +2134,42 @@ describe("session.message-v2.filterCompacted epochs", () => {
         .find((m) => m.info.id === "msg_epoch_z")!
         .parts.some((p) => p.type === "text" && p.metadata?.epochDelta),
     ).toBe(true)
+  })
+})
+
+describe("session.message-v2.stripLeakedInvokes", () => {
+  test("crops a leaked invoke that matches an executed tool, keeps the rest", () => {
+    const cmd = "timeout 30 ssh fgpu@10.100.10.113 'grep DONE /tmp/app.log'"
+    const text =
+      "Watchdog is dead. Let me check the success counter.\n\n" +
+      `<invoke name="bash">\n<parameter name="command">${cmd}</parameter>\n<parameter name="timeout">45000</parameter>\n</invoke>`
+    const out = MessageV2.stripLeakedInvokes(text, [{ tool: "bash", input: { command: cmd } }])
+    expect(out).toContain("Watchdog is dead")
+    expect(out).not.toContain("<invoke")
+    expect(out).not.toContain(cmd)
+  })
+
+  test("keeps a doc/prose tool-call example when NO executed tool matches", () => {
+    const text = 'A bash call looks like: <invoke name="bash"><parameter name="command">ls -la</parameter></invoke>'
+    const out = MessageV2.stripLeakedInvokes(text, [])
+    expect(out).toBe(text)
+  })
+
+  test("crops only matching invokes; non-matching command survives in the same text", () => {
+    const cmd1 = "df -h"
+    const cmd2 = "ls /tmp"
+    const text = `<invoke name="bash"><parameter name="command">${cmd1}</parameter></invoke> done
+<invoke name="bash"><parameter name="command">${cmd2}</parameter></invoke>`
+    const out = MessageV2.stripLeakedInvokes(text, [{ tool: "bash", input: { command: cmd1 } }])
+    expect(out).not.toContain(cmd1)
+    expect(out).toContain(cmd2)
+    expect(out).toContain("done")
+  })
+
+  test("handles the string=true parameter attribute (DSM-formatted command)", () => {
+    const cmd = "pgrep -a -f watchdog"
+    const text = `<invoke name="bash">\n<parameter name="command" string="true">${cmd}</parameter>\n</invoke>`
+    const out = MessageV2.stripLeakedInvokes(text, [{ tool: "bash", input: { command: cmd } }])
+    expect(out).toBe("")
   })
 })
