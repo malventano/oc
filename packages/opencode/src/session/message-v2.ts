@@ -281,7 +281,25 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       })
       for (const part of msg.parts) {
         if (part.type === "text") {
-          const text = part.text === "" && hasSignedReasoning ? " " : part.text
+          // stallTrimAt / loopTrimAt (guards, 2026-09-01): the guards mark the
+          // part with their de-poison trim point (the tail is a stale colon /
+          // stray tag / serialized tool-call / looped region that the model
+          // must not re-ingest or quote). The FULL text stays stored so the
+          // TUI and session DB show exactly what fired the guard; only the
+          // model request trims here. Applied before the hasSignedReasoning
+          // separator logic; a fully-trimmed base falls back to the
+          // single-space separator so signed thinking positions stay stable.
+          let base = part.text === "" && hasSignedReasoning ? " " : part.text
+          const trimAt =
+            typeof part.metadata?.stallTrimAt === "number"
+              ? part.metadata.stallTrimAt
+              : typeof part.metadata?.loopTrimAt === "number"
+                ? part.metadata.loopTrimAt
+                : null
+          if (trimAt !== null && trimAt > 0) {
+            base = base.slice(0, Math.min(trimAt, base.length))
+          }
+          const text = base === "" && hasSignedReasoning ? " " : base
           assistantMessage.parts.push({
             type: "text",
             text,
@@ -365,19 +383,26 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             })
         }
         if (part.type === "reasoning") {
+          // loopTrimAt (loop guard, 2026-09-01): trim the model request at the
+          // guard's marked point (loop start) while the full text stays stored
+          // for the TUI/DB. Mirror of the text-part stallTrimAt handling above.
+          let reasonText = part.text
+          if (typeof part.metadata?.loopTrimAt === "number" && part.metadata.loopTrimAt > 0) {
+            reasonText = reasonText.slice(0, Math.min(part.metadata.loopTrimAt, reasonText.length))
+          }
           if (differentModel) {
             // Strip providerMetadata on model switch to avoid provider-specific
             // leakage (e.g., Bedrock thinking signatures), but preserve the
             // reasoning part type for prefix cache compatibility
             assistantMessage.parts.push({
               type: "reasoning",
-              text: part.text,
+              text: reasonText,
             })
             continue
           }
           assistantMessage.parts.push({
             type: "reasoning",
-            text: part.text,
+            text: reasonText,
             providerMetadata: part.metadata,
           })
         }
