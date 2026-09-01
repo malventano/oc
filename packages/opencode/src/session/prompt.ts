@@ -1603,7 +1603,7 @@ const layer = Layer.effect(
                 // to the drop when the preserved prefix is too small to be
                 // useful, or on a tool-input hit (the call never completed -
                 // nothing to preserve).
-                const trimAt = handle.loopTrimAt
+                 const trimAt = handle.loopTrimAt
                 let trimmed = false
                 if (trimAt !== null && trimAt >= TRIM_MIN_PRESERVED && handle.loopGuardChannel !== "tool-input") {
                   const parts = yield* MessageV2.parts(handle.message.id).pipe(
@@ -1618,7 +1618,15 @@ const layer = Layer.effect(
                     target.text.length > trimAt &&
                     target.text.slice(0, trimAt).trim().length >= TRIM_MIN_PRESERVED
                   ) {
-                    yield* sessions.updatePart({ ...target, text: target.text.slice(0, trimAt) })
+                    // Mirror the stall guard (2026-09-01): mark the trim point
+                    // in metadata (loopTrimAt) instead of truncating the stored
+                    // part - the TUI/DB keep the FULL text (what fired the
+                    // guard), the model request + compaction serialize apply the
+                    // trim. Reasoning parts use the same key.
+                    yield* sessions.updatePart({
+                      ...target,
+                      metadata: { ...target.metadata, loopTrimAt: trimAt },
+                    })
                     trimmed = true
                   }
                 }
@@ -1761,9 +1769,17 @@ const layer = Layer.effect(
                   })
                   note += `\n\n${toolError}`
                 } else if (detection?.trimAt != null) {
-                  // De-poison the offending tail: trim the text part at the
-                  // stall start so the model resumes from its own clean
-                  // intent, not the stale colon/tag remnant.
+                  // De-poison the offending tail: mark the text part's trim
+                  // point in METADATA (stallTrimAt) instead of truncating the
+                  // stored text. The full text stays in the DB and the TUI
+                  // (so a review shows exactly what the model emitted when the
+                  // guard fired - e.g. the leaked tool calls in msg_05e1bb120 /
+                  // msg_05e1c2228); the trim is applied ONLY at model-request
+                  // build time (message-v2.ts toModelMessages) and in the
+                  // compaction serialize, so the model resumes from its own
+                  // clean intent rather than the stale colon/tag/serialized-
+                  // invoke remnant. Prior behaviour truncated the shared part,
+                  // masking the fire evidence from the TUI (2026-09-01).
                   const parts = yield* MessageV2.parts(handle.message.id).pipe(
                     Effect.provideService(Database.Service, database),
                   )
@@ -1773,8 +1789,11 @@ const layer = Layer.effect(
                     target.text.length > detection.trimAt &&
                     target.text.slice(0, detection.trimAt).trim().length >= TRIM_MIN_PRESERVED
                   ) {
-                    yield* sessions.updatePart({ ...target, text: target.text.slice(0, detection.trimAt) })
-                    note += `\n\nPremature-stop tail removed from context; continuing.`
+                    yield* sessions.updatePart({
+                      ...target,
+                      metadata: { ...target.metadata, stallTrimAt: detection.trimAt },
+                    })
+                    note += `\n\nPremature-stop tail trimmed at request time; continuing.`
                   }
                 }
                 steerPrompt = "Continue."
