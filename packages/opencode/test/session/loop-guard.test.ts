@@ -383,3 +383,126 @@ describe("LoopGuard short-frame intent recycling (2026-08-21 evidence)", () => {
     expect(hit!.hit).toContain("campaign continues")
   })
 })
+
+describe("LoopGuard micro-frame recycle (2026-09-01, word-agnostic loop TYPE)", () => {
+  // The B200 profiling session's Snapshot/Run/Now/Go loop (msg_05b4a1afd0,
+  // 2026-09-01 04:46:18Z): 258 frames, 81 distinct, dominated by 1-2 word
+  // imperative/exclamatory frames. It escaped every word-typed gate - zero
+  // "let me" (INTENT_PREFIX), 71% of frames under SHORT_FRAME_MIN_NORM=12,
+  // most under THRASH_MIN_NORM=10 - because the OLD signatures key on the
+  // WORDS ("let me" / intent mouths / min-normalized-length that encodes a
+  // "let me check" shape), not the LOOP TYPE. The type is structural: a dense
+  // contiguous run of short frames recycling a tiny repertory, no numerals and
+  // no new-named artifact (progress markers). This signature detects the type.
+  const SEP = "\n\n"
+
+  function saturate(frames: string[], rounds = 2): string {
+    return Array.from({ length: rounds }, () => frames.join(SEP)).join(SEP) + SEP
+  }
+
+  test("fires on the B200 Snapshot.Run.Now.Go loop (msg_05b4a1afd0 shape)", () => {
+    const frames = ["Snapshot.", "Run.", "Now.", "Go.", "Execute.", "Do it.", "Run snapshots.", "Go."]
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 5 && !hit; i++) {
+      for (const f of frames) {
+        hit = guard.pushText(f + SEP)
+        if (hit) break
+      }
+    }
+    expect(hit).not.toBeNull()
+    expect(hit!.hit).toContain("micro-frame")
+  })
+
+  test("fires on the monitor Check/Continuing/Monitoring loop (B200 msg_03de4e892 shape)", () => {
+    const frames = ["Check.", "Continuing.", "Monitoring.", "The spread.", "Campaign continues."]
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 5 && !hit; i++) {
+      for (const f of frames) {
+        hit = guard.pushText(f + SEP)
+        if (hit) break
+      }
+    }
+    expect(hit).not.toBeNull()
+  })
+
+  test("trimAt anchors at the looped run start, not the window fill", () => {
+    const frames = [
+      "All docs updated. The override sits at the top.",
+      "Snapshot.", "Run.", "Now.", "Go.", "Execute.", "Do it.", "Run snapshots.",
+      "Go.", "Now.", "Execute.", "Run.",
+    ]
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 4 && !hit; i++) {
+      for (const f of frames) {
+        hit = guard.pushText(f + SEP)
+        if (hit) break
+      }
+    }
+    expect(hit).not.toBeNull()
+    // The leader prose ("All docs updated...") is real content - the looped
+    // run (and thus the trim) starts at the first loop-type frame.
+    expect(hit!.trimAt).toBeGreaterThan(0)
+  })
+
+  test("does not fire on real work: interspersed numbered progress (progress markers veto)", () => {
+    // Numeral-carrying frames ("53%", "tp1pp8 4017/23608") are progress
+    // markers, not loop frames - a status message that carries real numbers
+    // throughout must never read as a loop.
+    const frames = [
+      "tp1pp8 at 16.1%.",
+      "tp2pp2 at 53%.",
+      "tp1pp4 at 44%.",
+      "tp1pp2 at 87%.",
+      "tp4pp2 at 6.68 rps.",
+      "tp2pp4 COMPLETE.",
+    ]
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < 6 && !hit; i++) {
+      for (const f of frames) {
+        hit = guard.pushText(f + SEP)
+        if (hit) break
+      }
+    }
+    expect(hit).toBeNull()
+  })
+
+  test("does not fire on healthy multi-sentence working narration (edit-tool task prose)", () => {
+    // Real task prose that names concrete artifacts (paths, file refs) every
+    // frame stays below the concrete-anchor threshold: the frames do not
+    // recycle (distinct > cap) and progress anchors break the run.
+    const healthy =
+      "The edit applied cleanly. Let me verify the volatile-persist split in git status shows only the expected three files.\n\n" +
+      "Acknowledged - the split landing in core and the win32-handle Windows codepath, need to check the workspace state before proceeding further.\n\n" +
+      "Let me continue with the marker update and the compaction check.\n\n" +
+      "The upstream README confirms the NPM scoped package and the exact git+ssh install block - mirroring that for our repo."
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < healthy.length; i += 30) {
+      hit = guard.pushText(healthy.slice(i, i + 30))
+      if (hit) break
+    }
+    expect(hit).toBeNull()
+  })
+
+  test("does not fire when only ONE frame shape repeats with no loop density (brief interspersed 'check.')", () => {
+    // A single recycled short frame interspersed across real long prose is not
+    // a loop: the window never fills with qualifying frames (density gate).
+    const healthy =
+      "The box is back up. Checking sweep state via the ssh. The sweep looks healthy here - I pulled the trailing lines of the ladder output and the watchdog tail is stable.\n\n" +
+      "Check.\n\n" +
+      "The progress markers show od-50 replay at 790 of 23608 completed and the watchdog armed, past boot span.\n\n" +
+      "Check.\n\n" +
+      "The engine is booting now - the prefill burst danger window passes when the first completions land."
+    const guard = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < healthy.length; i += 30) {
+      hit = guard.pushText(healthy.slice(i, i + 30))
+      if (hit) break
+    }
+    expect(hit).toBeNull()
+  })
+})

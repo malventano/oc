@@ -1381,11 +1381,24 @@ const layer = Layer.effect(
               // 42s of block spam until the user cancelled. The 3rd-fire
               // auto-compaction is skipped for compaction turns (recursion).
               // The stall guard's compaction-continue exemption is the 0214
-              // exception (stallGuardCompactionContinue above): a continuation
+              // exception (stallGuardCompactionContinue below): a continuation
               // response legitimately ends at stop with a colon - exempting it
               // only, the loop guard claim above still holds.
+              // 0228: the SUMMARY-GENERATION step itself is ALSO stall-exempt
+              // (stallGuardEnabled && !compactingPrompt). Its parent is the
+              // compaction MARKER (a `compaction` part - the 0214 check above
+              // keys on the synthetic compaction_continue TEXT part, which is
+              // created AFTER the summary) and it is a constrained generation
+              // ("Do not call any tools. Output only the summary.") whose
+              // natural end is arbitrary prose - a stray markup-shaped tail in
+              // the summary content falsely fired stray-closer, trimmed the
+              // summary and banner-marked it (2026-09-01 B200 evidence msg
+              // 05b4a37c80 + 02:39:11 case). Scoping it at the create call
+              // (not by mutating stallGuardEnabled) keeps it to the summary
+              // iteration only - the loop guard stays ON here (poisoned
+              // summary input loops = 42s disease).
               loopGuardEnabled,
-              stallGuardEnabled,
+              stallGuardEnabled: stallGuardEnabled && !compactingPrompt,
               stallGuardCompactionContinue,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
