@@ -178,26 +178,29 @@ const LET_ME_START = new RegExp(`^\\s*let me\\s+(${LET_ME_VERBS})\\b`, "i")
 /**
  * Pure detection: given the step's finish reason and accumulated text, classify.
  *
- * `compactionContinue` exempts the step entirely: the model's response to an
- * auto-compaction continuation message legitimately ends at `stop` with a
- * colon/mid-sentence shape (it is RESUMPTION of an interrupted task), so the
- * endpoint-shape signatures fire on every normal resume - burning the shared
- * fire budget toward needless auto-compaction/halt (0214). The loop guard stays
- * active there: its detectors are repetition-based, so a legit resume does not
- * trip them and a post-compaction RE-loop is still caught.
- */
+  * `compactionContinue` exempts only the AMBIGUOUS endpoint shapes: the model's
+  * response to an auto-compaction continuation message legitimately ends at
+  * `stop` with a colon / mid-sentence / silent shape (it is RESUMPTION of an
+  * interrupted task). The markup-fragment family (eaten-call, stray-closer) is
+  * NEVER exempted: a response ending in stranded tool-call markup is not a
+  * normal resume shape - the model was emitting a call and it leaked (0227;
+  * B200 session serialized a full `<invoke>` block as text on a
+  * compaction-continue step, finish=stop, and both guards missed it). The
+  * loop guard stays active there: its detectors are repetition-based, so a
+  * legit resume does not trip them and a post-compaction RE-loop is still
+  * caught.
+  */
 export function detect(
   finish: string | undefined,
   text: string,
   hadToolCall: boolean,
   compactionContinue = false,
 ): StallDetection | null {
-  if (compactionContinue) return null
   if (finish !== "stop") return null
   if (text.length === 0) {
     // No text at all: only fire when no tool call happened - a turn that
     // ended on a tool call is a normal tool-call turn, not a silent stall.
-    if (hadToolCall) return null
+    if (hadToolCall || compactionContinue) return null
     return {
       signature: "silent",
       detail: "response produced no visible output",
@@ -230,6 +233,12 @@ export function detect(
       trimAt: wholeCallTrimAt(norm, stray.index),
     }
   }
+  // The remaining signatures are AMBIGUOUS on a compaction-continue step: a
+  // legit resume ends at stop with a colon / mid-sentence shape, may state a
+  // fresh intent, and (already handled above) must not be silenced by the
+  // markup family. Exempt those shapes only (0214; tightened 0227 to leave
+  // the markup family active).
+  if (compactionContinue) return null
   const colon = /:\s*$/.exec(text)
   if (colon) {
     return {

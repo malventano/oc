@@ -889,12 +889,12 @@ const layer = Layer.effect(
           // ends BY DESIGN at the restart tool result (finish set to "stop"
           // above), so a premature-stop signature (text ending in ":") must
           // not re-open the turn with a steer.
-          if (
-            ctx.stallGuardEnabled &&
-            !ctx.restartClosed &&
-            !ctx.stallGuardCompactionContinue &&
-            !ctx.assistantMessage.error
-          ) {
+          // Compaction-continue steps are NOT gated here (0227): detect()
+          // exempts only the ambiguous resume shapes (colon/silent/let-me)
+          // but still fires the markup-fragment family (eaten-call,
+          // stray-closer) - a response ending in leaked tool-call markup is
+          // never a valid resume.
+          if (ctx.stallGuardEnabled && !ctx.restartClosed && !ctx.assistantMessage.error) {
             const hit = StallGuard.detect(
               ctx.assistantMessage.finish,
               ctx.stallText,

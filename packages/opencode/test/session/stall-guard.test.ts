@@ -137,16 +137,45 @@ describe("stall-guard detect", () => {
     expect(StallGuard.detect("stop", "the designed flow.", false)).toBeNull()
   })
 
-  test("compaction-continue steps are fully exempt (0214)", () => {
+  test("compaction-continue steps exempt ONLY the ambiguous shapes (0214, tightened 0227)", () => {
     // A normal resume response legitimately ends at stop with a colon /
-    // mid-sentence shape: every endpoint signature must be skipped for the
-    // continuation step (would otherwise burn the shared fire budget toward
-    // needless auto-compaction at the 3rd/6th fire and halt at the 9th).
+    // mid-sentence shape: the ambiguous endpoint signatures must be skipped
+    // for the continuation step (would otherwise burn the shared fire budget
+    // toward needless auto-compaction at the 3rd/6th fire and halt at the 9th).
     expect(StallGuard.detect("stop", "The next step is to check the flag meaning and run it against the old bytes:", false, true)).toBeNull()
     expect(StallGuard.detect("stop", "test test test", false, true)).toBeNull()
     expect(StallGuard.detect("stop", "", false, true)).toBeNull()
     // ... and the non-continuation case still fires for the same text.
     expect(StallGuard.detect("stop", "The next step is to check the flag meaning and run it against the old bytes:", false)).not.toBeNull()
     expect(StallGuard.detect("stop", "", false)).not.toBeNull()
+  })
+
+  test("compaction-continue steps still fire the markup-fragment family (0227)", () => {
+    // A response ending in stranded tool-call markup is NOT a valid resume
+    // shape even on a compaction-continue step - the model was emitting a
+    // call and it leaked. 2026-09-01 B200 session: a full <invoke> block
+    // serialized as text, finish=stop, parent compaction-continue; the 0214
+    // blanket exemption let it through, so the serialized tool call never
+    // executed and nobody nudged the model.
+    // 2026-09-01 B200 shape: a full <invoke> block serialized as text, ending
+    // in the stranded </invoke> closer (stray-closer family).
+    const serializedText =
+      'Checking ladder/wd state.\n\n<invoke name="bash">\n<parameter name="command">ssh -i ~/.ssh/id_ed25519_farmgpu fgpu@10.100.10.113 \'tail -3 /home/fgpu/trace-sweep-8bfp8-tp2.out\'</parameter>\n</invoke>'
+    const serialized = StallGuard.detect("stop", serializedText, false, true)
+    expect(serialized).not.toBeNull()
+    expect(serialized!.signature).toBe("stray-closer")
+    // wholeCallTrimAt extends the trim back to the outermost opener so the
+    // whole leaked call leaves context; the prose before it survives.
+    expect(serialized!.trimAt).toBe(serializedText.indexOf("<invoke"))
+    expect(serializedText.slice(0, serialized!.trimAt!)).not.toContain("<parameter")
+
+    // The full eaten-call chain (</parameter></invoke></tool_calls>) also stays
+    // active on the continuation step.
+    expect(StallGuard.detect("stop", "resuming x</parameter></invoke></tool_calls>", false, true)).not.toBeNull()
+    expect(StallGuard.detect("stop", "resuming x</parameter></invoke></tool_calls>", false, true)!.signature).toBe("eaten-call")
+
+    // Non-markup ambiguous shapes remain exempt.
+    expect(StallGuard.detect("stop", "Resume from here:", false, true)).toBeNull()
+    expect(StallGuard.detect("stop", "Let me check the flag:", false, true)).toBeNull()
   })
 })
