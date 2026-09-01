@@ -413,6 +413,45 @@ describe("session.message-v2.toModelMessage", () => {
     expect(textPart!.text).toContain("<invoke")
   })
 
+  test("guard metadata keys (stallTrimAt/loopTrimAt) never reach providerMetadata on the wire (0231)", async () => {
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    const full = "lead prose\n\n<invoke name=\"bash\"><parameter name=\"command\">ls</parameter></invoke>"
+    const trimAt = full.indexOf("<invoke")
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [{ ...basePart(parentID, "p1"), type: "text", text: "continue" }] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          {
+            ...basePart(msgID, "a1"),
+            type: "text",
+            text: full,
+            metadata: { stallTrimAt: trimAt, loopTrimAt: trimAt, epochDelta: "keep-me" },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+    const result = await MessageV2.toModelMessages(input, model)
+    const assistant = result[1]
+    const textPart = (assistant.content as Array<{ type: string; text?: string; providerMetadata?: unknown }>).find(
+      (c) => c.type === "text",
+    )
+    // Guard-internal keys are stripped from the serialized provider options;
+    // other metadata is preserved. (The AI-SDK serializes the metadata onto the
+    // part as providerOptions - that is what would reach the vLLM wire and what
+    // rejected the ModelMessage schema when stallTrimAt was present.)
+    const opts = (textPart as unknown as { providerOptions?: Record<string, unknown> }).providerOptions
+    expect(opts?.["stallTrimAt"]).toBeUndefined()
+    expect(opts?.["loopTrimAt"]).toBeUndefined()
+    expect(opts?.["epochDelta"]).toBe("keep-me")
+    // The request text is still trim-applied.
+    expect(textPart!.text).not.toContain("<invoke")
+  })
+
   test("loop-guard loopTrimAt trims the request but keeps the stored text (2026-09-01)", async () => {
     const parentID = "m-user"
     const msgID = "m-assistant"

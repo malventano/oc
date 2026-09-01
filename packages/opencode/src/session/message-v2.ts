@@ -142,6 +142,21 @@ function providerMeta(metadata: Record<string, any> | undefined) {
 // part) are never touched - the model keeps its ability to communicate the
 // format (print a tool-call example, write docs about the issue, etc.).
 const INVOKE_RE = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/g
+// Guard-internal metadata keys: written by the loop/stall guards (0229) to mark
+// their de-poison trim point on a part. They are TUI/DB bookkeeping and MUST
+// NOT ride into providerMetadata on the wire - vLLM's Responses endpoint
+// rejects a text part carrying an unknown providerOptions field (2026-09-01
+// live: "Invalid prompt: The messages do not match the ModelMessage[] schema"
+// after the guard marked a part with stallTrimAt).
+export const GUARD_METADATA_KEYS = ["stallTrimAt", "loopTrimAt"] as const
+export function guardMetadata(metadata: Record<string, any> | undefined): Record<string, any> | undefined {
+  if (!metadata) return undefined
+  const rest: Record<string, any> = {}
+  for (const [k, v] of Object.entries(metadata)) {
+    if (!(GUARD_METADATA_KEYS as readonly string[]).includes(k)) rest[k] = v
+  }
+  return Object.keys(rest).length > 0 ? rest : undefined
+}
 export function stripLeakedInvokes(text: string, tools: { tool: string; input: Record<string, unknown> }[]): string {
   let leaked = false
   const out = text.replace(INVOKE_RE, (whole, name: string, body: string) => {
@@ -349,7 +364,10 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           assistantMessage.parts.push({
             type: "text",
             text,
-            ...(differentModel ? {} : { providerMetadata: part.metadata }),
+            // guardMetadata strips the guard-internal trim keys (stallTrimAt /
+            // loopTrimAt) so they never reach providerMetadata / the wire
+            // (0229's marks are TUI/DB bookkeeping only).
+            ...(differentModel ? {} : { providerMetadata: guardMetadata(part.metadata) }),
           })
         }
         if (part.type === "step-start")
@@ -449,7 +467,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           assistantMessage.parts.push({
             type: "reasoning",
             text: reasonText,
-            providerMetadata: part.metadata,
+            providerMetadata: guardMetadata(part.metadata),
           })
         }
       }
