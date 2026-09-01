@@ -131,8 +131,28 @@ const serialize = (message: SessionV1.WithParts) => {
   }
   return message.parts
     .flatMap((part) => {
-      if (part.type === "text") return part.text ? [`[Assistant]: ${part.text}`] : []
-      if (part.type === "reasoning") return part.text ? [`[Assistant reasoning]: ${part.text}`] : []
+      // stallTrimAt / loopTrimAt (guards, 2026-09-01): respect the guards'
+      // de-poison trim points when compacting - the tail (stale colon / stray
+      // tag / serialized tool-call / looped region) must NOT ride into the
+      // summary and re-poison the compacted context. The full text stays
+      // stored for the TUI/DB.
+      const applyTrim = (t: string, meta: { stallTrimAt?: unknown; loopTrimAt?: unknown } | undefined) => {
+        const trimAt =
+          typeof meta?.stallTrimAt === "number"
+            ? meta.stallTrimAt
+            : typeof meta?.loopTrimAt === "number"
+              ? meta.loopTrimAt
+              : null
+        return trimAt !== null && trimAt > 0 ? t.slice(0, Math.min(trimAt, t.length)) : t
+      }
+      if (part.type === "text") {
+        const base = applyTrim(part.text, part.metadata)
+        return base ? [`[Assistant]: ${base}`] : []
+      }
+      if (part.type === "reasoning") {
+        const base = applyTrim(part.text, part.metadata)
+        return base ? [`[Assistant reasoning]: ${base}`] : []
+      }
       if (part.type !== "tool") return []
       const call = `[Assistant tool call]: ${part.tool}(${JSON.stringify(part.state.input)})`
       if (part.state.status === "completed") {

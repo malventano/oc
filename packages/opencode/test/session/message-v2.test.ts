@@ -246,6 +246,117 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("stall-guard stallTrimAt trims the model request but not the stored text (2026-09-01)", async () => {
+    // The stall guard now marks its de-poison trim point in metadata instead
+    // of truncating the shared part, so the TUI/DB retain the FULL text (the
+    // evidence of what fired the guard - e.g. the serialized <invoke> tool
+    // calls in the B200 session). The MODEL REQUEST must trim at that point
+    // so the stale colon/stray-tag/serialized-invoke tail is never re-ingested.
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    const full =
+      "Watchdog is dead. Let me check the runner's log format to find the progress indicator.\n\n" +
+      '<invoke name="bash">\n<parameter name="command">timeout 30 ssh ... grep done 2>/dev/null</parameter>\n</invoke>'
+    const trimAt = full.indexOf("<invoke")
+
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [
+          { ...basePart(parentID, "p1"), type: "text", text: "continue" },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          {
+            ...basePart(msgID, "a1"),
+            type: "text",
+            text: full,
+            metadata: { stallTrimAt: trimAt },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    // The request carries ONLY the trimmed prefix (clean intent before the
+    // serialized invoke) - the poisoned tail is absent.
+    expect(result).toHaveLength(2)
+    const assistant = result[1]
+    expect(assistant.role).toBe("assistant")
+    const textPart = (assistant.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")
+    expect(textPart!.text).toBe(full.slice(0, trimAt))
+    expect(textPart!.text).not.toContain("<invoke")
+    // The FULL text remains on the stored part (TUI/DB evidence intact).
+    const storedText = input[1].parts[0] as SessionV1.TextPart
+    expect(storedText.text).toBe(full)
+    expect(storedText.metadata?.["stallTrimAt"]).toBe(trimAt)
+  })
+
+  test("loop-guard loopTrimAt trims the request but keeps the stored text (2026-09-01)", async () => {
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    const full = "lead prose\n\nEditing now:Let me make the edit:*editing*"
+    const trimAt = full.indexOf("\n")
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [
+          { ...basePart(parentID, "p1"), type: "text", text: "continue" },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          {
+            ...basePart(msgID, "a1"),
+            type: "text",
+            text: full,
+            metadata: { loopTrimAt: trimAt },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+    const result = await MessageV2.toModelMessages(input, model)
+    const assistant = result[1]
+    const textPart = (assistant.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")
+    expect(textPart!.text).toBe("lead prose")
+    expect(textPart!.text).not.toContain("Editing")
+    // stored part keeps the full looped text
+    const stored = input[1].parts[0] as SessionV1.TextPart
+    expect(stored.text).toBe(full)
+  })
+
+  test("stallTrimAt with no tail leftover still emits the preserved prefix (empty-safe)", async () => {
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    const full = "clean intent before the fire"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [
+          { ...basePart(parentID, "p1"), type: "text", text: "continue" },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          {
+            ...basePart(msgID, "a1"),
+            type: "text",
+            text: full,
+            metadata: { stallTrimAt: full.length, metadataKey: "unrelated" },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+    const result = await MessageV2.toModelMessages(input, model)
+    const assistant = result[1]
+    const textPart = (assistant.content as Array<{ type: string; text?: string }>).find((c) => c.type === "text")
+    expect(textPart!.text).toBe("clean intent before the fire")
+  })
+
   test("converts user text/file parts and injects compaction/subtask prompts", async () => {
     const messageID = "m-user"
 
