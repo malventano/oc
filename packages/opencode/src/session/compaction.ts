@@ -129,6 +129,15 @@ const serialize = (message: SessionV1.WithParts) => {
     )
     return [...(text ? [`[User]: ${text}`] : []), ...files].join("\n")
   }
+  // Executed tool parts in this message: the match basis for stripping leaked
+  // <invoke> copies from the text during compaction (2026-09-01). Only
+  // completed calls count - doc/prose examples with no matching executed tool
+  // are never stripped.
+  const executedTools = message.parts.flatMap((part) =>
+    part.type === "tool" && part.state.status === "completed"
+      ? [{ tool: part.tool, input: part.state.input }]
+      : [],
+  )
   return message.parts
     .flatMap((part) => {
       // stallTrimAt / loopTrimAt (guards, 2026-09-01): respect the guards'
@@ -146,7 +155,9 @@ const serialize = (message: SessionV1.WithParts) => {
         return trimAt !== null && trimAt > 0 ? t.slice(0, Math.min(trimAt, t.length)) : t
       }
       if (part.type === "text") {
-        const base = applyTrim(part.text, part.metadata)
+        const base = executedTools.length > 0
+          ? MessageV2.stripLeakedInvokes(applyTrim(part.text, part.metadata), executedTools)
+          : applyTrim(part.text, part.metadata)
         return base ? [`[Assistant]: ${base}`] : []
       }
       if (part.type === "reasoning") {
