@@ -109,6 +109,15 @@ export function integrateSkillBodies(msgs: SessionV1.WithParts[]): Map<string, R
         // agent's own change is already in context. The edit tool records the
         // per-file unified diffs in the completed state's metadata; the write
         // tool carries the full content in its input.
+        // Both branches must confirm the TOUCHED FILE is THIS skill's SKILL.md
+        // before mutating the reconstruction. The write branch previously
+        // applied ANY completed write's content to EVERY tracked skill
+        // (BUG_SKILL_DELTA_WRITE_POLLUTION): a session write of an unrelated
+        // file - a BUG doc, a tmp script - silently became the skill's
+        // "applied" body, so the next step-1 prompt diffed the unrelated
+        // file's bytes against the real SKILL.md and emitted a bogus
+        // "Skill context drift" reminder (old = last file written, new = the
+        // skill). Same relative/absolute match rules as the edit branch.
         for (const entry of out.values()) {
           if (!entry.location) continue
           const loc = entry.location
@@ -131,7 +140,11 @@ export function integrateSkillBodies(msgs: SessionV1.WithParts[]): Map<string, R
            // (e.g. the file had external drift since the load) leaves the
            // state as-is; the residual diff surfaces via the normal path.
           } else {
-           const content = (part.state.input as { content?: unknown } | undefined)?.content
+           const inp = part.state.input as { content?: unknown; filePath?: unknown } | undefined
+           const fp = typeof inp?.filePath === "string" ? inp.filePath : undefined
+           if (!fp) continue
+           if (!(fp === loc || loc.endsWith(`/${fp}`))) continue
+           const content = inp ? inp.content : undefined
            if (typeof content === "string") entry.applied = content.trim()
           }
         }
