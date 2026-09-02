@@ -18,12 +18,13 @@ const providerID = ProviderV2.ID.make("test")
 const retryProvider = "test"
 const it = testEffect(LayerNode.compile(LayerNode.group([SessionStatus.node, CrossSpawnSpawner.node])))
 
-function apiError(headers?: Record<string, string>): SessionV1.APIError {
+function apiError(headers?: Record<string, string>, statusCode?: number): SessionV1.APIError {
   return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
     new SessionV1.APIError({
       message: "boom",
       isRetryable: true,
       responseHeaders: headers,
+      statusCode,
     }).toObject(),
   )
 }
@@ -37,6 +38,16 @@ describe("session.retry.delay", () => {
     const error = apiError()
     const delays = Array.from({ length: 10 }, (_, index) => SessionRetry.delay(index + 1, error, 0))
     expect(delays).toStrictEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000])
+  })
+
+  test("unreachable class climbs to the 60s cap (BUG_RDT_OUTAGE_BUDGET)", () => {
+    const error = apiError()
+    // Default (HTTP-class) cap stays 30s; the unreachable class (connect
+    // refused/reset) escalates to 60s per attempt so a long provider outage is
+    // probed with bounded, less-aggressive backoff.
+    expect(SessionRetry.delay(6, error, 0)).toBe(30000)
+    expect(SessionRetry.delay(6, error, 0, SessionRetry.RETRY_MAX_DELAY_UNREACHABLE)).toBe(60000)
+    expect(SessionRetry.delay(7, error, 1, SessionRetry.RETRY_MAX_DELAY_UNREACHABLE)).toBe(60000)
   })
 
   test("adds jitter to exponential delays", () => {
@@ -124,10 +135,11 @@ describe("session.retry.delay", () => {
     }),
   )
 
-  it.instance("policy stops after five retries", () =>
+  it.instance("policy stops after five retries for HTTP-class errors", () =>
     Effect.gen(function* () {
       const attempts: number[] = []
-      const error = apiError({ "retry-after-ms": "0" })
+      // A real status code = an HTTP-class error: stays on the tight budget.
+      const error = apiError({ "retry-after-ms": "0" }, 500)
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
           provider: "test",
@@ -144,6 +156,34 @@ describe("session.retry.delay", () => {
       )
 
       expect(attempts).toStrictEqual([1, 2, 3, 4, 5])
+    }),
+  )
+
+  it.instance("policy bridges a provider outage: no-status errors use the longer budget (BUG_RDT_OUTAGE_BUDGET)", () =>
+    Effect.gen(function* () {
+      const attempts: number[] = []
+      // No statusCode = the endpoint-went-away class (connect refused / reset):
+      // retries persist past 5 so a vLLM restart of minutes is bridged instead
+      // of failing the step terminally.
+      const error = apiError({ "retry-after-ms": "0" })
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) =>
+            Effect.sync(() => {
+              attempts.push(info.attempt)
+            }),
+        }),
+      )
+
+      yield* Effect.forEach(Array.from({ length: SessionRetry.RETRY_MAX_RETRIES_UNREACHABLE + 1 }), () =>
+        Effect.ignore(step(error)),
+      )
+
+      expect(attempts).toStrictEqual(
+        Array.from({ length: SessionRetry.RETRY_MAX_RETRIES_UNREACHABLE }, (_, i) => i + 1),
+      )
     }),
   )
 })
