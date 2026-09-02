@@ -189,6 +189,20 @@ describe("skill-delta.integrateSkillBodies", () => {
     expect(out.get("mcp-docs")?.applied).toBe("v2 from write")
   })
 
+  test("a write to an UNRELATED file does not pollute the applied state (BUG_SKILL_DELTA_WRITE_POLLUTION)", () => {
+    // The write branch lacked the edit branch's location gate: ANY completed
+    // write set every tracked skill's applied body to that file's content, so
+    // the next step-1 prompt diffed an unrelated file against the real
+    // SKILL.md and emitted a bogus skill-drift reminder (old = last file
+    // written, new = the skill).
+    const out = integrateSkillBodies([
+      msg([loadPart("mcp-docs", "v1 body")]),
+      msg([writePart("/root/oc/opencode/bugs/BUG_EDIT_INLINE_MARKERS.md", "unrelated bytes")]),
+    ])
+    expect(out.get("mcp-docs")?.applied).toBeNull()
+    expect(out.get("mcp-docs")?.baseline).toBe("v1 body")
+  })
+
   test("an edit touching a different file does not alter the applied state", () => {
     const out = integrateSkillBodies([
       msg([loadPart("mcp-docs", "v1")]),
