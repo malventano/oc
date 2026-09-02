@@ -43,6 +43,20 @@ export const Parameters = Schema.Struct({
     description:
       "The patch text: *** Begin Patch, [path] sections, OLD:/NEW: content blocks, *** End Patch",
   }),
+  // Accepted and IGNORED (0234): models occasionally mirror the read/write
+  // tool signatures and send `filePath`/`path` beside `input`. The [path]
+  // section header inside `input` is authoritative, so these add nothing -
+  // but hard-rejecting them produced a SchemaError that nudged the model to
+  // give up on the edit tool and resort to bash heredoc/cat writes. Accepting
+  // the keys makes a trivially-repairable call succeed; a call that relied on
+  // filePath with NO [path] header still fails parse ("content before any
+  // [PATH] section").
+  filePath: Schema.optional(Schema.String).annotate({
+    description: "Ignored - the [path] section header in `input` is authoritative.",
+  }),
+  path: Schema.optional(Schema.String).annotate({
+    description: "Ignored - the [path] section header in `input` is authoritative.",
+  }),
 })
 
 // Split file text into lines, tracking whether the original ended with a

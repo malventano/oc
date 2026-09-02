@@ -207,6 +207,52 @@ describe("grammar-fence parser", () => {
     if (!parsed.ok) return
     expect(parsed.files[0].ops[0]).toEqual({ kind: "replace", old: ["a", "", "b"], new: ["A", "", "B"] })
   })
+
+  test("inline OLD:/NEW: markers carry their first content row (0234)", () => {
+    // The model's compact form glues the first content line to the marker
+    // (`OLD:alpha`). Pre-0234 the marker regex required the marker to end the
+    // line, so the whole patch failed "content outside of an OLD:/NEW: block".
+    const parsed = parseFencePatch(
+      "*** Begin Patch\n[a.txt]\nOLD:alpha\nbeta\nNEW:ALPHA\nBETA\n*** End Patch",
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.files[0].ops).toEqual([{ kind: "replace", old: ["alpha", "beta"], new: ["ALPHA", "BETA"] }])
+  })
+
+  test("inline markers preserve content indentation (0234)", () => {
+    const parsed = parseFencePatch(
+      "*** Begin Patch\n[a.txt]\nOLD:  local err=99\nNEW:  local err=0\n*** End Patch",
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.files[0].ops).toEqual([
+      { kind: "replace", old: ["  local err=99"], new: ["  local err=0"] },
+    ])
+  })
+
+  test("inline NEW after an empty OLD is an append (0234)", () => {
+    const parsed = parseFencePatch("*** Begin Patch\n[a.txt]\nOLD:\nNEW:tail\n*** End Patch")
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.files[0].ops).toEqual([{ kind: "append", text: ["tail"] }])
+  })
+
+  test("inline marker-looking content inside an open OLD block stays verbatim (0234)", () => {
+    const parsed = parseFencePatch(
+      "*** Begin Patch\n[a.txt]\nOLD:\nOLD:echo keep me\nNEW:\nok\n*** End Patch",
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.files[0].ops).toEqual([{ kind: "replace", old: ["OLD:echo keep me"], new: ["ok"] }])
+  })
+
+  test("standalone marker inside an open OLD block still fails (unchanged)", () => {
+    const parsed = parseFencePatch("*** Begin Patch\n[a.txt]\nOLD:\nx\nOLD:\n*** End Patch")
+    expect(parsed.ok).toBe(false)
+    if (parsed.ok) return
+    expect(parsed.errors[0]).toContain("already open")
+  })
 })
 
 describe("tool.edit", () => {
