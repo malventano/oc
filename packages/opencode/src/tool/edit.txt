@@ -15,6 +15,7 @@ How it works:
 - `OLD:` starts a block; the lines after it are COPIED byte-exact from the read output (strip the `N: ` prefix, keep everything else exactly - indentation, punctuation, everything). This is the "before" content.
 - `NEW:` starts the replacement block; the lines after it are the new content, written as-is (never escape anything - backticks, `${...}`, quotes are literal).
 - The OLD block must match EXACTLY ONE place in the file. If it matches several, the tool errors with the matching line numbers - extend the OLD block with surrounding lines. If it matches none, the tool errors with the first unmatched line - re-copy it byte-exact (or re-read if the file changed).
+- `OLD:` / `NEW:` markers may carry their first content line on the same line ("OLD:const x = 1" is a valid one-line block; "NEW:  indented first line" keeps the indentation). They never need a trailing `:` on their own line first - only the colon separates the marker from content.
 - For a change inside a LONG line, the OLD block may be just the unique fragment to change (e.g. one phrase within a long paragraph) - the tool matches it within the line. Small transcription drift (whitespace, escaping) is tolerated; if the tool matched with tolerance it says so in the output, with the applied change - check it if you did not intend a fuzzy match.
 - The matched OLD lines are replaced by the NEW lines.
 

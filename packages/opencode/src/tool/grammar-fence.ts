@@ -209,23 +209,47 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
     // that form; anything else marker-like fails loudly (it used to be
     // silently absorbed into the open block, producing a never-matching
     // OLD - the 2026-08-16 failure class, 32/32 failed edits).
-    const oldM = /^(\*\*\*\s+)?OLD:$/.exec(trimmed)
-    const newM = /^(\*\*\*\s+)?NEW:$/.exec(trimmed)
+    //
+    // INLINE markers (0234, BUG_EDIT_INLINE_MARKERS): `OLD:`/`NEW:` may carry
+    // their first content row on the marker line ("OLD:  local err=99").
+    // The model's compact form for tight edits (append, prepend, a single
+    // replacement line) glues content after the colon; the pre-0234 regexes
+    // required the marker to END the line, so the whole patch fell through to
+    // "content outside of an OLD:/NEW: block" and the model escalated to bash
+    // heredoc/cat writes. The rest after the colon becomes the block's FIRST
+    // row, kept verbatim (leading spaces are code indentation and are
+    // preserved - only a single optional wrapper space after the colon in a
+    // trimmed sense is irrelevant since the rest is taken from the raw line).
+    const oldM = /^\s*(?:\*{3}\s+)?OLD:(.*)$/.exec(line)
+    const newM = /^\s*(?:\*{3}\s+)?NEW:(.*)$/.exec(line)
     if (oldM) {
+      const rest = oldM[1]
+      const inline = rest.trim() !== ""
       if (curNew !== null) {
         resolvePair(i)
         if (errors.length > 0) return { ok: false, errors }
-        curOld = null
+        curOld = inline ? [rest] : []
         curNew = null
-      } else if (curOld !== null) {
-        fail(i, line, "OLD: when a block is already open - finish the previous NEW: block first")
-        return { ok: false, errors }
+        continue
       }
-      curOld = []
+      if (curOld !== null) {
+        // A STANDALONE marker inside an open OLD block is an authoring error
+        // (fail loudly, unchanged). An INLINE marker there is a content row
+        // that merely echoes "OLD:" - keep it verbatim (pre-inline behavior).
+        if (!inline) {
+          fail(i, line, "OLD: when a block is already open - finish the previous NEW: block first")
+          return { ok: false, errors }
+        }
+        curOld.push(line)
+        continue
+      }
+      curOld = inline ? [rest] : []
       curNew = null
       continue
     }
     if (newM) {
+      const rest = newM[1]
+      const inline = rest.trim() !== ""
       if (curOld === null) {
         fail(i, line, "NEW: without a preceding OLD: block")
         return { ok: false, errors }
@@ -234,7 +258,7 @@ export function parseFencePatch(input: string | null | undefined): FenceParseRes
         fail(i, line, "duplicate NEW: - one OLD/NEW pair per change")
         return { ok: false, errors }
       }
-      curNew = []
+      curNew = inline ? [rest] : []
       continue
     }
     if (trimmed === "DELETE" || /^RENAME /.test(trimmed)) {
