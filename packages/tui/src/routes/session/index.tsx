@@ -1967,17 +1967,49 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   // the turn's final totals (all steps back to the root user prompt,
   // including tool calls).
   const isInFlight = createMemo(() => !props.message.time.completed)
+  // Live until the whole turn is done IN THE STORE, independent of the
+  // session.status event. A "busy" status keeps the clock live during
+  // streaming and tool-call gaps, but the idle event that ends the busy can
+  // be missed between the worker and the TUI - a completed turn then sits on
+  // the busy-driven branch forever and the footer clock ticks on ("12m 21s"
+  // on a clean 1.3s run, BUG_TUI_LIVE_FROZEN; the server log shows the idle
+  // WAS emitted, so the client lost it). The store's own completion is the
+  // authoritative stop signal: once the final step and its message both
+  // report completed here, nothing is left to stream, so snap the clock off
+  // without waiting for the event. A genuinely-streaming turn always holds an
+  // uncompleted step (its message), so a live stream is never cut.
   const turnActive = createMemo(() => {
+    if (isInFlight()) return true
     const status = sync.data.session_status?.[props.message.sessionID]?.type
-    if (status !== undefined && status !== "idle") return true
-    return isInFlight()
+    if (status !== undefined && status !== "idle") {
+      // Busy, but the whole turn is completed in the store: the loop-settle
+      // busy after a finished turn, or the lost-idle-event case above.
+      const steps = turnStepsMemo()
+      const last = steps.at(-1)
+      if (last) {
+        const turnDone = last.id === props.message.id && last.time.completed !== undefined
+        if (turnDone) return false
+      }
+      return true
+    }
+    return false
   })
   const showLive = createMemo(() => turnActive() && props.last)
   const turnStepsMemo = createMemo(() => turnSteps(messages(), props.message.parentID))
   // The turn's not-yet-completed step (the one streaming). Message boundaries
   // change it; part deltas don't (the messages array is stable), so this
-  // memo does NOT recompute per delta.
-  const inFlightStep = createMemo(() => turnStepsMemo().find((s) => !s.time.completed))
+  // memo does NOT recompute per delta. NEWEST non-completed step, not the
+  // first: a loop/stall-guard-fired message is error-marked and never gets
+  // time.completed, so `.find()` would latch onto that orphan forever and
+  // freeze the live tok / tok-s counters (BUG_TUI_LIVE_FROZEN_ON_GUARD) even
+  // though the actual streaming step comes after it in the turn.
+  const inFlightStep = createMemo(() => {
+    const steps = turnStepsMemo()
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (!steps[i].time.completed) return steps[i]
+    }
+    return undefined
+  })
   // The step whose parts feed the LIVE counters. Normally inFlightStep (the
   // first non-completed step). Fallback: when the turn is ACTIVE but no
   // non-completed step is in the client message window (a missed
