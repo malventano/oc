@@ -29,6 +29,20 @@ export const RETRY_JITTER_FACTOR = 0.25
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
 export const RETRY_MAX_RETRIES = 5
+// Endpoint-UNABLE-TO-CONNECT class (a failure with no HTTP status: refused/
+// reset/unresolvable - the endpoint is GONE, not erroring). 5 rounds (~60s)
+// is too short to bridge a provider restart (self-hosted vLLM reload can take
+// minutes): the step then fails terminally and a long-running turn hard-stalls
+// waiting for the endpoint that just came back. THIS class keeps retrying with
+// a longer CAPPED backoff for ~6 minutes before surfacing (B200 profiling
+// session 2026-09-02: "Cannot connect to API: Unable to connect..." killed a
+// turn mid-vLLM-restart, BUG_RDT_OUTAGE_BUDGET). HTTP-class errors (5xx/status
+// present) keep the tight 5-round budget so a genuinely-broken provider is not
+// held for minutes. The per-attempt cap climbs to 60s (delay ramps 2/4/8/16/
+// 30/60s) instead of the 30s no-headers cap, so a long outage keeps probing
+// less aggressively but stays within one long-poll-ish interval.
+export const RETRY_MAX_RETRIES_UNREACHABLE = 15
+export const RETRY_MAX_DELAY_UNREACHABLE = 60_000 // 60 seconds
 
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
@@ -44,7 +58,12 @@ function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
 }
 
-export function delay(attempt: number, error?: SessionV1.APIError, random = Math.random()) {
+export function delay(
+  attempt: number,
+  error?: SessionV1.APIError,
+  random = Math.random(),
+  maxNoHeaders = RETRY_MAX_DELAY_NO_HEADERS,
+) {
   if (error) {
     const headers = error.data.responseHeaders
     if (headers) {
@@ -74,7 +93,7 @@ export function delay(attempt: number, error?: SessionV1.APIError, random = Math
     }
   }
 
-  return cap(Math.min(exponential(attempt, random), RETRY_MAX_DELAY_NO_HEADERS))
+  return cap(Math.min(exponential(attempt, random), maxNoHeaders))
 }
 
 function exponential(attempt: number, random: number) {
@@ -190,9 +209,20 @@ export function policy(opts: {
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
-      if (meta.attempt > RETRY_MAX_RETRIES) return Cause.done(meta.attempt)
+      // Unreachable-endpoint failures (no HTTP status) get the longer outage
+      // bridge budget (BUG_RDT_OUTAGE_BUDGET); every class with a real status
+      // code keeps the tight 5-round cap.
+      const unreachable = SessionV1.APIError.isInstance(error) && error.data.statusCode === undefined
+      if (meta.attempt > (unreachable ? RETRY_MAX_RETRIES_UNREACHABLE : RETRY_MAX_RETRIES)) {
+        return Cause.done(meta.attempt)
+      }
       return Effect.gen(function* () {
-        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+        const wait = delay(
+          meta.attempt,
+          SessionV1.APIError.isInstance(error) ? error : undefined,
+          undefined,
+          unreachable ? RETRY_MAX_DELAY_UNREACHABLE : undefined,
+        )
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
           attempt: meta.attempt,
