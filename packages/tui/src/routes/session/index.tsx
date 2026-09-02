@@ -1982,12 +1982,24 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     if (isInFlight()) return true
     const status = sync.data.session_status?.[props.message.sessionID]?.type
     if (status !== undefined && status !== "idle") {
-      // Busy, but the whole turn is completed in the store: the loop-settle
-      // busy after a finished turn, or the lost-idle-event case above.
+      // Busy, but the whole turn is done IN THE STORE: the loop-settle busy
+      // after a finished turn, or the lost-idle-event case above. "Done"
+      // requires a TERMINAL last step (final() - finish is stop/error, not
+      // tool-calls/unknown) with no tool part left to run. A completed step
+      // with finish "tool-calls" (or a provider "stop" that still carries a
+      // tool part) is a CONTINUATION: the loop runs the tool and streams a
+      // NEW step, so the clock must hold through the boundary. Snapping off
+      // there (0232's initial gate) made the elapsed cell unmount for 1-2
+      // frames between tool calls, shifting the footer layout left and back
+      // (BUG_TUI_LIVE_ELAPSED_VANISH).
       const steps = turnStepsMemo()
       const last = steps.at(-1)
       if (last) {
-        const turnDone = last.id === props.message.id && last.time.completed !== undefined
+        const turnDone =
+          last.id === props.message.id &&
+          last.time.completed !== undefined &&
+          final() &&
+          !(sync.data.part[last.id] ?? []).some((p) => p.type === "tool")
         if (turnDone) return false
       }
       return true
