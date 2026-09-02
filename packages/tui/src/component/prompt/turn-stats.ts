@@ -436,14 +436,21 @@ const streamRateStates = new Map<string, StreamRateState>()
  * one streaming episode (a new assistant message), and passing the current
  * in-flight step id as `streamKey` means any episode change - a step
  * completing or a new one beginning - drops the window and freezes the EMA
- * through the change. The FIRST sample of an episode ANCHORS it (zero
- * streaming elapsed time for the EMA, no delta for the window) - a new
- * stream's slow-start raw would otherwise drag the value down with a near-1
- * alpha over the TTFT. Tracking resumes from the second sample, with real
- * inter-chunk elapsed time, moving from the frozen value. The EMA spans the
- * WHOLE agent turn (shared state); only a new turn key starts fresh. The rate
- * is the tokens received over the trailing ~1s: before the window fills it is
- * the average since streaming started.
+ * through the change. The anchor sample of an episode is seeded by the FIRST
+ * GROWTH CHUNK (the first streaming token after its TTFT), NOT by the
+ * episode change: an anchor timestamped at the change sits at the START of
+ * the next prefill, so the first post-resume delta would divide by
+ * (TTFT + stream time) and the EMA plunges toward 0 - the rate "climbs back
+ * up from 0" every tool-call resume (ditching BUG_FOOTER_LIVE_STATS_STALE's
+ * immediate-delta seeding, which traded TTFT contamination for a "<2 chunks
+ * looks frozen" shortness on very short streams). The first growth anchors
+ * (zero streaming elapsed time for the EMA, no delta for the window) -
+ * a new stream's slow-start raw would otherwise drag the value down with a
+ * near-1 alpha over the TTFT. Tracking resumes from the second growth chunk,
+ * with real inter-chunk elapsed time, moving from the frozen value. The EMA
+ * spans the WHOLE agent turn (shared state); only a new turn key starts
+ * fresh. The rate is the tokens received over the trailing ~1s: before the
+ * window fills it is the average since streaming started.
  */
 export function streamRateFor(
   turnKey: string,
@@ -458,17 +465,19 @@ export function streamRateFor(
     if (streamRateStates.size > 64) streamRateStates.delete(streamRateStates.keys().next().value as string)
   }
   // A new streaming episode (a step completed, or a new one began): the old
-  // window belongs to a stream that ended. Drop it and freeze the EMA through
-  // the change - the value holds across tool-call / TTFT gaps regardless of
-  // their length. The change itself SEEDS the anchor sample so the very next
-  // growth chunk counts a real delta instead of eating an extra frozen sample
-  // (BUG_FOOTER_LIVE_STATS_STALE: the old [] seed forced TWO samples after
-  // each episode change before the rate moved - on short streams with wide
-  // batching that reads as "frozen per semi-turn").
+  // window belongs to a stream that ended. Drop the time window but keep the
+  // frozen EMA and the cumulative char count, and DO NOT seed a timestamped
+  // anchor here. An anchor stamped at the episode change sits at the START of
+  // the next prefill: a tool-call resume (worst after a read - the injected
+  // context makes the next TTFT long) would then divide its first growth
+  // delta by TTFT + stream time and the EMA plunges toward 0, "climbing back
+  // up" over the next chunks (BUG_TUI_LIVE_RATE_TTFT_DIP). The first growth
+  // chunk of the new episode anchors the window with ITS OWN arrival time
+  // (the anchor branch below) so the rate only resumes at the first streaming
+  // token, measured over clean inter-chunk time.
   if (streamKey !== st.streamKey) {
     st.streamKey = streamKey
-    const anchored: [number, number][] = st.cumulative === 0 && st.samples.length === 0 ? [] : [[now, chars]]
-    st.samples = anchored
+    st.samples = []
     st.cumulative = chars
     st.lastTime = now
     return st.smoothed
