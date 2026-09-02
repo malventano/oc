@@ -572,8 +572,25 @@ export const {
               .list({ workspace })
               .then((x) => setStore("mcp_resource", reconcile(x.data ?? {}))),
             sdk.client.formatter.status({ workspace }).then((x) => setStore("formatter", reconcile(x.data ?? []))),
+            // Seed-only: the bootstrap snapshot must not clobber or delete a
+            // status a live event already set. Any session.status event that
+            // reached this client is newer than the snapshot (the snapshot is
+            // taken at boot, before the turn starts), so a slow pull that
+            // lands after the trail of busy...idle events would otherwise
+            // resurrect a stale busy and strand a completed turn's footer
+            // clock (BUG_TUI_LIVE_FROZEN). reconcile() also deletes absent
+            // keys - it would drop an event-derived idle. Add only statuses
+            // this client has not seen; live events are the source of truth.
             sdk.client.session.status({ workspace }).then((x) => {
-              setStore("session_status", reconcile(x.data ?? {}))
+              const snapshot = x.data ?? {}
+              setStore(
+                "session_status",
+                produce((draft) => {
+                  for (const [sessionID, status] of Object.entries(snapshot)) {
+                    if (!(sessionID in draft)) draft[sessionID] = status
+                  }
+                }),
+              )
             }),
             sdk.client.provider.auth({ workspace }).then((x) => setStore("provider_auth", reconcile(x.data ?? {}))),
             sdk.client.vcs.get({ workspace }).then((x) => setStore("vcs", reconcile(x.data))),
