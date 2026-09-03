@@ -1618,6 +1618,16 @@ const layer = Layer.effect(
             }
             const configVariants = model.variants ?? {}
             // Configured reasoning options replace the catalog variants; configured variants still apply on top.
+            // Upstream merge semantics: config variants overlaid on the baked-in
+            // (generated) set, so e.g. a config `high` with `extraOption` keeps
+            // the generated `thinking` block. oc 9fc19e078c made config WIN
+            // WHOLESALE instead, which silently dropped every non-configured
+            // generated variant and broke the documented merge contract (GLM
+            // offending only because its baked-in top-level `reasoningEffort`
+            // is ignored by the vLLM template - see BUG_GLM_PREFIX_CACHE). Fix:
+            // keep the merge, but drop the body-level `reasoningEffort` field
+            // from the baked-in copies when config supplies its own variants so
+            // that field cannot leak as a redundant/replayed value. (2026-09-03)
             const bakedIn =
               model.reasoning_options !== undefined
                 ? (ProviderTransform.reasoningVariants(model, parsedModel) ?? ProviderTransform.variants(parsedModel))
@@ -1625,9 +1635,16 @@ const layer = Layer.effect(
                   ? (existingModel.variants ?? ProviderTransform.variants(parsedModel))
                   : ProviderTransform.variants(parsedModel)
             const merged =
-              Object.keys(configVariants).length > 0 ? configVariants : mergeDeep(bakedIn, configVariants)
+              Object.keys(configVariants).length > 0
+                ? Object.fromEntries(
+                    Object.entries(bakedIn).map(([key, variant]) => [
+                      key,
+                      omit(variant as Record<string, any>, ["reasoningEffort"]),
+                    ]),
+                  )
+                : bakedIn
             parsedModel.variants = mapValues(
-              pickBy(merged, (v) => !v.disabled),
+              pickBy(mergeDeep(merged, configVariants), (v) => !v.disabled),
               (v) => omit(v, ["disabled"]),
             )
             parsed.models[modelID] = parsedModel
