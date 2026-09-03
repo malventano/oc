@@ -1967,6 +1967,14 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   // the turn's final totals (all steps back to the root user prompt,
   // including tool calls).
   const isInFlight = createMemo(() => !props.message.time.completed)
+  // The turn's message-boundary steps view, folded first so every reader below
+  // (turnActive's busy branch, showLive, inFlightStep, turnAccum) can close
+  // over it WITHOUT a temporal-dead-zone hazard: solid's server-mode
+  // createMemo evaluates its body synchronously at the call site, and any
+  // memo created before this const's initializer runs that reads it throws
+  // "Cannot access 'turnStepsMemo' before initialization" during the
+  // synchronous render of a busy session's footer (BUG_TUI_TURNSTEPS_TDZ).
+  const turnStepsMemo = createMemo(() => turnSteps(messages(), props.message.parentID))
   // Live until the whole turn is done IN THE STORE, independent of the
   // session.status event. A "busy" status keeps the clock live during
   // streaming and tool-call gaps, but the idle event that ends the busy can
@@ -2007,7 +2015,6 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     return false
   })
   const showLive = createMemo(() => turnActive() && props.last)
-  const turnStepsMemo = createMemo(() => turnSteps(messages(), props.message.parentID))
   // The turn's not-yet-completed step (the one streaming). Message boundaries
   // change it; part deltas don't (the messages array is stable), so this
   // memo does NOT recompute per delta. NEWEST non-completed step, not the
