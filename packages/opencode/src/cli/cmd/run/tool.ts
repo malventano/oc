@@ -519,7 +519,12 @@ function snapWrite(p: ToolProps<typeof WriteTool>): ToolSnapshot | undefined {
 
 function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
   const paths = list<string>(p.metadata.paths)
-  const files = paths.length > 0 ? paths : patchSectionPaths(p.input.input)
+  const files =
+    paths.length > 0
+      ? paths
+      : p.input.filePath
+        ? [p.input.filePath]
+        : patchSectionPaths(p.input.input)
   const diff = p.metadata.diff || ""
   if (files.length === 0 || !diff.trim()) {
     return undefined
@@ -529,7 +534,7 @@ function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
     kind: "diff",
     items: [
       {
-      title: `# Edited ${files.map((f) => toolPath(f)).join(" → ")}`,
+        title: `# Edited ${files.map((f) => toolPath(f)).join(" → ")}`,
         diff,
         file: files[0],
       },
