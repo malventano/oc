@@ -47,8 +47,16 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "filePath": {
+      "description": "Ignored - the [path] section header in \`input\` is authoritative.",
+      "type": "string",
+    },
     "input": {
       "description": "The patch text: *** Begin Patch, [path] sections, OLD:/NEW: content blocks, *** End Patch",
+      "type": "string",
+    },
+    "path": {
+      "description": "Ignored - the [path] section header in \`input\` is authoritative.",
       "type": "string",
     },
   },

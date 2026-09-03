@@ -62,6 +62,14 @@ export interface Def<
   jsonSchema?: JSONSchema7
   execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   formatValidationError?(error: unknown): string
+  // Reject unknown keys at the parameter-decode boundary (onExcessProperty:
+  // "error"). opt-in per tool - tools whose schema must be exact (the edit
+  // tool's op grammar rejects invented anchors like insert_before_line). The
+  // default stays tolerant (upstream behavior: excess keys are dropped), so
+  // model mock calls that pass harmless extras (e.g. bash description) still
+  // decode. (2026-09-03: scoped after 3ddcb6de60 applied it globally and
+  // broke mock tool calls / json stream ordering.)
+  strict?: boolean
 }
 export type DefWithoutID<
   Parameters extends Schema.Decoder<unknown> = Schema.Decoder<unknown>,
@@ -108,7 +116,10 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
       // Compile the parser closure once per tool init; `decodeUnknownEffect`
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.
-      const decode = Schema.decodeUnknownEffect(toolInfo.parameters, { onExcessProperty: "error" })
+      const decode = Schema.decodeUnknownEffect(
+        toolInfo.parameters,
+        toolInfo.strict ? { onExcessProperty: "error" } : undefined,
+      )
       const execute = toolInfo.execute
       toolInfo.execute = (args, ctx) => {
         const attrs = {

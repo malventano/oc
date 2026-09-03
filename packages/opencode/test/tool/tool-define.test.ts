@@ -153,13 +153,14 @@ describe("Tool.define", () => {
   )
 })
 
-  it.effect("unknown keys are rejected (onExcessProperty error) at the decode boundary", () =>
+  it.effect("unknown keys are rejected (onExcessProperty error) at the decode boundary when strict", () =>
     Effect.gen(function* () {
       const info = yield* Tool.define(
         "exact-test",
         Effect.succeed({
           description: "test tool",
           parameters: params,
+          strict: true,
           execute() {
             return Effect.succeed({ title: "ok", output: "ok", metadata: { truncated: false } })
           },
@@ -175,5 +176,26 @@ describe("Tool.define", () => {
       expect(error).toBeInstanceOf(Tool.InvalidArgumentsError)
       expect(error.message).toContain("Unexpected key")
       expect(error.message).toContain("bogus")
+    }),
+  )
+
+  it.effect("excess keys are tolerated by default (upstream behavior)", () =>
+    Effect.gen(function* () {
+      const info = yield* Tool.define(
+        "default-tool",
+        Effect.succeed({
+          description: "test tool",
+          parameters: params,
+          execute() {
+            return Effect.succeed({ title: "ok", output: "ok", metadata: { truncated: false } })
+          },
+        }),
+      )
+      const tool = yield* info.init()
+      const execute = tool.execute as unknown as (args: unknown, ctx: Tool.Context) => ReturnType<typeof tool.execute>
+      // no strict flag: excess "description" key (the mock's harmless extra on
+      // bash tool calls) decodes fine instead of rejecting the call
+      const result = yield* execute({ input: "x", description: "mock extra" }, makeCtx())
+      expect(result).toEqual({ title: "ok", output: "ok", metadata: { truncated: false } })
     }),
   )

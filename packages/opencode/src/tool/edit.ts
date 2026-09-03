@@ -206,6 +206,11 @@ export const EditTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      // exact-op-key hardening (3ddcb6de60): the edit op grammar must be exact
+      // so invented anchors (insert_before_line etc.) fail loudly with the
+      // targeted hint below instead of being silently dropped. scoped to edit
+      // - other tools keep the tolerant upstream default.
+      strict: true,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           // Parse first - failures here throw BEFORE any metadata is emitted,
