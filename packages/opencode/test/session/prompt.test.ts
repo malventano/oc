@@ -1265,6 +1265,61 @@ it.instance("plain cancel does not resume the loop for queued prompts", () =>
   }),
 )
 
+it.instance("plain cancel still processes a prompt-CALLER queued message via bounded recovery", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Queued caller recovery" })
+    yield* seed(chat.id)
+
+    yield* llm.hang
+    yield* user(chat.id, "first")
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    // Real UI flow for the queued message: the queue was created through
+    // PROMPT (the TUI's Enter), whose join is waiting on the running turn -
+    // NOT the storage-level `user()` the plain-cancel test above uses (which
+    // has no caller to recover it). prompt()'s bounded orphan recovery
+    // (2026-09-04) re-loops the caller's message until it is OWNED (an
+    // assistant parented to it) so a plain cancel cannot strand it.
+    const queuedCallerFib = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "build",
+        parts: [{ type: "text", text: "second" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.await(fiber)
+
+    // The joined prompt's recovery drains the queued prompt even though the
+    // cancel did not resume the loop itself.
+    yield* pollWithTimeout(
+      Effect.gen(function* () {
+        const messages = yield* sessions.messages({ sessionID: chat.id })
+        const second = messages.find(
+          (m) =>
+            m.info.role === "user" && m.parts.some((p) => p.type === "text" && p.text?.includes("second")),
+        )
+        if (!second) return undefined
+        const done = messages.find(
+          (m) => m.info.role === "assistant" && m.info.parentID === second.info.id && m.info.finish,
+        )
+        return done ? (true as const) : undefined
+      }),
+      "prompt-caller queued message was never processed after plain cancel",
+      "10 seconds",
+    )
+
+    const queuedExit = yield* Fiber.await(queuedCallerFib)
+    expect(Exit.isSuccess(queuedExit)).toBe(true)
+  }),
+)
+
 raceNoLLMServer.instance(
   "finalizes assistant when cancelled before processor creation completes",
   () =>
