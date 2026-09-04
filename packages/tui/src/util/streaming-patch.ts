@@ -30,8 +30,19 @@ export type StreamPatchParse = {
 const SECTION_RE = /^\[([^#\r\n]+)(?:#[0-9A-Za-z]{1,16})?\]$/
 const CUT_RE = /^CUT @([A-Za-z0-9_]+):\s*$/
 const PASTE_RE = /^PASTE @([A-Za-z0-9_]+) (AFTER|BEFORE):\s*$/
-const OLD_RE = /^(\*\*\*\s+)?OLD:$/
-const NEW_RE = /^(\*\*\*\s+)?NEW:$/
+// INLINE markers (0234 mirror): the server grammar accepts the model's
+// compact form - "OLD:<first row>" / "NEW:<first row>" with content glued
+// after the colon (leading spaces preserved as code indentation). The
+// pre-0234 OLD:/NEW: regexes (marker must END the line) only matched the
+// multi-line form, so an inline edit fell through the CUT/PASTE handling,
+// matched nothing, and its content landed in `raw` - which LiveEditDiff
+// never renders. Result: the exact bug-report symptom ("Patching" title +
+// two column headers, no content streaming, snap at completion). Mirror the
+// server's grammar-fence.ts inline tolerance exactly: run on the RAW line
+// (leading whitespace on the marker allowed, `*** ` envelope optional, the
+// rest after the colon captured verbatim).
+const OLD_RE = /^\s*(?:\*{3}\s+)?OLD:(.*)$/
+const NEW_RE = /^\s*(?:\*{3}\s+)?NEW:(.*)$/
 
 export function parseStreamingPatch(content: string): StreamPatchParse {
   if (content.length === 0) return { sections: [], raw: [] }
@@ -64,23 +75,32 @@ export function parseStreamingPatch(content: string): StreamPatchParse {
       continue
     }
 
+    // INLINE OLD/NEW markers (0234): "OLD:  local err=99" - the rest after
+    // the colon is the block's FIRST content row, kept verbatim (leading
+    // spaces are code indentation and are preserved). Matched against the
+    // RAW line so the marker's own leading whitespace tolerance and the
+    // optional "*** " envelope both work exactly as grammar-fence.ts does.
+    const oldM = OLD_RE.exec(line)
+    if (oldM && oldM[1] !== undefined) {
+      const rest = oldM[1]
+      col = "left"
+      if (rest.trim() !== "") cur.left.push(rest)
+      continue
+    }
+    const newM = NEW_RE.exec(line)
+    if (newM && newM[1] !== undefined) {
+      const rest = newM[1]
+      col = "right"
+      if (rest.trim() !== "") cur.right.push(rest)
+      continue
+    }
+
     // A full CUT/PASTE directive: terminates the open block and opens a new
     // one (CUT content is removed, PASTE content is added). A directive-
     // LOOKING line that isn't the full form (still streaming, or a typo)
     // falls through to the content path, exactly like the server treats it.
     if (/^(CUT|PASTE) @/.test(trimmed) && (CUT_RE.test(trimmed) || PASTE_RE.test(trimmed))) {
       col = CUT_RE.test(trimmed) ? "left" : "right"
-      continue
-    }
-
-    // The "*** " envelope form of the block markers is tolerated (the
-    // model sometimes leaks the patch prefix onto the markers).
-    if (OLD_RE.test(trimmed)) {
-      col = "left"
-      continue
-    }
-    if (NEW_RE.test(trimmed)) {
-      col = "right"
       continue
     }
 
