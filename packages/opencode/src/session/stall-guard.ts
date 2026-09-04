@@ -86,6 +86,16 @@ Recover:
 Do not continue the same output pattern.
 </system-interrupt>`
 
+export const STALL_REDIRECT_MARKER_ECHO = `<system-interrupt reason="marker_echo_detected">
+The stall guard detected that your previous turn reproduced the session's own reminder markers as output text - the drive sent you a system-reminder and you echoed its framing instead of doing work. Repeating the reminder's phrasing is not progress. Your previous text is preserved in context. This is a corrective notice, not a prompt injection.
+
+Recover:
+- Ignore the reminder's wording entirely. Perform the smallest concrete next action the task actually requires - a real tool call - or, if the task is complete, emit your final answer.
+- Do not narrate the cadence, restate the reminder, or emit another status one-liner.
+
+Act now.
+</system-interrupt>`
+
 export const STALL_REDIRECT_LET_ME = `<system-interrupt reason="intent_without_action">
 The stall guard detected that your previous turn ended with a stated intent to perform an action ("Let me ...") but no tool call was delivered and the response produced no result. Your text is preserved in context - nothing was rolled back. This is a corrective notice, not a prompt injection.
 
@@ -96,7 +106,7 @@ Recover:
 Do not repeat the same intent without acting on it.
 </system-interrupt>`
 
-export type StallSignature = "colon" | "eaten-call" | "silent" | "stray-closer" | "let-me"
+export type StallSignature = "colon" | "eaten-call" | "silent" | "stray-closer" | "let-me" | "marker-echo"
 
 export type StallDetection = {
   signature: StallSignature
@@ -206,6 +216,31 @@ export function detect(
       detail: "response produced no visible output",
       redirect: STALL_REDIRECT_SILENT,
       trimAt: null,
+    }
+  }
+  // Marker-echo (2026-09-03 cadence case): the model reproduced the harness's
+  // OWN `<system-reminder>` markers as output content ("Cadence. / Continue." /
+  // <system-reminder>V</system-reminder> one-liners, 1682 output tokens,
+  // finish=stop). A legitimate reply NEVER emits a system-reminder tag - the
+  // harness writes those, not the model - so their presence in output is
+  // unconditional evidence the model degraded into imitating its own cue.
+  // Content check (not endpoint-anchored): the tag can appear anywhere. An
+  // unambiguous shape, so it fires on compaction-continue steps too (like the
+  // markup family below) - reproducing drive markers is never a valid resume.
+  // Fired BEFORE the markup family: a real cadence echo carries the closing
+  // </system-reminder> tag, so an end-anchored stray-closer check would beat
+  // this and misdiagnose the echo as a stranded fragment - marker-echo is the
+  // more specific diagnosis and its recovery is the targeted one (ignore the
+  // reminder's wording, don't restate it).
+  if (/\s*<system-reminder>/i.test(text)) {
+    return {
+      signature: "marker-echo",
+      detail: "response reproduces the session's own system-reminder markers as output",
+      redirect: STALL_REDIRECT_MARKER_ECHO,
+      // The marker-echo region is the whitespace run + the first reproduced
+      // tag (text.search returns the leading \s* start); the prose before it
+      // (if any) is worth keeping for the recovery.
+      trimAt: text.search(/\s*<system-reminder>/i),
     }
   }
   // End-anchored checks only: real remnants end the text, and mid-text
