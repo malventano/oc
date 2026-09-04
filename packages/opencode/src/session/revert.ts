@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Deferred, Effect, Layer, Context, Schema } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Snapshot } from "../snapshot"
@@ -21,6 +21,7 @@ export interface Interface {
   readonly revert: (input: RevertInput) => Effect.Effect<Session.Info, Session.BusyError>
   readonly unrevert: (input: { sessionID: SessionID }) => Effect.Effect<Session.Info, Session.BusyError>
   readonly cleanup: (session: Session.Info) => Effect.Effect<void>
+  readonly awaitInFlight: (sessionID: SessionID) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRevert") {}
@@ -35,11 +36,36 @@ const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const state = yield* SessionRunState.Service
 
+    // In-flight revert latch per session (2026-09-04): the TUI undo fires
+    // `revert` fire-and-forget and can follow it with an immediate Enter ->
+    // `prompt` on another HTTP call. Without coordination, `prompt`'s
+    // `revert.cleanup` reads a session snapshot that predates the revert commit
+    // (cleanup no-ops, the stale rollback point lands AHEAD of the new prompt,
+    // and the undo's slow `.then(toBottom)` lands after the submit).
+    // `awaitInFlight` lets the prompt wait for the mutation to commit, then
+    // re-reads the row so cleanup sees the settled revert state.
+    const inflight = new Map<SessionID, Deferred.Deferred<void>>()
+
+    const awaitInFlight = Effect.fnUntraced(function* (sessionID: SessionID) {
+      const pending = inflight.get(sessionID)
+      if (pending) yield* Deferred.await(pending)
+    })
+
     const revert = Effect.fn("SessionRevert.revert")(function* (input: RevertInput) {
-      yield* state.assertNotBusy(input.sessionID)
-      const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-      let lastUser: SessionV1.User | undefined
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      // Already reverting this session: join the in-flight revert instead of
+      // running two overlapping ones (they would double-apply snapshots).
+      const existing = inflight.get(input.sessionID)
+      if (existing) {
+        yield* Deferred.await(existing)
+        return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      }
+      const done = yield* Deferred.make<void>()
+      inflight.set(input.sessionID, done)
+      try {
+        yield* state.assertNotBusy(input.sessionID)
+        const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+        let lastUser: SessionV1.User | undefined
+        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
 
       let rev: Session.Info["revert"]
       const patches: Snapshot.Patch[] = []
@@ -86,6 +112,10 @@ const layer = Layer.effect(
         },
       })
       return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      } finally {
+        inflight.delete(input.sessionID)
+        yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
+      }
     })
 
     const unrevert = Effect.fn("SessionRevert.unrevert")(function* (input: { sessionID: SessionID }) {
@@ -123,7 +153,7 @@ const layer = Layer.effect(
       yield* sessions.clearRevert(sessionID)
     })
 
-    return Service.of({ revert, unrevert, cleanup })
+    return Service.of({ revert, unrevert, cleanup, awaitInFlight })
   }),
 )
 
