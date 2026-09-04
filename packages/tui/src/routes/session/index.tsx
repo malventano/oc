@@ -528,6 +528,15 @@ export function Session() {
     const r = promptRefSignal()
     if (!r) return
     if (r.current.input !== args.prompt) return
+    // Module-level latch (NOT component scope): a crash-dialogue "Restart"
+    // (ErrorBoundary reset) remounts this route, resetting resumeSent, but the
+    // process never re-exec'd and args.prompt still holds the stale --prompt -
+    // without the module latch the OLD restart prompt would re-submit as a fresh
+    // turn (BUG_CRASH_DIALOG_RESTART_PROMPT). Keyed on sessionID+prompt so a
+    // genuine restart (new process, empty Set) still fires exactly once.
+    const resumeKey = `${sessionID}\u0000${args.prompt}`
+    if (resumePromptFired.has(resumeKey)) return
+    resumePromptFired.add(resumeKey)
     resumeSent = true
     r.submit()
   })
@@ -1837,6 +1846,18 @@ const parentStartCache = new Map<string, number>()
 // runs the seeding effect and the root is pruned from the store, so all of
 // them would fire the same `session.message` fetch - this set dedupes to one.
 const parentStartFetching = new Set<string>()
+
+// Resume-prompt consumption latch (module scope, survives component remounts):
+// the `restart` tool re-exec's with `--prompt "Restart complete: <reason>"`,
+// and the session route auto-submits it once via the resume effect below. If
+// the TUI then crashes and the user clicks the crash-dialogue "Restart" (an
+// in-place ErrorBoundary reset that REMOUNTS the route), the component-local
+// guard would reset while args.prompt still holds the stale --prompt - the
+// effect would re-submit the old restart prompt as a fresh turn
+// (BUG_CRASH_DIALOG_RESTART_PROMPT). Keying consumption here lets a genuine
+// restart (new process) still fire once (module reloads, Set empty), while an
+// in-place reset cannot re-fire.
+const resumePromptFired = new Set<string>()
 
 // In-memory accumulator for LIVE turns' footer stats, keyed by
 // `${sessionID}:${parentID}` (the same key parentStartCache uses). Each
