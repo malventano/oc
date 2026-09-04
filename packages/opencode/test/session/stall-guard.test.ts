@@ -116,6 +116,50 @@ describe("stall-guard detect", () => {
     expect(StallGuard.detect("tool-calls", "", false)).toBeNull()
   })
 
+   test("marker-echo signature: output reproduces a system-reminder tag (2026-09-03 cadence case)", () => {
+    // Real cadence-stall shape: the model echoed the harness's own
+    // <system-reminder> as output ("Cadence. / Continue." one-liners, 1682
+    // output tokens, finish=stop). A legitimate reply never emits the tag -
+    // the harness writes those, not the model.
+    const text = "Cadence.\n\n<system-reminder>V</system-reminder>\n\nContinue."
+    const hit = StallGuard.detect("stop", text, false)
+    expect(hit).not.toBeNull()
+    expect(hit!.signature).toBe("marker-echo")
+    expect(hit!.detail).toContain("system-reminder markers")
+  })
+
+  test("marker-echo signature: trimAt covers the whitespace run + first tag", () => {
+    const text = "Cadence.\n\n<system-reminder>V</system-reminder>\n\nContinue."
+    const hit = StallGuard.detect("stop", text, false)!
+    // text.search(/\s*<system-reminder>/i) anchors at the leading \s* start,
+    // so the whitespace run before the tag is trimmed too (index 8 = the
+    // "\n\n" preceding the tag at index 10).
+    expect(hit.trimAt).toBe(8)
+    expect(text.slice(0, hit.trimAt!)).toBe("Cadence.")
+  })
+
+  test("marker-echo: does not fire on ordinary text or tags the model legitimately emits", () => {
+    expect(StallGuard.detect("stop", "Done. All arms are at 100%.", false)).toBeNull()
+    expect(StallGuard.detect("stop", "handling <reminder>content</reminder> inline", false)).toBeNull()
+  })
+
+  test("marker-echo: beats the markup family on a real cadence echo (closing tag present)", () => {
+    // Real cadence output carries the closer (</system-reminder>); the
+    // end-anchored stray-closer check must NOT win the diagnosis. The redirect
+    // is the targeted marker-echo recovery, not the stray-fragment one.
+    const text = "Cadence.\n\n<system-reminder>V</system-reminder>\n\nContinue."
+    const hit = StallGuard.detect("stop", text, false)!
+    expect(hit.signature).toBe("marker-echo")
+    expect(hit.redirect).toBe(StallGuard.STALL_REDIRECT_MARKER_ECHO)
+  })
+
+  test("marker-echo: still fires on a compaction-continue step (markup-family rule)", () => {
+    const text = "Cadence.\n\n<system-reminder>V</system-reminder>"
+    const hit = StallGuard.detect("stop", text, false, true)
+    expect(hit).not.toBeNull()
+    expect(hit!.signature).toBe("marker-echo")
+  })
+
   test("each signature carries the matching redirect", () => {
     const colon = StallGuard.detect("stop", "run it:", false)!
     expect(colon.redirect).toBe(StallGuard.STALL_REDIRECT_COLON)
@@ -125,6 +169,9 @@ describe("stall-guard detect", () => {
 
     const silent = StallGuard.detect("stop", "", false)!
     expect(silent.redirect).toBe(StallGuard.STALL_REDIRECT_SILENT)
+
+    const echoed = StallGuard.detect("stop", "x\n<system-reminder>V</system-reminder>", false)!
+    expect(echoed.redirect).toBe(StallGuard.STALL_REDIRECT_MARKER_ECHO)
   })
 
   test("real stall tails from session DB match the colon signature", () => {
