@@ -1396,10 +1396,15 @@ export function Prompt(props: PromptProps) {
       if (editorParts.length > 0) editor.markSelectionSent()
     }
     sync.session.prune(sessionID)
-    history.append({
-      ...store.prompt,
-      mode: currentMode,
-    })
+    history.append(
+      {
+        ...store.prompt,
+        mode: currentMode,
+      },
+      // Attribute to the resolved session even before the route navigates
+      // (new-session first prompt: the route is still home at this point).
+      sessionID,
+    )
     input.extmarks.clear()
     setStore("prompt", {
       input: "",
@@ -1553,10 +1558,13 @@ export function Prompt(props: PromptProps) {
     // same draft does not pollute. (Upstream gated this on a 20-char minimum;
     // that silently dropped short-but-intentional drafts from recall.)
     if (store.prompt.input.trim() !== "" || store.prompt.parts.length > 0) {
-      history.append({
-        ...store.prompt,
-        mode: store.mode,
-      })
+      history.append(
+        {
+          ...store.prompt,
+          mode: store.mode,
+        },
+        props.sessionID,
+      )
     }
     input.clear()
     input.extmarks.clear()

@@ -1,8 +1,9 @@
 import path from "path"
-import { onMount } from "solid-js"
+import { createEffect } from "solid-js"
 import { createStore, produce, unwrap } from "solid-js/store"
 import type { AgentPart, FilePart, TextPart } from "@opencode-ai/sdk/v2"
 import { createSimpleContext } from "../context/helper"
+import { useRoute } from "../context/route"
 import { useTuiPaths } from "../context/runtime"
 import { appendText, readText, writeText } from "../util/persistence"
 
@@ -50,19 +51,35 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
   name: "PromptHistory",
   init: () => {
     const paths = useTuiPaths()
-    const historyPath = path.join(paths.state, "prompt-history.jsonl")
-    onMount(async () => {
-      const lines = parsePromptHistory(await readText(historyPath).catch(() => ""))
-      setStore("history", lines)
-
-      // Rewrite valid retained entries to self-heal corruption and enforce the limit.
-      if (lines.length > 0)
-        writeText(historyPath, lines.map((line) => JSON.stringify(line)).join("\n") + "\n").catch(() => {})
-    })
+    const route = useRoute()
+    // Per-session history (2026-09-04): one jsonl per session id under
+    // state/prompt-history/, so up-arrow recall never leaks prompts from other
+    // sessions. The provider is app-scoped and keys off the ACTIVE session
+    // route; non-session routes (home/listing) share the "global" bucket. The
+    // legacy flat state/prompt-history.jsonl is left untouched (no longer
+    // consulted) for safety.
+    const historyDir = path.join(paths.state, "prompt-history")
+    const keyFor = () => (route.data.type === "session" ? route.data.sessionID : "global")
+    const fileFor = (sessionID: string) => path.join(historyDir, `${sessionID}.jsonl`)
 
     const [store, setStore] = createStore({
       index: 0,
       history: [] as PromptInfo[],
+    })
+
+    // Load the ACTIVE session's history; reload whenever the active session
+    // changes (also covers the initial mount). Abandonment-guarded: a rapid
+    // session switch must not let a stale read overwrite the new list.
+    createEffect(async () => {
+      const sessionID = keyFor()
+      const lines = parsePromptHistory(await readText(fileFor(sessionID)).catch(() => ""))
+      if (keyFor() !== sessionID) return
+      setStore("index", 0)
+      setStore("history", lines)
+
+      // Rewrite valid retained entries to self-heal corruption and enforce the limit.
+      if (lines.length > 0)
+        writeText(fileFor(sessionID), lines.map((line) => JSON.stringify(line)).join("\n") + "\n").catch(() => {})
     })
 
     return {
@@ -82,7 +99,7 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
         if (store.index === 0) return { input: "", parts: [] }
         return store.history.at(store.index)
       },
-      append(item: PromptInfo) {
+      append(item: PromptInfo, sessionID?: string) {
         const entry = structuredClone(unwrap(item))
         if (isDuplicateEntry(store.history.at(-1), entry)) {
           setStore("index", 0)
@@ -100,11 +117,18 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
           }),
         )
 
+        // Persist to the given session's file (or the ACTIVE session route's
+        // when omitted). An explicit override covers the FIRST prompt of a NEW
+        // session: the submit creates the session and appends history BEFORE
+        // the route navigates into it, so the active route is still home and
+        // would otherwise drop the first prompt into the shared "global"
+        // bucket instead of the session's own file.
+        const file = fileFor(sessionID ?? keyFor())
         if (trimmed) {
-          writeText(historyPath, store.history.map((line) => JSON.stringify(line)).join("\n") + "\n").catch(() => {})
+          writeText(file, store.history.map((line) => JSON.stringify(line)).join("\n") + "\n").catch(() => {})
           return
         }
-        appendText(historyPath, JSON.stringify(entry) + "\n").catch(() => {})
+        appendText(file, JSON.stringify(entry) + "\n").catch(() => {})
       },
     }
   },
