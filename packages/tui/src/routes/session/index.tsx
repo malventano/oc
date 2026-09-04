@@ -117,6 +117,29 @@ const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
 const draftStash = new Map<string, PromptInfo>()
 const DRAFT_STASH_BOTTOM = "bottom"
 
+// cancellable prompt-restore timer (2026-09-04): undo/redo restore the prompt
+// into the input field via a setTimeout(0) (the slash menu's close clears the
+// input after the command run, so the restore must land after it). If the user
+// hits Enter before the restore lands, the submit must CANCEL it - otherwise
+// the pending restore fires after submitInner cleared the field and
+// re-populates it with the just-submitted text (the "had to enter again" feel;
+// a second Enter then duplicates the prompt). The retry loop re-arms the same
+// timer so the single id tracks the newest pending restore.
+let pendingRestoreTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRestore(fn: () => void, delay: number) {
+  if (pendingRestoreTimer) clearTimeout(pendingRestoreTimer)
+  pendingRestoreTimer = setTimeout(() => {
+    pendingRestoreTimer = null
+    fn()
+  }, delay)
+}
+function cancelRestore() {
+  if (pendingRestoreTimer) {
+    clearTimeout(pendingRestoreTimer)
+    pendingRestoreTimer = null
+  }
+}
+
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
 type RetryAction = Extract<SessionStatus, { type: "retry" }>["action"]
@@ -617,6 +640,16 @@ export function Session() {
     }, 50)
   }
 
+  // Scroll to the newest content only if the viewport is still pinned to the
+  // bottom (within a row of tolerance). Undo's revert completes server-side
+  // LATE asynchronously (snapshot + diff work) - a call that lands after the
+  // user already scrolled up must not yank the viewport down (the
+  // undo-then-Enter scroll jump for a frame or two).
+  function toBottomIfPinned() {
+    if (!scroll || scroll.isDestroyed) return
+    if (scroll.scrollHeight - (scroll.y + scroll.height) <= 2) toBottom()
+  }
+
   const local = useLocal()
 
   function enterChild(sessionID: string) {
@@ -836,7 +869,7 @@ export function Session() {
             messageID: message.id,
           })
           .then(() => {
-            toBottom()
+            toBottomIfPinned()
           })
         // Question answers re-enter as a user prompt (question_answers part
         // metadata): the undo re-asks the question and the panel pre-populates
@@ -853,9 +886,9 @@ export function Session() {
               prompt.set(draftStash.get(message.id) ?? promptInfoFromParts(parts))
               return
             }
-            setTimeout(restore, 50)
+            scheduleRestore(restore, 50)
           }
-          setTimeout(restore, 0)
+          scheduleRestore(restore, 0)
         }
         dialog.clear()
       },
@@ -887,9 +920,9 @@ export function Session() {
               prompt.set(draftStash.get(bottomKey) ?? { input: "", parts: [] })
               return
             }
-            setTimeout(clear, 50)
+            scheduleRestore(clear, 50)
           }
-          setTimeout(clear, 0)
+          scheduleRestore(clear, 0)
           return
         }
         void sdk.client.session.revert({
@@ -901,9 +934,9 @@ export function Session() {
             prompt.set(draftStash.get(message.id) ?? promptInfoFromParts(sync.data.part[message.id] ?? []))
             return
           }
-          setTimeout(restore, 50)
+          scheduleRestore(restore, 50)
         }
-        setTimeout(restore, 0)
+        scheduleRestore(restore, 0)
       },
     },
     {
@@ -1595,6 +1628,9 @@ export function Session() {
                       ref={bind}
                       disabled={disabled()}
                       onSubmit={() => {
+                        // A pending undo/redo restore must not repopulate the
+                        // field behind this submit.
+                        cancelRestore()
                         toBottom()
                         setStreamBatchWindow(STREAM_BATCH_MIN_MS)
                       }}

@@ -1093,7 +1093,14 @@ const layer = Layer.effect(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-      yield* revert.cleanup(session)
+      // The TUI undo fires `revert` fire-and-forget and an immediate Enter
+      // races this prompt on another HTTP call. Wait for any in-flight revert
+      // to COMMIT, then re-read the row so cleanup sees the settled revert
+      // state (the first snapshot may predate the commit - cleanup would
+      // no-op, leaving a stale rollback point ahead of the new message).
+      yield* revert.awaitInFlight(input.sessionID)
+      const settled = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      yield* revert.cleanup(settled)
       const message = yield* createUserMessage(input)
       yield* sessions.touch(input.sessionID)
 
@@ -1107,18 +1114,35 @@ const layer = Layer.effect(
       }
 
       if (input.noReply === true) return message
-      const result = yield* loop({ sessionID: input.sessionID })
-      // Exit-window orphan: a prompt admitted while the run is past its final
-      // message read joins the dying run via Runner.ensureRunning and gets no
-      // loop of its own - the message is stored and rendered but never
-      // processed. Detect via the loop's own exit invariant (newest finished
-      // assistant parented to the newest user message) and start a fresh loop.
-      const last = yield* lastAssistant(input.sessionID)
-      if (last.info.role === "assistant" && last.info.parentID !== message.info.id) {
+      let result = yield* loop({ sessionID: input.sessionID })
+      // Exit-window orphan (bounded, 2026-09-04): a prompt admitted while the
+      // run is past its final message read joins the dying run via
+      // Runner.ensureRunning and gets no loop of its own - the message is
+      // stored + rendered but never processed (session idle, nothing happens).
+      // Recovery anchors on message OWNERSHIP - "an assistant message is
+      // parented to THIS prompt" - instead of the previous newest-non-user
+      // anchor. The old anchor missed a stuck shape: when the joined run had
+      // STARTED this message and was interrupted mid-prefill, an unfinished
+      // assistant parented to the prompt existed, so the parent-mismatch check
+      // skipped recovery while the prompt never produced output (the TUI
+      // showed the prompt, status never went busy, undo+re-enter cleared it).
+      // Ownership + bounded retries covers both orphan shapes; the bound (3)
+      // protects against a genuinely unownable message (provider error on
+      // every pass) spinning. The first loop() already drained a dying run to
+      // Idle (awaitDone blocks), so each retry's loop() starts a fresh run.
+      const owned = (messageID: string) =>
+        sessions.messages({ sessionID: input.sessionID }).pipe(
+          Effect.orDie,
+          Effect.map((msgs) =>
+            msgs.some((m) => m.info.role === "assistant" && m.info.parentID === messageID),
+          ),
+        )
+      for (let attempt = 0; attempt < 3 && !(yield* owned(message.info.id)); attempt++) {
         yield* Effect.logInfo("post-join re-loop, prompt was orphaned", {
           "session.id": input.sessionID,
+          attempt,
         })
-        return yield* loop({ sessionID: input.sessionID })
+        result = yield* loop({ sessionID: input.sessionID })
       }
       return result
     })
