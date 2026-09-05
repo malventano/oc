@@ -8,7 +8,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
-import { SessionCompaction, hasAbortedCompaction, hasNewerPrompt } from "../../src/session/compaction"
+import { SessionCompaction, hasAbortedCompaction, hasNewerPrompt, preMarkerHistory } from "../../src/session/compaction"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -2623,6 +2623,8 @@ describe("SessionNs.getUsage", () => {
 describe("hasNewerPrompt", () => {
   const msg = (id: string, role: "user" | "assistant", parts: SessionV1.Part[] = []) =>
     ({ info: { id, role }, parts }) as unknown as SessionV1.WithParts
+  const tmsg = (id: string, role: "user" | "assistant", time = 0, parts: SessionV1.Part[] = []) =>
+    ({ info: { id, role, time: { created: time } }, parts }) as unknown as SessionV1.WithParts
   const marker = (id: string) => msg(id, "user", [{ type: "compaction" } as SessionV1.Part])
 
   test("false when only the marker itself is present", () => {
@@ -2648,6 +2650,63 @@ describe("hasNewerPrompt", () => {
   test("true with mixed later messages including a real prompt", () => {
     const messages = [marker("msg_2"), msg("msg_3", "assistant"), msg("msg_4", "user")]
     expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(true)
+  })
+
+  test("cross-generator ids: true for a prompt NEWER in TIME though its id sorts BELOW the marker (0252)", () => {
+    // Aug-era marker; a Sep-era prompt arrives later in time but its id
+    // ("07…") lexicographically sorts BELOW the marker's ("fd9…"). Creation
+    // time is authoritative - the old lexicographic-id check returned false
+    // and stranded the queued prompt behind the auto-continue.
+    const messages = [marker("msg_fd97416b5001kiI1Ff4njobtxM"), tmsg("msg_0702553aa001u5Z4SVPhl3UDML", "user", 5_000)]
+    expect(hasNewerPrompt(messages, "msg_fd97416b5001kiI1Ff4njobtxM" as MessageID)).toBe(true)
+  })
+
+  test("cross-generator ids: false for a prompt OLDER in time though its id sorts ABOVE the marker (0252)", () => {
+    // Sep-era marker; a Jun-era prompt arrives earlier in time but its id
+    // ("ef5f…") lexicographically sorts ABOVE the marker's ("0702…"). Time is
+    // authoritative - the old check falsely reported a newer prompt.
+    const messages = [
+      tmsg("msg_ef5fd02c1001CnEwrBIGkBbs7o", "user", 1_000),
+      tmsg("msg_0702554aa001u5Z4SVPhl3UDML", "user", 2_000, [{ type: "compaction" } as SessionV1.Part]),
+    ]
+    expect(hasNewerPrompt(messages, "msg_0702554aa001u5Z4SVPhl3UDML" as MessageID)).toBe(false)
+  })
+})
+
+describe("preMarkerHistory", () => {
+  const cmsg = (id: string, role: "user" | "assistant", parts: SessionV1.Part[] = []) =>
+    ({ info: { id, role, time: { created: 0 } }, parts }) as unknown as SessionV1.WithParts
+  const marker = (id: string) => cmsg(id, "user", [{ type: "compaction" } as SessionV1.Part])
+
+  test("slices everything before the marker by index", () => {
+    const chain = [cmsg("msg_a", "user"), cmsg("msg_b", "assistant"), marker("msg_m")]
+    const history = preMarkerHistory(chain, "msg_m" as MessageID)
+    expect(history).toHaveLength(2)
+    expect(history[0]!.info.id).toBe("msg_a" as MessageID)
+    expect(history[1]!.info.id).toBe("msg_b" as MessageID)
+  })
+
+  test("cross-generator ids: old-era history that lexicographically sorts ABOVE the marker id is kept (0252)", () => {
+    // The live failure (ses_10a0f0fffffek87VCPEYdb5X5m, 2026-09-05): a Sep-era
+    // marker "msg_0702…" against a Jun "msg_ef5f…" / Aug "msg_fd97…" retained
+    // tail that sorts ABOVE it. The old `m.info.id < parentID` filter kept
+    // NONE of this history (all its ids are lexicographically greater than the
+    // marker), finalize saw a ~40-message window, select() hit keep.start === 0
+    // and left the completed marker tailless -> filterCompacted retained the
+    // whole ~519k chain reordered for every subsequent request.
+    const chain = [
+      cmsg("msg_ef5fd02c1001CnEwrBIGkBbs7o", "user"),
+      cmsg("msg_fd97416b5001kiI1Ff4njobtxM", "assistant"),
+      marker("msg_0702554aa001u5Z4SVPhl3UDML"),
+    ]
+    const history = preMarkerHistory(chain, chain[2]!.info.id as MessageID)
+    expect(history).toHaveLength(2)
+    expect(history[0]!.info.id).toBe("msg_ef5fd02c1001CnEwrBIGkBbs7o" as MessageID)
+    expect(history[1]!.info.id).toBe("msg_fd97416b5001kiI1Ff4njobtxM" as MessageID)
+  })
+
+  test("empty when the marker is not in the chain", () => {
+    expect(preMarkerHistory([cmsg("msg_a", "user")], "msg_x" as MessageID)).toEqual([])
   })
 })
 

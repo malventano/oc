@@ -31,17 +31,54 @@ export const PRUNE_PROTECT = 40_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
+
+// Everything in the chain before the compaction marker - the context finalize
+// selects the retained tail from. Index-based (NOT `m.info.id < parentID`):
+// MessageID is a plain string stamped with the generator's wall clock, so ids
+// are creation-time-ordered only WITHIN the generator that made them. A
+// long-lived session spans id-generator changes, and the lexicographic id
+// order then diverges from creation time (live 2026-09-05
+// ses_10a0f0fffffek87VCPEYdb5X5m: a Sep-era marker "msg_0702…" vs a Jun/Aug
+// retained tail "msg_ef5f…"/"msg_fd97…" that sorts ABOVE it) - the old filter
+// silently shrank history to a recent ~40-message window, select() saw
+// "everything fits" (keep.start === 0), finalize left the completed marker
+// tailless, and filterCompacted retained the whole ~519k chain reordered for
+// every subsequent request (full prefill re-prefill). input.messages is the
+// serial-fold chain (lifted newest completed pair + chronological from its
+// boundary), so the marker's index IS its time position; the slice before it
+// is the full prior history regardless of id era.
+export function preMarkerHistory(messages: SessionV1.WithParts[], parentID: MessageID): SessionV1.WithParts[] {
+  const index = messages.findIndex((m) => m.info.id === parentID)
+  return index < 0 ? [] : messages.slice(0, index)
+}
 // A real user prompt queued while the summary turn was in flight must win the
 // next turn over the synthetic auto-continue: the auto-continue would be the
 // newest user message and the loop turns on the newest message only,
-// stranding the queued prompt without its own turn. Message ids are
-// time-ordered (MessageID.ascending()), so id comparison selects anything
-// queued after the compaction marker; other compaction markers are excluded
-// by the part check.
-export const hasNewerPrompt = (messages: SessionV1.WithParts[], parentID: MessageID) =>
-  messages.some(
-    (m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction") && m.info.id > parentID,
+// stranding the queued prompt without its own turn. Anything queued after the
+// compaction marker wins; other compaction markers are excluded by the part
+// check.
+//
+// Message ids are time-ordered only WITHIN the generator that produced them
+// (MessageID.ascending() stamps the id with the generator's current wall
+// clock). A long-lived session spans id-generator changes (this oc build's
+// generator flipped direction/epoch mid-session; the marker here is a Sep-era
+// "msg_0702…" id while the retained chain carries Jun/Aug "msg_ef5f…",
+// "msg_fd97…" ids, which LEXICOGRAPHICALLY sort above the newer Sep id -
+// plain id comparison then diverges from creation time, live 2026-09-05
+// ses_10a0f0fffffek87VCPEYdb5X5m). Compare by creation time instead, with the
+// id as a same-millisecond tiebreak (same-ms ids share the generator, so the
+// id tiebreak stays time-ordered there).
+export const hasNewerPrompt = (messages: SessionV1.WithParts[], parentID: MessageID) => {
+  const marker = messages.find((m) => m.info.id === parentID)
+  if (!marker) return false
+  const t0 = marker.info.time?.created ?? 0
+  return messages.some(
+    (m) =>
+      m.info.role === "user" &&
+      !m.parts.some((p) => p.type === "compaction") &&
+      ((m.info.time?.created ?? 0) > t0 || ((m.info.time?.created ?? 0) === t0 && m.info.id > parentID)),
   )
+}
 
 // A compaction attempt is ABORTED when the newest compaction marker has an
 // errored child assistant message: the summary turn itself (no summary was
@@ -857,7 +894,7 @@ TimeContext.stampUserMessages(msgs)
 
       const cfg = yield* config.get()
       const model = yield* provider.getModel(parent.info.model.providerID, parent.info.model.modelID).pipe(Effect.orDie)
-      const history = input.messages.filter((m) => m.info.id < input.parentID)
+      const history = preMarkerHistory(input.messages, input.parentID)
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const selectInput = history.filter((_, index) => !hidden.has(index))
