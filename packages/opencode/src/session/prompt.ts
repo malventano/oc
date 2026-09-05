@@ -1461,14 +1461,21 @@ const layer = Layer.effect(
             // Compaction turns keep the real tool schemas (they are encoded into
             // the system prompt, so removing them would break the prefix cache)
             // but stub out execution so an attempted tool call is harmlessly
-            // denied and the model continues toward the summary.
+            // denied and the model continues toward the summary. A
+            // PERSISTENCE WHITELIST stays live: the carried-forward framing
+            // (spec 03) lets the summary park heavy learnings in project
+            // files/skills, which requires real read/edit/write. Everything
+            // else (bash, task, web, session tools...) stays stubbed - the
+            // summary turn must never RUN anything, only persist.
             if (compactingPrompt) {
+              const PERSISTENCE_TOOLS = new Set(["read", "glob", "grep", "edit", "write", "skill"])
               for (const [name, t] of Object.entries(tools)) {
+                if (PERSISTENCE_TOOLS.has(name)) continue
                 tools[name] = tool({
                   description: t.description,
                   inputSchema: t.inputSchema,
                   execute: async () => ({
-                    output: "Tool calls are disabled during compaction. Output the summary directly.",
+                    output: "This tool is disabled during compaction. Persist learnings with read/edit/write instead, then output the summary directly.",
                   }),
                 })
               }

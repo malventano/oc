@@ -209,6 +209,13 @@ export const CompactionPart = Schema.Struct({
   // summaries must never reach the model request (see MessageV2.
   // filterCompacted); real markers carry a real LLM-produced summary.
   virtual: Schema.optional(Schema.Boolean),
+  // no_tail: true = guard-origin compaction (loop/stall 3rd/6th fire) whose
+  // post-compaction context must be de-poisoned - NOTHING pre-compaction is
+  // retained verbatim. Distinct from an undefined tail_start_id (which means
+  // "the whole conversation was retained"): filterCompacted folds a no_tail
+  // marker to ONLY the lifted marker+summary pair, then the post-marker
+  // continuation; everything before the marker is folded into the summary.
+  no_tail: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "CompactionPart" })
 export type CompactionPart = Types.DeepMutable<Schema.Schema.Type<typeof CompactionPart>>
 
