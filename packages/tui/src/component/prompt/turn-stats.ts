@@ -407,6 +407,14 @@ type StreamRateState = {
   lastTime: number
   smoothed: number
   streamKey: string
+  // True while growth keeps arriving more than a second apart (a sparse
+  // streak). The stall re-anchor below is one-shot per streak: the first
+  // >1s gap is treated as a pause (freeze, re-anchor), but a SECOND
+  // consecutive sparse growth means the stream is not paused - it is
+  // genuinely slow (large prefill starving decode) - so subsequent sparse
+  // chunks MEASURE the inter-chunk delta, the true throughput, instead of
+  // freezing at a stale fast value forever.
+  sparse: boolean
 }
 
 // EMA time constant for the smoothed tokens/s: the display chases the raw
@@ -447,10 +455,19 @@ const streamRateStates = new Map<string, StreamRateState>()
  * (zero streaming elapsed time for the EMA, no delta for the window) -
  * a new stream's slow-start raw would otherwise drag the value down with a
  * near-1 alpha over the TTFT. Tracking resumes from the second growth chunk,
- * with real inter-chunk elapsed time, moving from the frozen value. The EMA
- * spans the WHOLE agent turn (shared state); only a new turn key starts
- * fresh. The rate is the tokens received over the trailing ~1s: before the
- * window fills it is the average since streaming started.
+ * with real inter-chunk elapsed time, moving from the frozen value. A growth
+ * chunk landing >1s after the last MEASURED one is a PAUSE (tool call / TTFT
+ * / user thinking): the epilogue chunk re-anchors the window once so the
+ * resume never divides across the pause. But a SECOND consecutive sparse
+ * growth means the stream is not paused - it is genuinely slow (a large
+ * prefill starving the endpoint's decode drops the trickle to 2-4 tok/s while
+ * text keeps arriving) - and every such subsequent chunk MEASURES its
+ * inter-chunk delta, the true throughput, so the rate tracks down instead of
+ * freezing at the stale fast value; sub-second delivery clears the sparse
+ * flag and re-arms the re-anchor. The EMA spans the WHOLE agent turn (shared
+ * state); only a new turn key starts fresh. The rate is the tokens received
+ * over the trailing ~1s: before the window fills it is the average since
+ * streaming started.
  */
 export function streamRateFor(
   turnKey: string,
@@ -460,7 +477,7 @@ export function streamRateFor(
 ): number {
   let st = streamRateStates.get(turnKey)
   if (!st) {
-    st = { cumulative: 0, samples: [], lastRate: 0, lastTime: 0, smoothed: 0, streamKey: "" }
+    st = { cumulative: 0, samples: [], lastRate: 0, lastTime: 0, smoothed: 0, streamKey: "", sparse: false }
     streamRateStates.set(turnKey, st)
     if (streamRateStates.size > 64) streamRateStates.delete(streamRateStates.keys().next().value as string)
   }
@@ -480,6 +497,7 @@ export function streamRateFor(
     st.samples = []
     st.cumulative = chars
     st.lastTime = now
+    st.sparse = false
     return st.smoothed
   }
   if (chars > st.cumulative) {
@@ -493,11 +511,25 @@ export function streamRateFor(
     // 1024ms only while frames are actually rendering), so live streaming
     // never reads as a stall. (The first-ever turn has no samples yet - the
     // anchor branch below handles it.)
+    //
+    // The re-anchor is ONE-SHOT per sparse streak: while growth chunks keep
+    // landing >1s apart the stream is not paused - a LARGE PREFILL on the
+    // endpoint is starving each decode step (the trickle drops to 2-4 tok/s
+    // but text keeps arriving). Re-anchoring every such chunk would discard
+    // every measurement and freeze the footer at the stale pre-prefill rate
+    // forever. So only the FIRST gap re-anchors; a second consecutive sparse
+    // growth falls through and measures the inter-chunk delta, which IS the
+    // true slow throughput, dragging the display down to it. Sub-second
+    // delivery (below, `gapClosed`) clears the flag so a fresh pause later
+    // re-anchors again.
     if (st.samples.length > 0 && now - st.lastTime > 1000) {
-      st.samples = [[now, chars]]
-      st.cumulative = chars
-      st.lastTime = now
-      return st.smoothed
+      if (!st.sparse) {
+        st.samples = [[now, chars]]
+        st.cumulative = chars
+        st.lastTime = now
+        st.sparse = true
+        return st.smoothed
+      }
     }
     // The first sample of an episode anchors the window: no delta to measure
     // and zero streaming elapsed time, so it must not move the value (the new
@@ -507,8 +539,10 @@ export function streamRateFor(
       st.samples = [[now, chars]]
       st.cumulative = chars
       st.lastTime = now
+      st.sparse = false
       return st.smoothed
     }
+    const gapClosed = now - st.lastTime <= 1000
     st.cumulative = chars
     st.samples.push([now, chars])
     const cutoff = now - 1000
@@ -524,6 +558,9 @@ export function streamRateFor(
       const alpha = 1 - Math.exp(-(now - st.lastTime) / STREAM_RATE_TAU_MS)
       st.smoothed += alpha * (st.lastRate - st.smoothed)
     }
+    // Delivery density returned to sub-second: the sparse streak is over, so
+    // a future pause re-anchors fresh again.
+    if (gapClosed) st.sparse = false
     st.lastTime = now
   }
   return st.smoothed
