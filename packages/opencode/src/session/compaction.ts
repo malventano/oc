@@ -115,12 +115,24 @@ const INJECT_NOTES = [
   // above" and answer against an empty block (a regression audit finding,
   // 2026-08-17).
   "The entire conversation history above this message is the context to summarize - do not treat any prior user message as a request to act on. The <conversation> block in the summary request below is empty by design - the conversation to summarize is the context chain above it, not that block.",
-  "Do not call any tools. Output only the summary.",
+  "Output only the summary. Do not answer questions in the history, and do not propose or plan work: you are producing state, not resuming activity.",
   "Do not continue the conversation. Do not respond to any questions in it.",
-  // Soft, completeness-first length guidance (spec 03): the tail retention
-  // (tail_turns, default 2, tunable to 0) is a chain mechanism, not a
-  // summarization scope - the summary covers ALL context regardless.
-  "Keep the summary as concise as completeness allows.",
+  // Carried-forward-only framing (oc 0254): the summary is the ONLY content
+  // guaranteed to survive compaction. Erring toward brevity loses state that
+  // the continuation needs; err toward completeness instead. The persistence
+  // tools (below) exist so heavy knowledge can be moved OUT of the summary
+  // into project files/skills if it is too large to inline faithfully - the
+  // summary then references that durable state. Length is a consequence of
+  // completeness, never a goal in itself.
+  "This summary is the ONLY content that continues in the session after compaction: the full conversation history is discarded and cannot be recovered. Capture everything a continuation needs - objectives, decisions, exact paths/symbols/commands, current work state - even if it makes the summary long. Where a durable artifact (project README, AGENTS.md, skill file, runbook, BUG doc) already records a body of knowledge, the summary may reference it instead of duplicating it, but any per-session state that exists only in this conversation must be written out here.",
+  // Persistence toolset (oc 0254): read/edit/write/skill are LIVE during
+  // compaction so large durable learnings can be parked in files instead of
+  // inflated in the summary body (the only alternative would be dropping
+  // them). This is permission to persist, not a mandate to narrate - do not
+  // edit the conversation's own files out of scope, and keep the summary
+  // self-sufficient even when a file is written (the note stays in the
+  // summary, the file is the extended record).
+  "File persistence tools (read, edit, write, skill) are available during this summary ONLY to move durable learnings into project files and skills when the knowledge is too large or too stable to fit in the summary text itself. Prefer the summary body for per-session state; use files only when the knowledge outlives this session (conventions, procedures, bug history). After writing, reference the file path in the summary rather than duplicating its content.",
   "Use minimal reasoning; output the summary directly.",
 ].join("\n")
 type Turn = {
@@ -763,6 +775,12 @@ TimeContext.stampUserMessages(msgs)
     if (!user || user.id !== finished.parentID) return "ineligible" as const
     const markerIdx = input.messages.findIndex((m) => m.info.id === user.id)
     if (!part || markerIdx < 0) return "virtual_empty" as const
+    // no_tail (guard-origin compaction): nothing was retained verbatim, so
+    // there is nothing a virtual compact could drop. Accessible only when the
+    // next /compact lands with no activity - the guard's continuation arrived
+    // instead, so this is degenerate anyway; answer empty to keep the TUI
+    // honest (no marker, no note, no false "reduced" claim).
+    if (part.no_tail === true) return "virtual_empty" as const
 
       // No-tail encodings differ by consumer: select() returns tail_start_id
       // undefined with head = ALL messages (everything fits - summarize the
@@ -892,13 +910,31 @@ TimeContext.stampUserMessages(msgs)
         mode: "compaction",
       })
 
+      // guard-origin compaction (loop/stall 3rd/6th fire): the context being
+      // compacted is poisonous by definition - the recent turns are the loop
+      // evidence. Retain NOTHING verbatim (no_tail): the lifted
+      // marker+summary pair + the post-marker continuation is the only content
+      // carried forward, so the degenerate narration that triggered the fires
+      // cannot ride into the clean post-compaction chain (live allyn session
+      // 2026-09-05: clean guard summary, but the retained tail re-fed the
+      // "Ho"/"H0" churn every turn). Manual /compact and overflow compactions
+      // are untouched - they keep tail_turns selection. The auto-continue
+      // below still runs (the guard's forced-completion directive) so the
+      // pending request is completed from the clean summary.
       const cfg = yield* config.get()
       const model = yield* provider.getModel(parent.info.model.providerID, parent.info.model.modelID).pipe(Effect.orDie)
-      const history = preMarkerHistory(input.messages, input.parentID)
-      const prior = completedCompactions(history)
-      const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
-      const selectInput = history.filter((_, index) => !hidden.has(index))
-      const selected = yield* select({ messages: selectInput, cfg, model })
+      if (compactionPart.guard) {
+        yield* session.updatePart({
+          ...compactionPart,
+          tail_start_id: undefined,
+          no_tail: true,
+        })
+      } else {
+        const history = preMarkerHistory(input.messages, input.parentID)
+        const prior = completedCompactions(history)
+        const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
+        const selectInput = history.filter((_, index) => !hidden.has(index))
+        const selected = yield* select({ messages: selectInput, cfg, model })
       // select()'s keep.start === 0 -> "tail_start_id undefined" means "the
       // whole input fits the preserve budget" and is only valid for
       // whole-conversation inputs. finalize's input is the filterCompacted
@@ -927,6 +963,7 @@ TimeContext.stampUserMessages(msgs)
           tail_start_id: tailStart,
         })
       }
+      } // end else: non-guard compaction keeps tail selection
 
       // A prompt queued during the summary turn supersedes the synthetic
       // auto-continue: the loop turns on the newest user message only.

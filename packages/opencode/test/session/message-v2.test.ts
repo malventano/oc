@@ -2061,6 +2061,27 @@ describe("session.message-v2.filterCompacted epochs", () => {
     expect(tail.parts.some((p) => p.type === "text" && p.text === "original prompt")).toBe(true)
   })
 
+  test("guard-origin no_tail: only the lifted pair + post-marker continuation survive", () => {
+    const { tailWithDelta, compactionUser, summaryAssistant, continueUser } = makeChain()
+    // no_tail guard compaction: the pre-marker tail (T) is folded into the
+    // summary, NOT retained verbatim - the degenerate recent turns that
+    // triggered the fires must not ride into the clean chain.
+    const guardMarker: SessionV1.WithParts = {
+      info: { ...userInfo(C), time: { created: 200 } },
+      parts: [
+        { ...basePart(C, "p1"), type: "compaction", auto: true, guard: true, no_tail: true } as SessionV1.Part,
+      ],
+    }
+    const out = MessageV2.filterCompacted([continueUser, summaryAssistant, guardMarker, tailWithDelta])
+    expect(out.some((m) => m.info.id === C)).toBe(true)
+    expect(out.some((m) => m.info.id === S)).toBe(true)
+    expect(out.some((m) => m.info.id === N)).toBe(true)
+    // The pre-compaction tail is GONE (folded into the summary).
+    expect(out.some((m) => m.info.id === T)).toBe(false)
+    // No epoch deltas can leak either (the delta lived on the dropped tail).
+    expect(hasDelta(out)).toBe(false)
+  })
+
   test("the compaction turn itself still sees the deltas (no newer summary yet)", () => {
     const { tailWithDelta, compactionUser } = makeChain()
     const out = MessageV2.filterCompacted([compactionUser, tailWithDelta])
