@@ -808,14 +808,27 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
     candidate.push(newestMarker, newestSummary)
     const liftedMarker = newestMarker.info.id
     const liftedSummary = newestSummary.info.id
-    const boundary = newestMarker.parts.find(
-      (p): p is CompactionPart => p.type === "compaction" && p.tail_start_id !== undefined,
-    )?.tail_start_id
-    let started = boundary === undefined
-    for (const msg of chronological) {
+    const part = newestMarker.parts.find((p): p is CompactionPart => p.type === "compaction")
+    // no_tail (guard-origin compaction): NOTHING pre-compaction is retained
+    // verbatim - the fold emits the lifted pair, then only the post-marker
+    // continuation. Anchored by the marker's PHYSICAL position in the walk:
+    // the marker+summary are skipped by id above, so an id-based boundary
+    // (boundary === liftedMarker) would never flip `started` - the post-pair
+    // region starts at the first message after the marker index instead.
+    // Distinct from boundary === undefined (the whole chain was retained).
+    const noTail = part?.no_tail === true
+    const markerIdx = noTail ? chronological.findIndex((m) => m.info.id === liftedMarker) : -1
+    const boundary = noTail ? undefined : part?.tail_start_id
+    // noTail: started stays false until the walk passes the marker's physical
+    // position (idx > markerIdx) - boundary === undefined would start the
+    // fold at message 0, which is the "whole chain retained" encoding, the
+    // OPPOSITE of no_tail.
+    let started = noTail ? false : boundary === undefined
+    for (let idx = 0; idx < chronological.length; idx++) {
+      const msg = chronological[idx]!
       if (msg.info.id === liftedMarker || msg.info.id === liftedSummary) continue
       if (!started) {
-        if (msg.info.id === boundary) started = true
+        if (noTail ? idx > markerIdx : msg.info.id === boundary) started = true
         else continue // everything before the boundary is folded into the summary
       }
       candidate.push(msg)

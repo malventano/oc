@@ -41,7 +41,10 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 
 Rules:
 - Keep every section, even when empty.
-- Use terse bullets, not prose paragraphs.
+- Use bullets, not prose paragraphs.
+- This summary is the ONLY content carried forward in the session after
+  compaction - err toward completeness, never brevity. Capture everything
+  a continuation needs, even if it makes the summary long.
 - Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
 - Do not mention the summary process or that context was compacted.`
 const SUMMARY_UPDATE_INSTRUCTIONS = `The <prior-summary> summarizes everything that happened before the <conversation>. Construct a new summary that combines both. The <prior-summary> is discarded after this: anything you do not carry into the new summary is lost.
