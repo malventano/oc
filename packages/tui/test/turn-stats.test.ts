@@ -546,18 +546,23 @@ test("streamRateFor: a delivery after a stall is a NEW EPISODE - the EMA freezes
   streamRateFor("t-burst1", "step-a", 40, 1900)
   streamRateFor("t-burst1", "step-a", 200, 2000) // anchor
   streamRateFor("t-burst1", "step-a", 400, 2100) // raw 500, snaps
-  // the step completes, the tool runs, then a 200-token delivery lands (step-b):
+  // the step completes, the tool runs, then a delivery lands (step-b):
   // the episode change freezes the EMA at the pre-stall value - no dilution, no drop
   expect(streamRateFor("t-burst1", "step-b", 1200, 3000)).toBe(500)
-  // the CHANGE seeded the anchor, so the FIRST growth chunk after the stall
-  // already measures: raw (2000-1200)/0.2s/4 = 1000, alpha 0.487 from the
-  // frozen 500 -> 743.3. No 2-sample blind spot after a tool gap (the
+  // 0233 defers the anchor to the FIRST GROWTH chunk (BUG_TUI_LIVE_RATE_TTFT_DIP):
+  // a change-seeded anchor would divide the resumption's first delta by
+  // TTFT + stream time and plunge toward 0. The change keeps the window empty,
+  // so the first post-change growth anchors (holds the frozen value) and the
+  // SECOND one measures the resume from its own clean inter-chunk time.
+  expect(streamRateFor("t-burst1", "step-b", 2000, 3200)).toBe(500) // first growth anchors, frozen
+  // second growth measures: raw (2600-2000)/0.2s/4 = 750, alpha 0.487 from the
+  // frozen 500 -> 621.8. No 2-sample blind spot after a tool gap (the
   // BUG_FOOTER_LIVE_STATS_STALE fix) - the EMA resumes immediately.
-  expect(streamRateFor("t-burst1", "step-b", 2000, 3200)).toBeCloseTo(743.3, 1)
+  expect(streamRateFor("t-burst1", "step-b", 2600, 3400)).toBeCloseTo(621.6, 0)
   // the next chunk converges toward the raw rate
-  const v2 = streamRateFor("t-burst1", "step-b", 2800, 3400)
-  expect(v2).toBeGreaterThan(743.3)
-  expect(v2).toBeLessThan(1000)
+  const v2 = streamRateFor("t-burst1", "step-b", 3000, 3600)
+  expect(v2).toBeGreaterThan(621.8)
+  expect(v2).toBeLessThan(750)
 })
 
 test("streamRateFor: an episode change holds the frozen value through ANY gap length", () => {
@@ -654,6 +659,35 @@ test("streamRateFor: a stall re-anchors the window so the resume does not measur
   // instead of being dragged toward 0 by a dt spanning the tool call - any
   // value well above 0 and near the real 400 proves the gap was excluded.
   expect(resumed).toBeCloseTo(362.2, 1)
+})
+
+test("streamRateFor: persistent sparse growth (large-prefill starvation) tracks the slow rate instead of freezing (0253)", () => {
+  // The user-visible bug: a large prefill on the endpoint starves this
+  // stream's decode. Text keeps trickling (2-4 tok/s) but every growth chunk
+  // lands >1s apart. The 0225 re-anchor fired on EVERY such chunk, discarding
+  // each measurement and returning the frozen pre-prefill value forever - the
+  // footer held ~200 tok/s while output was clearly ~3 tok/s. The re-anchor
+  // is now one-shot: only the FIRST >1s gap pauses; a second consecutive
+  // sparse growth measures the inter-chunk delta, the true throughput.
+  streamRateFor("t-prefill", "step-a", 0, 0)
+  streamRateFor("t-prefill", "step-a", 800, 1000) // raw 200, snaps
+  streamRateFor("t-prefill", "step-a", 1600, 2000) // steady 200
+  expect(streamRateFor("t-prefill", "step-a", 1600, 3000)).toBe(200) // frozen, no growth
+  // prefill begins: 4.5s without growth, then a trickle chunk.
+  expect(streamRateFor("t-prefill", "step-a", 1600, 7000)).toBe(200) // no growth, still frozen
+  expect(streamRateFor("t-prefill", "step-a", 1800, 8500)).toBe(200)
+  // the FIRST post-gap chunk is a PAUSE: it re-anchors and holds (0225
+  // semantics preserved - a resume after one stall does not divide across it)
+  // prefill continues: growth stays sparse (every chunk >1s). These are NOT
+  // pauses - the inter-chunk delta (160 chars / 4s / 4 = 10 tok/s here) is
+  // the stream's true slow throughput and must drag the display down.
+  expect(streamRateFor("t-prefill", "step-a", 1960, 12500)).toBeCloseTo(10, 1)
+  const s2 = streamRateFor("t-prefill", "step-a", 2120, 16500)
+  expect(s2).toBeCloseTo(10, 1) // still sparse, still tracking the slow rate
+  expect(s2).toBeLessThan(200) // NOT frozen at the stale fast value
+  // prefill ends: sub-second delivery resumes and the value climbs back up.
+  const up = streamRateFor("t-prefill", "step-a", 2320, 16600)
+  expect(up).toBeGreaterThan(10)
 })
 
 test("countTurnWalkParts: the root user message's created time anchors the clock even when found on an older page", () => {
