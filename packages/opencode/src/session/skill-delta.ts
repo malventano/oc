@@ -37,6 +37,7 @@ import { applyPatch } from "diff"
  */
 
 const BASE_DIR_MARKER = "Base directory for this skill:"
+const SKILL_HEADER = "# Skill:"
 
 export type ReconstructedSkill = {
   /** Body shown in context as of the most recent load + post-load deltas + session self-edits (null when reported deleted). */
@@ -48,12 +49,12 @@ export type ReconstructedSkill = {
   location: string | null
 }
 
-/** Canonical body extraction: the region between the "# Skill:" header and the base-dir note in the tool output. */
-export function extractSkillBody(output: string): string {
+/** Canonical body extraction: the region between the "# Skill:" header and the base-dir note in the tool output. Returns null when the load structure is missing - the part is not a genuine skill load (e.g. its output was squashed by squash-output, leaving only a summary; treating that as the baseline poisoned the reconstruction and emitted a bogus drift, see oc 0256). */
+export function extractSkillBody(output: string): string | null {
   const lines = output.split("\n")
-  const start = lines.findIndex((l) => l.startsWith("# Skill:"))
+  const start = lines.findIndex((l) => l.startsWith(SKILL_HEADER))
   const end = lines.findIndex((l) => l.startsWith(BASE_DIR_MARKER))
-  if (start < 0 || end <= start) return output.trim()
+  if (start < 0 || end <= start) return null
   return lines.slice(start + 1, end).join("\n").trim()
 }
 function extractSkillLocation(output: string): string | null {
@@ -81,9 +82,16 @@ export function integrateSkillBodies(msgs: SessionV1.WithParts[]): Map<string, R
         const input = part.state.input as { name?: unknown } | undefined
         const name = typeof input?.name === "string" ? input.name : extractSkillName(part.state.output)
         if (!name) continue
+        // A genuine load carries the full output with both structure markers.
+        // A squashed load (squash-output rewrote state.output to a summary)
+        // has neither - do NOT let it reset the baseline (oc 0256: the
+        // summary became the "old" side of a bogus drift). Skipping it keeps
+        // an earlier genuine baseline (and the applied state) in force.
+        const body = extractSkillBody(part.state.output)
+        if (body === null) continue
         out.set(name, {
          applied: null,
-         baseline: extractSkillBody(part.state.output),
+         baseline: body,
          deleted: false,
          location: extractSkillLocation(part.state.output),
     })

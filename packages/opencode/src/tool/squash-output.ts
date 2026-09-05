@@ -86,6 +86,11 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           if (match === "all" && !hasPattern) {
             throw new Error("match: 'all' requires a pattern target (tool and/or input_contains).")
           }
+          if (target.tool === "skill") {
+            throw new Error(
+              "Refusing to squash skill tool output: the skill-delta walk uses a completed skill load's full output as the skill baseline (calibrating the 'Skill context drift' reminder). Squashing it rewrote the baseline to a summary and emitted a bogus drift (oc 0256). Reload the skill with the skill tool instead of squashing it."
+            )
+          }
 
           // Newest compaction message's timestamp is the boundary; parts at
           // or before it are below the compaction (see the `<=` below).
@@ -106,7 +111,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           let whereSql = sql`p.session_id = ${sessionID}
             AND json_extract(p.data, '$.type') = 'tool'
             AND json_extract(p.data, '$.state.status') = 'completed'
-            AND json_extract(p.data, '$.tool') NOT IN (${SELF_ID}, ${SELF_LEGACY})`
+            AND json_extract(p.data, '$.tool') NOT IN (${SELF_ID}, ${SELF_LEGACY}, 'skill')`
           if (hasId) {
             whereSql = sql`${whereSql} AND p.id = ${target.part_id}`
           }
