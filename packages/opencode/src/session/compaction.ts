@@ -120,19 +120,20 @@ const INJECT_NOTES = [
   // Carried-forward-only framing (oc 0254): the summary is the ONLY content
   // guaranteed to survive compaction. Erring toward brevity loses state that
   // the continuation needs; err toward completeness instead. The persistence
-  // tools (below) exist so heavy knowledge can be moved OUT of the summary
-  // into project files/skills if it is too large to inline faithfully - the
-  // summary then references that durable state. Length is a consequence of
-  // completeness, never a goal in itself.
+  // tools (below) exist so stable knowledge can be MOVED OUT of the summary
+  // into project files/skills - the summary then references that durable
+  // state. Length is a consequence of completeness, never a goal in itself.
   "This summary is the ONLY content that continues in the session after compaction: the full conversation history is discarded and cannot be recovered. Capture everything a continuation needs - objectives, decisions, exact paths/symbols/commands, current work state - even if it makes the summary long. Where a durable artifact (project README, AGENTS.md, skill file, runbook, BUG doc) already records a body of knowledge, the summary may reference it instead of duplicating it, but any per-session state that exists only in this conversation must be written out here.",
-  // Persistence toolset (oc 0254): read/edit/write/skill are LIVE during
-  // compaction so large durable learnings can be parked in files instead of
-  // inflated in the summary body (the only alternative would be dropping
-  // them). This is permission to persist, not a mandate to narrate - do not
-  // edit the conversation's own files out of scope, and keep the summary
-  // self-sufficient even when a file is written (the note stays in the
-  // summary, the file is the extended record).
-  "File persistence tools (read, edit, write, skill) are available during this summary ONLY to move durable learnings into project files and skills when the knowledge is too large or too stable to fit in the summary text itself. Prefer the summary body for per-session state; use files only when the knowledge outlives this session (conventions, procedures, bug history). After writing, reference the file path in the summary rather than duplicating its content.",
+  // Persistence toolset (oc 0255): read/edit/write/skill are LIVE during
+  // compaction so stable/reusable learnings can be PARKED in files instead of
+  // re-invented on every future compaction. The default is to persist: a
+  // convention, gotcha, procedure, or bug history is durable - it belongs in
+  // the project file/skill, referenced from the summary. Only per-session
+  // progress state (numbers, current step, partial work) stays inline in the
+  // summary body. oc 0254 under-sold this ("ONLY when too large or too
+  // stable") and the model defaulted to a bare summary every time; the flip
+  // makes the capability the operative default without mandating narration.
+  "Persistence tools (read, edit, write, skill) are LIVE during this summary. If the conversation produced a stable, reusable learning - a convention, a gotcha, a procedure, a bug history, a decision with rationale - park it in the relevant project file or skill that future sessions will read (workflow doc, AGENTS.md, skill sibling, runbook, BUG doc), then reference that path in the summary instead of re-deriving the full detail. Keep per-session progress state (current count, next step, active partial work) in the summary body itself. Do not edit files out of scope, and never let persistence replace the summary's completed/active/next-move sections.",
   "Use minimal reasoning; output the summary directly.",
 ].join("\n")
 type Turn = {
