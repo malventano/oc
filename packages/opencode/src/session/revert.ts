@@ -164,8 +164,23 @@ const layer = Layer.effect(
     const cleanup = Effect.fn("SessionRevert.cleanup")(function* (session: Session.Info) {
       if (!session.revert) return
       const sessionID = session.id
-      const msgs = yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+      // Bounded to the compaction+tail window (0272, mirroring revert()): the
+      // undone messages cleanup deletes are exactly the revert's target + its
+      // newer siblings - the undo was just performed, so the target sits in
+      // the tail. Fall back to the full walk only when the target fell below
+      // the compaction boundary (the same rule as revert()).
+      const bounded = yield* MessageV2.stream(sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.orDie,
+      )
       const messageID = session.revert.messageID
+      const boundedIndex = bounded.findIndex((msg) => msg.info.id === messageID)
+      // bounded is newest-FIRST; slice(0, i+1).reverse() yields the target and
+      // newer messages in chronological order, same shape as the full walk.
+      const msgs =
+        boundedIndex === -1
+          ? yield* sessions.messages({ sessionID }).pipe(Effect.orDie)
+          : bounded.slice(0, boundedIndex + 1).reverse()
       const index = msgs.findIndex((msg) => msg.info.id === messageID)
       const target = index < 0 ? undefined : msgs[index]
       const remove = index < 0 ? [] : msgs.slice(index + (session.revert.partID ? 1 : 0))
