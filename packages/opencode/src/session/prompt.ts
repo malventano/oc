@@ -21,7 +21,7 @@ import { Provider } from "@/provider/provider"
 
 import { type Tool as AITool, tool, jsonSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
-import { SessionCompaction, hasAbortedCompaction } from "./compaction"
+import { SessionCompaction, hasAbortedCompaction, hasNewerPrompt } from "./compaction"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
@@ -113,6 +113,27 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+// 0277: an assistant claim that the abort killed BEFORE it produced anything.
+// The interrupted prefill has only step-start (or no parts at all) - no
+// reasoning, no text, no tool blocks. Such a claim does NOT answer its parent
+// user message: the Enter-flush abort that killed it (double-enter while a
+// prompt is queued) is supposed to interrupt the CURRENT output and let the
+// QUEUED prompt run - but the abort landed after the loop had already claimed
+// the just-submitted prompt (2026-09-06, the "happened again" stall: v3
+// finished, the loop created msg_075e117f4, the entering abort killed it
+// 22ms in). The hasQueued gate (cancel resume) and the loop-exit check both
+// misread that zero-progress claim as "answered" and the queue drained into a
+// stall. Excluding it lets the resume re-claim and re-process the prompt.
+function isZeroProgressAbortedMessage(m: SessionV1.WithParts) {
+  if (m.info.role !== "assistant") return false
+  if (m.info.error?.name !== "MessageAbortedError") return false
+  // Any non-step-start part means the prefill progressed (reasoning streamed,
+  // text started, a tool block formed) - that claim is genuinely "worked" and
+  // must NOT re-run (the abort interrupted real output). Only a claim with
+  // zero meaningful parts is re-claimable.
+  return m.parts.every((p) => p.type === "step-start")
+}
+
 export interface Interface {
   readonly cancel: (sessionID: SessionID, resume?: boolean) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -167,6 +188,10 @@ const layer = Layer.effect(
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID, resume = false) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
+      // The abort must FULLY complete (the runner interrupted, the killed
+      // claim finalized with MessageAbortedError + time.completed) BEFORE the
+      // queued-prompt check runs - so the resume decision sees the settled
+      // state, not a half-finalized claim (0277 double-enter race).
       yield* state.cancel(sessionID)
       // resume=true is the Enter-flush path: the caller wants the queued
       // (unprocessed) user messages processed right after the interrupt.
@@ -186,12 +211,31 @@ const layer = Layer.effect(
       // while the TUI waits for the flush to start). MessageV2.stream() caps
       // at two completed compaction markers + tail reachability, which always
       // contains the queue.
+      //
+      // 0277: a user message whose only assistant child is a ZERO-PROGRESS
+      // aborted claim (the claim this cancel just killed - MessageAbortedError
+      // with no reasoning/text/tool parts, so the prefill never output
+      // anything) is still queued. The double-enter race landed the abort in
+      // the window after the loop claimed the just-submitted prompt (v3
+      // finished, the loop created the assistant, the entering abort killed
+      // it): the old "has an assistant child at all" test then misread the
+      // freshly-killed claim as "answered" and the resume did nothing - the
+      // prompt sat unprocessed (8.9s stall until the user's dot). Excluding
+      // zero-progress aborted claims lets the resume loop re-claim and
+      // re-process the prompt exactly as the Enter-flush intends.
       const messages = yield* MessageV2.stream(sessionID).pipe(
         Effect.provideService(Database.Service, database),
         Effect.catch(() => Effect.succeed([])),
       )
       const hasQueued = messages.some(
-        (m) => m.info.role === "user" && !messages.some((a) => a.info.role === "assistant" && a.info.parentID === m.info.id),
+        (m) =>
+          m.info.role === "user" &&
+          !messages.some(
+            (a) =>
+              a.info.role === "assistant" &&
+              a.info.parentID === m.info.id &&
+              !isZeroProgressAbortedMessage(a),
+          ),
       )
       if (hasQueued) yield* Effect.forkIn(scope)(loop({ sessionID }))
     })
@@ -1247,7 +1291,6 @@ const layer = Layer.effect(
             !lastAssistantInfo.summary &&
             !lastAssistantInfo.error
 
-
           if (pendingCompaction) {
             yield* compaction.finalize({
               sessionID,
@@ -1256,6 +1299,17 @@ const layer = Layer.effect(
               messages: msgs,
             })
             compactingPrompt = undefined
+            // A real user prompt queued while the summary turn was in flight is
+            // a NEW turn - it must start fresh at step 1 (full instructions +
+            // epoch re-snapshot) after the compaction fully completes, exactly
+            // as if the user had waited for output to stop and re-submitted.
+            // Breaking lets the queued prompt's own prompt() take over with a
+            // clean runLoop instead of being absorbed as a step>=2 continuation
+            // (which serves a stripped system and poisons the prefix cache).
+            const settled = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+              Effect.provideService(Database.Service, database),
+            )
+            if (hasNewerPrompt(settled, compactionParent.info.id)) break
             continue
           }
 
@@ -1263,7 +1317,15 @@ const layer = Layer.effect(
             lastAssistant?.finish &&
             !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastAssistant.parentID === lastUser.id
+            lastAssistant.parentID === lastUser.id &&
+            // 0277: a zero-progress aborted claim (MessageAbortedError, no
+            // reasoning/text/tool parts - the prefill never output anything)
+            // does NOT answer its parent prompt. The aborted loop that owned
+            // it already exited (its user message was the just-aborted one);
+            // this re-entry must re-claim instead of treating the killed
+            // claim as finished, or the Enter-flush resume arrives only to
+            // find the prompt "answered" by a claim that produced nothing.
+            !(lastAssistantMsg && isZeroProgressAbortedMessage(lastAssistantMsg))
             // NO StallGuardError exemption here (removed 2026-08-18, 0200): a
             // stall-guard-marked message is fine for the loop-exit check. Fires
             // 1-8 CLEAR the message's finish (continued-turn state), so the
@@ -1510,8 +1572,17 @@ const layer = Layer.effect(
              // runs only on the real user turn (step 1, non-compaction); mid-turn
              // scopes to the skills loaded into this context since the last
              // compaction - only those bodies can drift between steps.
+             // POST-COMPACTION GAP (FROZEN_SYSTEM_EPOCHS fix): the epoch record
+             // rides the epoch's first user message, which compaction drops. On
+             // any request inside the gap (no active record) the LIVE system is
+             // what goes on the wire - so instructions must load in full here or
+             // the post-compaction continuation serves a stripped system that
+             // poisons the prefix cache for the following real user turn. The
+             // gap only exists on the first request(s) after a compact-done; a
+             // mid-turn continuation inside a live epoch has an active record.
              const isRealUserTurn = step === 1 && !compactingPrompt
-             const refreshOptions = isRealUserTurn
+             const needsFullSystem = isRealUserTurn || !Epoch.activeRecord(msgs)
+             const refreshOptions = needsFullSystem
                ? undefined
                : { names: new Set(integrateSkillBodies(msgs).keys()) }
              // Loaded-skill and loaded-file staleness checks run in PARALLEL on
@@ -1539,7 +1610,7 @@ const layer = Layer.effect(
             // away. Drift in system-rendered instructions surfaces on the next
             // user prompt; AGENTS.md files read via the read tool are tracked
             // by FileDelta (step-1-gated walk) separately.
-            const instructions = isRealUserTurn
+            const instructions = needsFullSystem
               ? yield* instruction.system().pipe(Effect.orDie)
               : []
             const mcpInstructions = yield* sys.mcp(agent, session.permission)
@@ -1605,7 +1676,6 @@ const layer = Layer.effect(
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
-              epochSystem: epoch.frozen,
               user: lastUser,
               agent,
               permission: session.permission,
@@ -1625,7 +1695,6 @@ const layer = Layer.effect(
               // exceeds the endpoint and falls back to the legacy method.
               currentContextTokens: lastFinished?.tokens?.total,
             })
-
 
             if (handle.loopGuardFired) {
               yield* Effect.logWarning("loop guard fired", { "session.id": sessionID, detail: handle.loopGuardHit })

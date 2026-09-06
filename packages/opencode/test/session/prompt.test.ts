@@ -1232,6 +1232,80 @@ it.instance("cancel resumes the loop and processes queued prompts", () =>
   }),
 )
 
+it.instance(
+  "cancel resume re-claims a JUST-ABORTED zero-progress claim instead of treating it as answered (0277 double-enter race)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Zero-progress re-claim" })
+      yield* seed(chat.id)
+
+      // First turn: a held reply (the 0277 v3 analog) - resolves on the gate.
+      const gate = yield* Deferred.make<void>()
+      yield* llm.hold("first", deferredAsPromise(gate))
+      yield* user(chat.id, "first")
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      yield* waitForBusy(chat.id)
+
+      // The second Enter queues a prompt while the first turn is in flight -
+      // the loop has NOT claimed it yet (the abort races the claim).
+      const queued = yield* user(chat.id, "second")
+
+      // The loop claims "second" the moment it finishes the first turn and
+      // starts a fresh prefill - hang that prefill so the claim exists as a
+      // ZERO-progress assistant when the entering abort lands.
+      yield* llm.hang
+      yield* Deferred.succeed(gate, undefined)
+
+      // Wait until the loop owns the queued message with an unfinished
+      // (zero-progress, dangling prefill) claim.
+      let killedClaimID: string | undefined
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const messages = yield* sessions.messages({ sessionID: chat.id })
+          const claim = messages.find(
+            (m) => m.info.role === "assistant" && m.info.parentID === queued.id && !m.info.finish,
+          )
+          if (claim) killedClaimID = claim.info.id
+          return claim ? (true as const) : undefined
+        }),
+        "loop never claimed the queued prompt",
+        "5 seconds",
+      )
+      expect(killedClaimID).toBeDefined()
+
+      // The second Enter's abort fully completes, killing that claim.
+      yield* prompt.cancel(chat.id, true)
+      const firstExit = yield* Fiber.await(fiber)
+      expect(Exit.isSuccess(firstExit)).toBe(true)
+
+      // The interrupted zero-progress claim must NOT count as an answer: the
+      // resume must re-claim "second" and complete a FRESH turn for it (the
+      // empty mock queue auto-replies). Assert a DIFFERENT assistant message
+      // than the killed claim - merely seeing the aborted claim with a
+      // finish stamp (finalizeInterruptedAssistant sets finish="stop") is NOT
+      // a re-process, that is the bug.
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const messages = yield* sessions.messages({ sessionID: chat.id })
+          const reprocessed = messages.find(
+            (m) =>
+              m.info.role === "assistant" &&
+              m.info.parentID === queued.id &&
+              m.info.id !== killedClaimID &&
+              m.info.finish,
+          )
+          return reprocessed ? (true as const) : undefined
+        }),
+        "queued prompt was never re-processed after the zero-progress claim was aborted",
+        "10 seconds",
+      )
+    }),
+)
+
 it.instance("plain cancel does not resume the loop for queued prompts", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
