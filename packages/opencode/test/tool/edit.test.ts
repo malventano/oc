@@ -7,6 +7,7 @@ import { EditTool } from "../../src/tool/edit"
 import { parseFencePatch } from "../../src/tool/grammar-fence"
 import { TestInstance } from "../fixture/fixture"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Format } from "../../src/format"
@@ -34,6 +35,7 @@ const layer = LayerNode.compile(
     LSP.node,
     CrossSpawnSpawner.node,
     FSUtil.node,
+    Ripgrep.node,
     Format.node,
     EventV2Bridge.node,
     Truncate.node,
@@ -603,6 +605,36 @@ describe("tool.edit", () => {
         expect(err.message).toMatch(/file line 2/)
         expect(err.message).toContain("your block:")
         expect(err.message).toContain("unique beta line")
+      }),
+    )
+
+    it.instance("named the wrong file: OLD block lives in a different file (wrong [PATH])", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        // The block content lives in other.txt, not the section's target.
+        yield* put(path.join(test.directory, "target.txt"), "some unrelated content here\nanother line\n")
+        yield* put(path.join(test.directory, "other.txt"), "shared unique snippet xyz123\n")
+        const err = yield* fail({
+          input: fence([
+            { path: path.join(test.directory, "target.txt"), ops: [{ old: ["shared unique snippet xyz123"], new: ["X"] }] },
+          ]),
+        })
+        expect(err.message).toContain("target.txt")
+        expect(err.message).toContain("other.txt")
+        expect(err.message).toMatch(/wrong \[PATH\] header/i)
+      }),
+    )
+
+    it.instance("wrong-file hint is silent when the block exists nowhere else", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* put(path.join(test.directory, "target.txt"), "some unrelated content here\n")
+        yield* put(path.join(test.directory, "sibling.txt"), "also unrelated\n")
+        const err = yield* fail({
+          input: fence([{ path: path.join(test.directory, "target.txt"), ops: [{ old: ["gone forever line"], new: ["X"] }] }]),
+        })
+        expect(err.message).toContain("target.txt")
+        expect(err.message).not.toContain("wrong [PATH] header")
       }),
     )
   })

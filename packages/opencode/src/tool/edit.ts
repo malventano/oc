@@ -19,6 +19,7 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { parseFencePatch } from "./grammar-fence"
 import { resolveSpan } from "./string-match"
 
@@ -85,6 +86,57 @@ function findMatches(haystack: string[], needle: string[]): number[] {
 // trailing empty element" (splitLines drops it for the file's own trailing
 // newline; the fallbacks must too, or an empty element would append a
 // phantom "\n" to the output).
+/** Project-relative display path (mirrors the fileDelta renderer: relative
+ *  when inside the worktree, absolute otherwise - keeps the error readable). */
+function displayPath(dir: string, p: string): string {
+  const rel = path.relative(dir, p)
+  return !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : p
+}
+
+/** Escape a literal line for rg's default (PCRE-ish) regex grammar. */
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * When an OLD block fails to match its resolved file at all, grep the
+ * worktree for the block's first non-empty line and report any OTHER file
+ * that holds it - so a wrong [PATH] header (the content lives in a different
+ * file) is diagnosed as such instead of leaving the agent guessing. Bounded:
+ * limit small, best-effort (any Ripgrep failure returns "").
+ */
+const wrongFileHint = Effect.fn("EditTool.wrongFileHint")(function* (
+  ripgrep: Ripgrep.Interface,
+  dir: string,
+  sourcePath: string,
+  block: string[],
+) {
+  const first = block.find((l) => l.trim().length > 0)
+  if (!first) return ""
+  try {
+    const matches = yield* ripgrep.grep({
+      cwd: dir,
+      pattern: escapeRegex(first.trim()),
+      limit: 4,
+    })
+    const absSource = path.resolve(sourcePath)
+    const others = matches
+      .map((m) => {
+        const p = path.resolve(dir, m.entry.path.toString())
+        return { p, display: displayPath(dir, p) }
+      })
+      .filter((m) => m.p !== absSource)
+      .slice(0, 2)
+    if (others.length === 0) return ""
+    const plural = others.length > 1 ? "files" : "file"
+    return `The OLD block matched "${first.trim().slice(0, 60)}" in ${others
+      .map((m) => m.display)
+      .join(", ")} instead - wrong [PATH] header (content lives in another ${plural})? `
+  } catch {
+    return ""
+  }
+})
+
 function toWork(content: string): string[] {
   if (content === "") return []
   const lines = content.split("\n")
@@ -202,6 +254,7 @@ export const EditTool = Tool.define(
     const afs = yield* FSUtil.Service
     const format = yield* Format.Service
     const events = yield* EventV2Bridge.Service
+    const ripgrep = yield* Ripgrep.Service
 
     return {
       description: DESCRIPTION,
@@ -324,6 +377,11 @@ export const EditTool = Tool.define(
               ? { text: chained.after, bom: chained.bom }
               : yield* Bom.readFile(afs, sourcePath)
             const { lines, trailing } = splitLines(source.text)
+            // Naming the checked file: every OLD-match failure now says which
+            // file the ladder searched, so a wrong [PATH] header (the block
+            // lives in another file) is diagnosable instead of a blind
+            // 'not in the file'.
+            const showPath = displayPath(instance.directory, sourcePath)
 
             let work = [...lines]
             const fallbackNotes: string[] = []
@@ -354,7 +412,7 @@ export const EditTool = Tool.define(
                       )
                     }
                     throw new Error(
-                      `CUT @${op.register}: no match for \`${(op.block[0] ?? "").slice(0, 60)}\` - copy the block byte-exact from the read output`,
+                      `CUT @${op.register}: no match for \`${(op.block[0] ?? "").slice(0, 60)}\` in ${showPath} - copy the block byte-exact from the read output`,
                     )
                   }
                 }
@@ -396,7 +454,7 @@ export const EditTool = Tool.define(
                       )
                     }
                     throw new Error(
-                      `PASTE @${op.register}: no match for the context block \`${(op.context[0] ?? "").slice(0, 60)}\` - copy it byte-exact from the read output`,
+                      `PASTE @${op.register}: no match for the context block \`${(op.context[0] ?? "").slice(0, 60)}\` in ${showPath} - copy it byte-exact from the read output`,
                     )
                   }
                 }
@@ -460,23 +518,29 @@ export const EditTool = Tool.define(
                     }
                     if (fileLine === undefined) {
                       throw new Error(
-                        `no match for the OLD block - line ${mismatch + 1} extends past the end of the file (line ${similar + mismatch + 1} does not exist); the file changed since this content was current - re-read or quote the current content`,
+                        `no match for the OLD block in ${showPath} - line ${mismatch + 1} extends past the end of the file (line ${similar + mismatch + 1} does not exist); the file changed since this content was current - re-read or quote the current content`,
                       )
                     }
                     if (oldLine.trim() === fileLine.trim()) {
                       throw new Error(
-                        `no match for the OLD block - line ${mismatch + 1} differs from file line ${similar + mismatch + 1} by whitespace only (invisible in the read output):\n  your block: '${show(oldLine)}'\n  file:       '${show(fileLine)}'\nCopy it byte-exact, or use a shorter unique block`,
+                        `no match for the OLD block in ${showPath} - line ${mismatch + 1} differs from file line ${similar + mismatch + 1} by whitespace only (invisible in the read output):\n  your block: '${show(oldLine)}'\n  file:       '${show(fileLine)}'\nCopy it byte-exact, or use a shorter unique block`,
                       )
                     }
                     const elsewhere = work.findIndex((l) => l === oldLine)
                     throw new Error(
                       elsewhere >= 0
-                        ? `no match for the OLD block - line ${mismatch + 1} of your block is at file line ${elsewhere + 1}, not ${similar + mismatch + 1}:\n  your block: '${show(oldLine)}'\n  file line ${elsewhere + 1}: '${show(work[elsewhere])}'\n  file line ${similar + mismatch + 1}: '${show(fileLine)}'\nThe file changed since this content was current - re-read or quote the current content`
-                        : `no match for the OLD block - line ${mismatch + 1} is not in the file:\n  your block: '${show(oldLine)}'\n  file line ${similar + mismatch + 1}: '${show(fileLine)}'\nThe file changed since this content was current - re-read or quote the current content`,
+                        ? `no match for the OLD block in ${showPath} - line ${mismatch + 1} of your block is at file line ${elsewhere + 1}, not ${similar + mismatch + 1}:\n  your block: '${show(oldLine)}'\n  file line ${elsewhere + 1}: '${show(work[elsewhere])}'\n  file line ${similar + mismatch + 1}: '${show(fileLine)}'\nThe file changed since this content was current - re-read or quote the current content`
+                        : `no match for the OLD block in ${showPath} - line ${mismatch + 1} is not in the file:\n  your block: '${show(oldLine)}'\n  file line ${similar + mismatch + 1}: '${show(fileLine)}'\nThe file changed since this content was current - re-read or quote the current content`,
                     )
                   }
+                  // Nothing matched in this file at all. The block may live
+                  // in ANOTHER file (a wrong [PATH] header) - a bounded grep
+                  // over the worktree for the block's first meaningful line
+                  // surfaces the real home when it exists, so the agent sees
+                  // 'you wrote foo.ts but this content is bar.ts'.
+                  const hint = yield* wrongFileHint(ripgrep, instance.directory, sourcePath, op.old)
                   throw new Error(
-                    `no match for \`${first.slice(0, 60)}\` in the file - copy the OLD block byte-exact from the read output (the file may have changed - re-read first)`,
+                    hint + `no match for \`${first.slice(0, 60)}\` in ${showPath} - copy the OLD block byte-exact from the read output (the file may have changed - re-read first)`,
                   )
                 }
               }
