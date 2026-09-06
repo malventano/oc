@@ -447,6 +447,17 @@ export const EditTool = Tool.define(
                     const mismatch = i >= 0 ? i : 0
                     const fileLine = work[similar + mismatch]
                     const oldLine = op.old[mismatch]!
+                    // Surface BOTH lines in the failure message: the tool has
+                    // them in scope here, and quoting the file's actual line
+                    // turns a drift/whitespace failure into an immediately
+                    // visible mismatch (the agent can see HOW its block
+                    // differs and fix it) instead of a line-number-only
+                    // "doesn't match" that invites a blind resubmit of the
+                    // same typo.
+                    const show = (line: string | undefined) => {
+                      const s = (line ?? "").trim()
+                      return s.length > 120 ? `${s.slice(0, 120)}...` : s
+                    }
                     if (fileLine === undefined) {
                       throw new Error(
                         `no match for the OLD block - line ${mismatch + 1} extends past the end of the file (line ${similar + mismatch + 1} does not exist); the file changed since this content was current - re-read or quote the current content`,
@@ -454,14 +465,14 @@ export const EditTool = Tool.define(
                     }
                     if (oldLine.trim() === fileLine.trim()) {
                       throw new Error(
-                        `no match for the OLD block - line ${mismatch + 1} differs from file line ${similar + mismatch + 1} by whitespace only; trailing spaces/tabs are invisible in the read output - copy it byte-exact, or use a shorter unique block`,
+                        `no match for the OLD block - line ${mismatch + 1} differs from file line ${similar + mismatch + 1} by whitespace only (invisible in the read output):\n  your block: '${show(oldLine)}'\n  file:       '${show(fileLine)}'\nCopy it byte-exact, or use a shorter unique block`,
                       )
                     }
                     const elsewhere = work.findIndex((l) => l === oldLine)
                     throw new Error(
                       elsewhere >= 0
-                        ? `no match for the OLD block - line ${mismatch + 1} of your block is at file line ${elsewhere + 1}, not ${similar + mismatch + 1}; the file changed since this content was current - re-read or quote the current content`
-                        : `no match for the OLD block - line ${mismatch + 1} of your block is not in the file; the file changed since this content was current - re-read or quote the current content`,
+                        ? `no match for the OLD block - line ${mismatch + 1} of your block is at file line ${elsewhere + 1}, not ${similar + mismatch + 1}:\n  your block: '${show(oldLine)}'\n  file line ${elsewhere + 1}: '${show(work[elsewhere])}'\n  file line ${similar + mismatch + 1}: '${show(fileLine)}'\nThe file changed since this content was current - re-read or quote the current content`
+                        : `no match for the OLD block - line ${mismatch + 1} is not in the file:\n  your block: '${show(oldLine)}'\n  file line ${similar + mismatch + 1}: '${show(fileLine)}'\nThe file changed since this content was current - re-read or quote the current content`,
                     )
                   }
                   throw new Error(
