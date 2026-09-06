@@ -55,6 +55,19 @@ const GUARDED = [
   // counting).
   { re: /\bgrep\s+(?:-[a-zA-Z0-9]+\s+)*[^-\s<|;>][^\s|;]*\s+[^-\s<|;>][^\s|;]+/, hint: "grep on a file - the grep tool (and rg for match counting) does this" },
   { re: /\bwc\s+(?:-[a-zA-Z0-9]+\s+)*[^-\s<|;>][^\s|;]+/, hint: "wc on a file - the read tool shows the content; negative offset reads the tail" },
+
+  // --- rg foot-gun: -rn means --replace n, not recursive ---
+  // rg is sanctioned (the comment above: "for match counting"), but its
+  // recursion is DEFAULT - there is NO -rn recursive flag. `rg -rn "X"` is
+  // parsed as `--replace n` (replace every match with 'n') and exits 0 with
+  // corrupted output ("n\nn" instead of the matches). Measured: 3,301 such
+  // commands across 46 sessions (first 2026-06, ongoing 2026-09). Scoped to
+  // `-rn` (and `-r n`, the manual split): bare `-r VALUE` with a real value
+  // is legit --replace and must not fire. This is a DIFFERENT guard class
+  // from the others: not "use a native tool" but "this exact command
+  // silently mangles its own output" - fix the flag (drop -rn; recursion +
+  // line numbers are already rg defaults), don't switch tools.
+  { re: /\brg\s+(?:-(?!-rn|-r\s)|[^-\s])*?(?:-rn\b|-r\s+n\b)/, hint: "rg -rn = --replace n, not recursive (rg recurses by default) - it silently replaces every match with 'n' and exits 0. Use plain rg PATTERN; recursion and line numbers are already defaults" },
 ]
 
 // Remote / container / build / pane contexts where shell file work is legit.
