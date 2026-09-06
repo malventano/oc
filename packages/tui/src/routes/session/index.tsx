@@ -3459,8 +3459,32 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
 //     width) skips collapse frames so a flash artifact cannot balloon the
 //     clamp (the 0165 trap); the flash itself (one frame taller than the
 //     clamp) remains the documented OPEN risk.
+//
+// CATCH-UP (0266): the pre-0266 clamp held the ALL-TIME max observed height
+// for the whole live view, so a transient overshoot peak (a wrap spike the
+// content settles below and never re-fills) stayed as permanent blank lines
+// under the streaming text, and repeated overshoots STACKED - the block
+// ended with several trailing LF's (the user's live catch 2026-08-26). The
+// clamp must prevent back-JUMPS (never shrink when content shrinks) but the
+// reserved lines ABOVE the natural content must be RELEASED as the stream
+// re-fills them: "we want the box to only grow, but if it grew an extra
+// line, the eventual streaming text should return to filling that line,
+// since we've grown anyway" (the user's model).
+//
+// The release is GROWTH-PROPORTIONAL (1:1): each new content line releases
+// exactly one reserved line (minHeight -= growth, floored at the content
+// height), so the box's bottom edge never moves while the stream catches up
+// - the new text line appears where the previous blank reserve was ("we just
+// get the next line drawn down where it should be instead of adding an
+// extra lf at the bottom of the block", no flicker, no stacked LF's). A
+// content SHRINK holds the peak (the grow-only guarantee against the
+// 2-frame wrap wobble).
+//
+// NOTE: `rows` here is the CURRENT natural height (it can go DOWN - see
+// measuredGrowRows), NOT a running max.
 function GrowOnly(props: { rows: number; release?: boolean; children: JSX.Element }) {
   const [maxRows, setMaxRows] = createSignal(0)
+  let prevRows = 0
   createEffect(() => {
     if (props.release) {
       // 0199: at completion the code element carries over (no fresh mount),
@@ -3469,9 +3493,25 @@ function GrowOnly(props: { rows: number; release?: boolean; children: JSX.Elemen
       // the completed content). The content is final at completion, so the
       // natural height IS the final height.
       setMaxRows(0)
+      prevRows = 0
       return
     }
-    if (props.rows > maxRows()) setMaxRows(props.rows)
+    const r = props.rows
+    if (r > prevRows) {
+      // Content grew (the stream re-fills a previously-reserved line).
+      // Release exactly the grown rows from the clamp, never below the
+      // current content: box bottom stays put, the new text takes the
+      // blank's place. If content out-grows the reserve, the clamp follows
+      // up (forward).
+      setMaxRows(Math.max(r, maxRows() - (r - prevRows)))
+    } else if (r > maxRows()) {
+      // safety net: a first sample or a bookkeeping skew should never drop
+      // the clamp below the current content (with the growth-proportional
+      // release maxRows >= prevRows always holds, so this fires only on the
+      // mount frame or a pathological skew).
+      setMaxRows(r)
+    }
+    prevRows = r
   })
   // minHeight is applied for the ENTIRE life of the live view, not only
   // while streaming (0179): the tool's input stream can end (streaming ->
@@ -3481,9 +3521,11 @@ function GrowOnly(props: { rows: number; release?: boolean; children: JSX.Elemen
   // opened at - releasing the clamp there made the block SHRINK before the
   // completed view replaced it (user's live catch 2026-08-17: "it should
   // only ever be able to shrink below its initial size at the end of the
-  // turn, when the final render is present"). The clamp holds the peak for
-  // the whole live view and drops only at the release (the completed
-  // carry-over).
+  // turn, when the final render is present"). The re-section is a SHRINK
+  // (rows goes down), so this boundary is still held by the grow-only
+  // branch - only a later GROWTH (or the release at completion) lets the
+  // clamp re-anchor. The clamp drops unconditionally only at the release
+  // (the completed carry-over).
   return (
     <box minHeight={maxRows()} flexShrink={0}>
       {props.children}
@@ -3509,9 +3551,16 @@ function GrowOnly(props: { rows: number; release?: boolean; children: JSX.Elemen
 // latched and the block dropped to the settled content when the NEW: marker
 // re-sectioned the columns. The mount-once 10ms interval samples AFTER a
 // render frame, returning the CURRENT laid-out height - the true rendered
-// peak - and latches it. The returned value is the max observed, so the
-// clamp holds the block at its peak for the whole live view (it can only
-// settle at the final render, when the live view unmounts).
+// height - and writes it.
+//
+// CATCH-UP (0266): the returned value is the CURRENT natural height (it can
+// go DOWN as the content settles), NOT a running max. The GrowOnly clamp
+// previously held the all-time max for the whole live view, so a transient
+// overshoot peak (a wrap spike the content settled below and never re-filled)
+// stayed as permanent blank lines under the stream, stacking under repeated
+// overshoots. The clamp now holds through SHRINKS and releases GROWTH-
+// PROPORTIONALLY (1 reserved line per content line grown) - to do that it
+// must see the live height dropping, so the running-max latch is removed.
 //
 // The gate (per side): a sample is legitimate only while the element's
 // laid-out width does not DROP below 75% of its previous legitimate width -
@@ -3543,7 +3592,12 @@ function measuredGrowRows(
         if (l.height > h) h = l.height
       }
     }
-    if (h > rows()) setRows(h)
+    // Track the CURRENT natural height (up AND down). Skip the frame when
+    // no side produced a legitimate measurement (an all-collapsed frame -
+    // h stays 0) so the live value never zeroes out mid-stream; the clamp
+    // holds through those anyway (a zero is indistinguishable from a deep
+    // shrink).
+    if (h > 0) setRows(h)
   }
   // Solid-effect sampling (content-keyed; the layout read lags a frame but
   // provides the baseline for the very first frames).
