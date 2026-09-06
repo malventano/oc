@@ -178,7 +178,18 @@ const layer = Layer.effect(
       // resume with an empty queue is a no-op. Best-effort: message read
       // failures (e.g. session deleted mid-abort) must not fail the abort.
       if (!resume) return
-      const messages = yield* sessions.messages({ sessionID }).pipe(Effect.catch(() => Effect.succeed([])))
+      // Bounded to the compaction+tail window (0272): an unprocessed (queued)
+      // user message always sits at the NEWEST end - an assistant child is
+      // created right after its parent user message, so any older user message
+      // is already answered. The full `sessions.messages()` walk was O(session)
+      // on every Enter-flush of a queued prompt (22k messages = seconds of lag
+      // while the TUI waits for the flush to start). MessageV2.stream() caps
+      // at two completed compaction markers + tail reachability, which always
+      // contains the queue.
+      const messages = yield* MessageV2.stream(sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.catch(() => Effect.succeed([])),
+      )
       const hasQueued = messages.some(
         (m) => m.info.role === "user" && !messages.some((a) => a.info.role === "assistant" && a.info.parentID === m.info.id),
       )
@@ -1130,8 +1141,14 @@ const layer = Layer.effect(
       // protects against a genuinely unownable message (provider error on
       // every pass) spinning. The first loop() already drained a dying run to
       // Idle (awaitDone blocks), so each retry's loop() starts a fresh run.
+      // Bounded to the compaction+tail window (0272): `owned` is only ever
+      // called with the JUST-CREATED user message, whose assistant child (if
+      // the run claimed it) is created immediately after - always in the
+      // newest tail the stream walks. The full `sessions.messages()` walk was
+      // O(session) on EVERY prompt submit (up to 3x in this loop).
       const owned = (messageID: string) =>
-        sessions.messages({ sessionID: input.sessionID }).pipe(
+        MessageV2.stream(input.sessionID).pipe(
+          Effect.provideService(Database.Service, database),
           Effect.orDie,
           Effect.map((msgs) =>
             msgs.some((m) => m.info.role === "assistant" && m.info.parentID === messageID),

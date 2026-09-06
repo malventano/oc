@@ -6,6 +6,8 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { SessionID, MessageID } from "./schema"
 import { Config } from "@/config/config"
+import { Database } from "@opencode-ai/core/database/database"
+import { MessageV2 } from "./message-v2"
 
 function unquoteGitPath(input: string) {
   if (!input.startsWith('"')) return input
@@ -78,6 +80,7 @@ const layer = Layer.effect(
     const snapshot = yield* Snapshot.Service
     const events = yield* EventV2Bridge.Service
     const config = yield* Config.Service
+    const database = yield* Database.Service
 
     const computeDiff = Effect.fn("SessionSummary.computeDiff")(function* (input: { messages: SessionV1.WithParts[] }) {
       let from: string | undefined
@@ -113,7 +116,15 @@ const layer = Layer.effect(
       })
       yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: [] })
       if ((yield* config.get()).snapshot === false) return
-      const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+      // Bounded to the compaction+tail window (0272): summarize always runs
+      // on the JUST-finishing turn's user message, so the target and its
+      // direct assistant children are in the newest tail. The full
+      // `sessions.messages()` walk was O(session) on every step-finish and
+      // first step (forked but still a full walk per call).
+      const all = yield* MessageV2.stream(input.sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.orDie,
+      )
       if (!all.length) return
 
       const messages = all.filter(
@@ -128,9 +139,19 @@ const layer = Layer.effect(
 
     const diff = Effect.fn("SessionSummary.diff")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
       if (!input.messageID) return []
-      const message = (yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)).find(
-        (item) => item.info.id === input.messageID,
-      )
+      // Indexed single-message lookup (0272): the full `sessions.messages()`
+      // walk existed only to `.find()` one message by ID - O(session) per
+      // TUI diff request on deep sessions. MessageV2.get is a primary-key
+      // row read; NotFound means the message is gone, same as the old walk
+      // returning undefined.
+      const message = yield* MessageV2.get({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+      })
+        .pipe(
+          Effect.provideService(Database.Service, database),
+          Effect.catch(() => Effect.succeed(undefined)),
+        )
       if (!message || message.info.role !== "user") return []
       const diffs = message.info.summary?.diffs ?? []
       return diffs.map((item) => {
@@ -154,7 +175,7 @@ export type DiffInput = Schema.Schema.Type<typeof DiffInput>
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Session.node, Snapshot.node, EventV2Bridge.node, Config.node],
+  deps: [Session.node, Snapshot.node, EventV2Bridge.node, Config.node, Database.node],
 })
 
 export * as SessionSummary from "./summary"
