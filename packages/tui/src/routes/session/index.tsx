@@ -16,6 +16,7 @@ import {
 } from "solid-js"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
+import { appendFileSync } from "node:fs"
 import { useRoute, useRouteData } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
@@ -2471,6 +2472,184 @@ const PART_MAPPING = {
 
 const INLINE_TOOL_ICON_WIDTH = 2
 
+// ============ TEMP INSTRUMENTATION (0277: tool-block grow/shrink/jitter) ============
+// Reusable tool code-element tracer: mirrors the ReasoningPart tracer but for
+// the streaming tool code elements (write/bash single stream, heredoc segments,
+// edit-diff left/right columns). Logs each change + a 100ms tick to
+// /tmp/tool-trace.jsonl so GrowOnly removal can be validated for jitter across
+// ALL narrowed-width blocks, not just reasoning.
+function useToolTrace(content: () => string, tag: string) {
+  let el: any = undefined
+  const layout = (e: any) => {
+    try {
+      return e?.getLayoutNode?.().getComputedLayout?.()
+    } catch {
+      return undefined
+    }
+  }
+  const sample = (cause: string) => {
+    try {
+      const l = layout(el)
+      const viewed = el?.textBufferView
+      const cw = l?.width ?? 140
+      const v = typeof el?.virtualLineCount === "number" ? el.virtualLineCount : -1
+      const m139 = viewed?.measureForDimensions ? viewed.measureForDimensions(139, 99999)?.lineCount ?? -1 : -1
+      const m140 = viewed?.measureForDimensions ? viewed.measureForDimensions(140, 99999)?.lineCount ?? -1 : -1
+      appendFileSync(
+        "/tmp/tool-trace.jsonl",
+        JSON.stringify({
+          t: Date.now(),
+          tag,
+          cause,
+          len: content().length,
+          codeH: l?.height ?? -1,
+          cw,
+          v,
+          m139,
+          m140,
+        }) + "\n",
+      )
+    } catch (e) {
+      try {
+        appendFileSync("/tmp/tool-trace.jsonl", JSON.stringify({ t: Date.now(), tag, cause, err: String(e) }) + "\n")
+      } catch {}
+    }
+  }
+  createEffect(() => {
+    void content()
+    sample("change")
+  })
+  onMount(() => {
+    const id = setInterval(() => sample("tick"), 100)
+    onCleanup(() => clearInterval(id))
+  })
+  return (ref: any) => {
+    el = ref
+  }
+}
+
+// 0276b: the width-1 height fix, generalized to streaming tool code elements.
+// The native Yoga measure wraps at width-1 while the textBufferView wraps at
+// the full width, so a streamed line crossing the wrap boundary gives the box
+// a +1 phantom row (flush at done). The reasoning fix (0276) drives the box
+// height from `measureForDimensions(layoutW).lineCount` - the buffer's OWN
+// wrapped count at the real laid-out width, always correct. This hook applies
+// the same driver to a code element directly (no wrapper box, so line_number
+// keeps its direct code target). `trace` optionally chains the jitter tracer's
+// ref assignment onto the same element.
+// 0284b: the trailing-newline blank row. `measureForDimensions(...).lineCount`
+// counts a trailing "\n" as an extra (empty) row, and the driver passed that
+// count straight to the code box height - so streamed content ending in "\n"
+// (every diff block mid-stream) got a +1 phantom row, which the line_number
+// GUTTER painted as an extra numbered line at the bottom of both columns (the
+// completed-snap path drops the blank, so the final diff was fine - the
+// regression only showed while streaming). Strip one row when the current
+// content ends in a newline so the box matches the visible buffered rows.
+function useFixedStreamHeight(content: () => string, trace: ((el: any) => void) | undefined) {
+  let el: any = undefined
+  const [rows, setRows] = createSignal(0)
+  // The streaming element's REAL width, read LIVE on each effect run (not a
+  // createMemo: `el` is a plain closure var, so a memo would evaluate once and
+  // pin the early 140 fallback forever - the 0286 phantom-gutter root cause).
+  // Prefer the renderable's own `.width` (the column it lays out at, ~58-70
+  // for the diff halves; the paint probe confirms measureForDimensions at that
+  // width equals the buffer's virtualLineCount). Fall back to the last known
+  // good width for the pre-layout content-change frames, then 140 as a last
+  // resort. 0286c's writeback (setWrapWidth(140)) was the extend/snap bounce:
+  // it drove the WRONG width into the buffer.
+  let lastWidth = 0
+  const width = () => {
+    try {
+      const rw = typeof el?.width === "number" ? el.width : 0
+      if (rw > 0) {
+        lastWidth = rw
+        return rw
+      }
+    } catch {}
+    try {
+      const cw = el?.getLayoutNode?.().getComputedLayout?.().width ?? 0
+      if (cw > 0) {
+        lastWidth = cw
+        return cw
+      }
+    } catch {}
+    return lastWidth || 140
+  }
+  createEffect(() => {
+    void width()
+    // The wrapped count grows as content streams - re-measure per content
+    // change (the reasoning driver tracks summary()/isDone() for the same
+    // reason). The line count includes any trailing newline's blank row, so
+    // subtract one when the current content ends with a newline (0284b - the
+    // gutter painted the blank row as a phantom line number).
+    void content()
+    const viewed = el?.textBufferView
+    if (!viewed?.measureForDimensions) {
+      setRows(0)
+      return
+    }
+    // 0284c REVERTED (2026-09-06): the width writeback caused a feedback
+    // loop - setWrapWidth(width()) mutates the buffer's wrap state, which
+    // changes virtualLineCount, which the native measure consumes, which
+    // changes the laid-out width, re-firing this effect with a new width ->
+    // the box bounced between wrap states (lines "extending outside bounds and
+    // snapping back", live). The driver is READ-ONLY measure again; the
+    // instrumentation below logs the width / virtualLineCount / measure /
+    // applied-rows gap so the phantom-gutter mechanism can be pinned before a
+    // proper fix.
+    const _pqjWidth = width()
+    // The renderable's OWN width (the paint probe shows the diff cols are ~60;
+    // getComputedLayout().width may return undefined early and pin the fallback).
+    let _pqjElWidth = -1
+    try {
+      _pqjElWidth = typeof el?.width === "number" ? el.width : -1
+    } catch {}
+    let _pqjLayoutW = -1
+    try {
+      _pqjLayoutW = el?.getLayoutNode?.().getComputedLayout?.().width ?? -1
+    } catch {}
+    // A destroyed TextBufferView THROWS on virtualLineCount/measure (0289:
+    // the slot elements made this easy to hit - a slot's code element can be
+    // torn down while its StreamSegment measure hook still lives, crashing the
+    // whole TUI with "TextBufferView is destroyed"). Guard the measurement.
+    let _pqjVlc = -1
+    let c = 0
+    try {
+      _pqjVlc = typeof viewed.getVirtualLineCount === "function" ? viewed.getVirtualLineCount() : -1
+      // Measure at the element's real width (the 0286 root cause: the memo pinned
+      // 140, undersizing the box and phantom-numbering the gutter). Both
+      // `measure.lineCount` and `virtualLineCount` count the trailing-newline
+      // blank row identically, so the box height and gutter agree - no strip.
+      c = viewed.measureForDimensions(_pqjWidth, 99999)?.lineCount ?? 0
+      const _pqjRows = Math.max(0, c)
+      setRows(_pqjRows)
+    } catch {
+      setRows(0)
+    }
+    try {
+      appendFileSync(
+        "/tmp/gutter-jump.jsonl",
+        JSON.stringify({
+          t: Date.now(),
+          len: content().length,
+          width: _pqjWidth,
+          elWidth: _pqjElWidth,
+          layoutW: _pqjLayoutW,
+          vlc: _pqjVlc,
+          measure: c,
+          rows: c,
+        }) + "\n",
+      )
+    } catch {}
+  })
+  const ref = (node: any) => {
+    el = node
+    trace?.(node)
+  }
+  return { height: rows, ref }
+}
+// ========================================================================
+
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme } = useTheme()
   const ctx = use()
@@ -2499,10 +2678,118 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     setExpanded((prev) => !prev)
   }
 
+  // ============ TEMP INSTRUMENTATION (0276 tracer: wrap-width-1 measure) ============
+  const traceID = props.part.id
+  let traceOuter: BoxRenderable | undefined
+  let traceInner: any = undefined
+  let traceCodeEl: any = undefined
+  const layoutH = (el: any) => {
+    try {
+      return el?.getLayoutNode?.().getComputedLayout?.().height ?? -1
+    } catch {
+      return -1
+    }
+  }
+  const trace = (cause: string) => {
+    try {
+      const body = summary().body ?? ""
+      const safe = <T,>(fn: () => T, def: T): T => {
+        try {
+          return fn()
+        } catch {
+          return def
+        }
+      }
+      const bufLen = safe(() => traceCodeEl?.textBuffer?.getPlainText?.().length ?? -1, -1)
+      const lineInfo = safe(() => traceCodeEl?.lineInfo ?? null, null)
+      const wrappedRows = lineInfo ? (lineInfo.lineStartCols ?? []).length : -1
+      const virtLines = safe(() => traceCodeEl?.virtualLineCount ?? -1, -1)
+      const viewed = safe(() => traceCodeEl?.textBufferView ?? null, null)
+      const codeWidth = (() => {
+        try {
+          return traceCodeEl?.getLayoutNode?.().getComputedLayout?.().width ?? 140
+        } catch {
+          return 140
+        }
+      })()
+      const measured = viewed ? {
+        lineCountAtWidth: viewed.measureForDimensions ? viewed.measureForDimensions(codeWidth, 99999)?.lineCount ?? -1 : -1,
+        lineCount139: viewed.measureForDimensions ? viewed.measureForDimensions(139, 99999)?.lineCount ?? -1 : -1,
+        lineCount140: viewed.measureForDimensions ? viewed.measureForDimensions(140, 99999)?.lineCount ?? -1 : -1,
+        codeWidth,
+        elWidth: safe(() => traceCodeEl?.width ?? -1, -1),
+      } : null
+      appendFileSync(
+        "/tmp/reasoning-trace.jsonl",
+        JSON.stringify({
+          t: Date.now(),
+          id: traceID,
+          cause,
+          done: isDone(),
+          len: body.length,
+          bufLen,
+          wrappedRows,
+          virtLines,
+          measured,
+          outerH: layoutH(traceOuter),
+          innerH: layoutH(traceInner),
+          codeH: layoutH(traceCodeEl),
+        }) + "\n",
+      )
+    } catch (e) {
+      try {
+        appendFileSync(
+          "/tmp/reasoning-trace.jsonl",
+          JSON.stringify({ t: Date.now(), id: traceID, cause, traceError: String(e) }) + "\n",
+        )
+      } catch {}
+    }
+  }
+  createEffect(() => {
+    void summary()
+    void isDone()
+    trace("change")
+  })
+  onMount(() => {
+    const id = setInterval(() => trace("tick"), 100)
+    onCleanup(() => clearInterval(id))
+  })
+  // 0276 experiment: the box height driver = the buffer's wrapped row count at
+  // the element's REAL laid-out width (measureForDimensions at codeWidth), not
+  // the native layout height (which wraps at width-1 and yields the +1).
+  // 0286f note: the reasoning element renders at FULL width (its elWidth is 140
+  // in the trace) - NOT a 50% column like the diff halves - so its layoutW memo
+  // pinning 140 is correct and was left untouched. Only useFixedStreamHeight
+  // (the diff columns + tool stream) had the wrong-width bug.
+  const [streamRowsCount, setStreamRowsCount] = createSignal(0)
+  const layoutW = createMemo(() => {
+    try {
+      return traceCodeEl?.getLayoutNode?.().getComputedLayout?.().width ?? 140
+    } catch {
+      return 140
+    }
+  })
+  createEffect(() => {
+    void layoutW()
+    void summary()
+    void isDone()
+    const el = traceCodeEl as any
+    if (!el?.textBufferView?.measureForDimensions) {
+      setStreamRowsCount(0)
+      return
+    }
+    const c = el.textBufferView.measureForDimensions(layoutW(), 99999)?.lineCount ?? 0
+    setStreamRowsCount(c)
+  })
+  // ========================================================================
+
   return (
     <Show when={content() || opaque()}>
       <box
-        ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+        ref={(el: BoxRenderable) => {
+          alwaysSeparate.add(el)
+          traceOuter = el
+        }}
         paddingLeft={3}
         paddingRight={2}
         marginTop={1}
@@ -2520,8 +2807,24 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
           />
         </box>
         <Show when={!opaque() && (!inMinimal() || expanded()) && summary().body}>
-          <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
+          {/* 0276: the box's natural height is the native measure wrapped at
+              width-1 (a +1 phantom row while streaming - flushes at done).
+              Drive the box height from the buffer's OWN wrapped count at the
+              real laid-out width (lineCountAtWidth == virtualLineCount, always
+              correct) instead of the compromised layout height. */}
+          <box
+            ref={(el: any) => {
+              traceInner = el
+            }}
+            height={streamRowsCount()}
+            paddingLeft={inMinimal() ? 2 : 0}
+            marginTop={1}
+            flexShrink={0}
+          >
             <code
+              ref={(el: any) => {
+                traceCodeEl = el
+              }}
               filetype="markdown"
               drawUnstyledText={false}
               streaming={true}
@@ -3011,11 +3314,14 @@ function Shell(props: ToolProps) {
     return formatted
   })
 
-  // The gutter only makes sense for multi-line commands - a lone "1"
-  // against a one-liner reads as noise. Single-line commands instead get
-  // the spinner inline next to the colored command; multi-line commands
-  // get it in the block title (it can't span the gutter).
-  const gutter = createMemo(() => command().includes("\n"))
+  // The gutter turns on inside LiveToolStream, driven by the STREAMING
+  // content's first newline (0288: an AND on a shell-side selector gated on
+  // the landed input.command, which is empty mid-stream, kept the gutter off
+  // the whole stream - zero native gutter frames witnessed). The shell-side
+  // selector is dropped: content().includes("\n") is the one true gate,
+  // reactive to every delta, identical at completion. A lone "1" against a
+  // completed one-liner still never appears (content has no newline).
+  const gutter = () => true
   // PERSISTENT header (2026-08-17): the "# Running" line used to pop in
   // and out with the state - a multi-line command with no workdir lost
   // the title at completion and the block SHRANK a row (the jumpy pop the
@@ -3048,6 +3354,24 @@ function Shell(props: ToolProps) {
     return segs && segs.length > 1 ? segs[1]!.lang : "bash"
   })
   const commandSegments = createMemo(() => heredocSegments(command()))
+  // 0289 (stable slots): live heredoc segmentation WITHOUT per-delta element
+  // recreation. The segments branch's `props.segments.map()` creates fresh
+  // <code> elements every delta (the reactive array read in the body
+  // re-renders it; each fresh mount measures at width 0 -> jump). Instead we
+  // pre-create a FIXED set of slot components once and feed their content
+  // through accessor props: the reconciler's createRenderEffect calls
+  // setProperty(node, "content", ...) in place, so the elements persist (the
+  // same mechanism that keeps singleEl stable) and per-slot gutters justify
+  // independently (body crossing 10 widens ITS gutter only). Empty slots
+  // hide via showLineNumbers (in-place), avoiding 0147's phantom "1"s.
+  // Slots are keyed by segment role (bash/body/bash-tail), stable across the
+  // stream's shape changes -> solid keeps the node for an existing key.
+  //
+  // The slot components are defined OUTSIDE LiveToolStream (module scope,
+  // created once by the runtime) and receive the segment TEXTS as getter
+  // props, so their bodies never re-run on delta - only the element
+  // accessors update.
+  const liveSegments = createMemo(() => heredocSegments(stream.display().replace(/\n+$/, "")))
   // 0199 carry-over: the SINGLE code element (LiveToolStream's) persists
   // through streaming -> running -> completed, so the non-heredoc command
   // never remounts at completion (its buffer holds the last highlight of
@@ -3090,7 +3414,12 @@ function Shell(props: ToolProps) {
         content={stream.display().replace(/\n+$/, "")}
         filetype={liveFiletype()}
         gutter={gutter()}
-        segments={completed() ? commandSegments() : undefined}
+        // 0289 (stable slots): LIVE heredoc segments throughout - each block
+        // mounts once (StreamSegment's fixed slots) and grows in place, so the
+        // bash/body split with independent gutters streams without jumping. The
+        // completed value is the static re-split (same shape; the slots update
+        // in place, so the completion never repaints).
+        segments={completed() ? commandSegments() : liveSegments()}
         fg={stream.streaming() || isRunning() ? theme.textMuted : theme.text}
         release={completed()}
         spinner={stream.streaming() || isRunning()}
@@ -3310,7 +3639,14 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
 // to bash (current behavior) when nothing matches. While the closing
 // delimiter is still streaming, the body is the open tail. Best-effort
 // visual only - the completed command keeps its own single-bash render.
-function heredocSegments(text: string): { text: string; lang: string }[] | undefined {
+// A segment is tagged body:true when it is HEREDOC CONTENT (between an opener
+// and its closer) rather than shell syntax (the opener line, the closing
+// delimiter, or trailing shell) - REGARDLESS of what language it sniffed to
+// (an SH-delimited body full of echo lines is still a heredoc body). The TUI
+// uses the flag to restart the body's numbering at 1 and indent it; the shell
+// opener/closer/tail keep the continuous bash counter.
+type StreamSegmentData = { text: string; lang: string; body?: boolean }
+function heredocSegments(text: string): StreamSegmentData[] | undefined {
   const HEREDOC_LANG: Record<string, string> = {
     PY: "python",
     PYTHON: "python",
@@ -3366,7 +3702,7 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
   opens.sort((a, b) => a.end - b.end)
   if (!opens.length) return undefined
 
-  const segs: { text: string; lang: string }[] = []
+  const segs: StreamSegmentData[] = []
   let cursor = 0
   // The language resolution is ONE chain for every opener kind: the
   // delimiter/interpreter name wins (HEREDOC_LANG for heredoc delimiters,
@@ -3419,7 +3755,7 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
         segs.push({ text: text.slice(cursor, op.end), lang: "bash" })
         const body = text.slice(op.end, close === -1 ? text.length : close).replace(/^\n+/, "")
         if (body.length > 0) {
-          segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body) })
+          segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body), body: true })
         }
         if (close === -1) {
           // The closing quote is still streaming - the body is the open
@@ -3447,7 +3783,7 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
     if (bodyEnd > lineEnd + 1) {
       const body = text.slice(lineEnd + 1, bodyEnd)
       // bodyEnd is the closer line's start, so the body ends with "\n".
-      segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body) })
+      segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body), body: true })
     }
     if (close) {
       // The closing delimiter line is shell syntax - render it as bash.
@@ -3474,194 +3810,112 @@ function heredocSegments(text: string): { text: string; lang: string }[] | undef
   return segs
 }
 
-// While a tool call streams, its block must only GROW - transient
-// mid-stream content re-shapes (extraction jitter, heredoc re-split, diff
-// column re-layout) can otherwise SHRINK the block one frame and the whole
-// layout jumps backward. On completion (streaming=false) the clamp
-// releases and the final render jumps to the true final height (the
-// allowed transition - the completed view is a fresh block anyway).
-//
-// The rows driver went through three generations:
-//   - 0165: logical line count (a PURE text computation). Held exactly for
-//     wrapMode="none" content but could NOT capture a wrapped line's many
-//     rows - the block shrank mid-stream when the wrap re-flowed.
-//   - 0174/0178: a WRAP-AWARE per-line estimate (ceil(line.length /
-//     codeWidth)) at a width computed from the message width. This tracks
-//     the natural wrapped height within +/-2-7 rows but the word-wrap
-//     natural (breaks only at word boundaries) does NOT equal the char-wrap
-//     estimate, and the estimated width is never exactly the laid-out
-//     width - so the clamp oscillated around the natural: when it latched
-//     an overshoot the block held extra empty lines at the bottom while
-//     streaming (live catch 2026-08-17 - the 3-4 trailing LF's).
-//   - 0179: MEASURE the streaming code element's laid-out height per flush
-//     (getLayoutNode().getComputedLayout()) - the natural wrapped height
-//     exactly - and clamp on the max legitimate observation. A
-//     measurement is legitimate only while the element's laid-out width is
-//     not transiently COLLAPSED (0165: a layout re-flow can briefly shrink
-//     the width toward 1-3 chars and the text wraps into a tall spike; the
-//     element widths here are content-intrinsic up to the fixed 50% column
-//     max, so a legit frame's width never drops sharply). The gate (a
-//     frame's width must not drop below 75% of the previous legitimate
-//     width) skips collapse frames so a flash artifact cannot balloon the
-//     clamp (the 0165 trap); the flash itself (one frame taller than the
-//     clamp) remains the documented OPEN risk.
-//
-// CATCH-UP (0266): the pre-0266 clamp held the ALL-TIME max observed height
-// for the whole live view, so a transient overshoot peak (a wrap spike the
-// content settles below and never re-fills) stayed as permanent blank lines
-// under the streaming text, and repeated overshoots STACKED - the block
-// ended with several trailing LF's (the user's live catch 2026-08-26). The
-// clamp must prevent back-JUMPS (never shrink when content shrinks) but the
-// reserved lines ABOVE the natural content must be RELEASED as the stream
-// re-fills them: "we want the box to only grow, but if it grew an extra
-// line, the eventual streaming text should return to filling that line,
-// since we've grown anyway" (the user's model).
-//
-// The release is GROWTH-PROPORTIONAL (1:1): each new content line releases
-// exactly one reserved line (minHeight -= growth, floored at the content
-// height), so the box's bottom edge never moves while the stream catches up
-// - the new text line appears where the previous blank reserve was ("we just
-// get the next line drawn down where it should be instead of adding an
-// extra lf at the bottom of the block", no flicker, no stacked LF's). A
-// content SHRINK holds the peak (the grow-only guarantee against the
-// 2-frame wrap wobble).
-//
-// NOTE: `rows` here is the CURRENT natural height (it can go DOWN - see
-// measuredGrowRows), NOT a running max.
-function GrowOnly(props: { rows: number; release?: boolean; children: JSX.Element }) {
-  const [maxRows, setMaxRows] = createSignal(0)
-  let prevRows = 0
-  createEffect(() => {
-    if (props.release) {
-      // 0199: at completion the code element carries over (no fresh mount),
-      // so the clamp must DROP to the code's natural final height instead
-      // of holding the streaming peak (which would leave blank lines under
-      // the completed content). The content is final at completion, so the
-      // natural height IS the final height.
-      setMaxRows(0)
-      prevRows = 0
-      return
-    }
-    const r = props.rows
-    if (r > prevRows) {
-      // Content grew (the stream re-fills a previously-reserved line).
-      // Release exactly the grown rows from the clamp, never below the
-      // current content: box bottom stays put, the new text takes the
-      // blank's place. If content out-grows the reserve, the clamp follows
-      // up (forward).
-      setMaxRows(Math.max(r, maxRows() - (r - prevRows)))
-    } else if (r > maxRows()) {
-      // safety net: a first sample or a bookkeeping skew should never drop
-      // the clamp below the current content (with the growth-proportional
-      // release maxRows >= prevRows always holds, so this fires only on the
-      // mount frame or a pathological skew).
-      setMaxRows(r)
-    }
-    prevRows = r
+// 0289 (stable slots): the segmented heredoc view as ONE-WAY TRIPS. Each
+// segment gets a pre-created slot: this component's body runs once, at
+// LiveToolStream mount, so its <code> and <line_number> mount ONCE and only
+// GROW - every changing value (text, language, streaming, numbers) flows
+// through ACCESSOR props that the universal-solid adapter evaluates in a
+// createRenderEffect and applies IN PLACE (node[name]=value, index.bun.js:769).
+// The old segments branch did `props.segments.map(...)` inside the box
+// children; the compiled children getter ran inside a tracked effect, so every
+// content delta re-created the segment <code> nodes - fresh elements measure
+// at width 0 in the global layout pass, hence the 0287/0288b jump. Here the
+// box children are the fixed slot junctions (slotEls, a plain const - nothing
+// reactive in that getter), so the box never re-renders. Each slot owns its
+// gutter, so the bash sections and the heredoc body justify independently:
+// bash runs a continuous counter across segments, the body RESTARTS AT 1 the
+// moment it appears, and the body's gutter is one column wider (minWidth 4 vs
+// 3) purely from the gutter - the indent is not text.
+const MAX_SLOTS = 5
+function StreamSegment(props: {
+  // Accessors into the parent's live segments - tracked through the adapter's
+  // render effect, so the elements update without ever re-mounting.
+  text: () => string
+  lang: () => string
+  streaming: () => boolean
+  fg: () => RGBA
+  conceal: () => boolean
+  // Bash line the first row of this slot continues from (0 for the body,
+  // which restarts at 1).
+  lineStart: () => number
+  // True for the heredoc body (restart at 1 + the wider indent gutter).
+  restart: () => boolean
+  // Slot present in the resolved segments (bash opener/tail or the body).
+  show: () => boolean
+  // The block resolved into a heredoc (more than one segment): bash gutters
+  // appear even for single-line opener/closer lines, so a lone "1" next to
+  // the body block is legitimate.
+  segmented: () => boolean
+}) {
+  const { theme, syntax } = useTheme()
+  // Bash slots pass a small continuation map so the closer/tail keep
+  // counting the opener's bash lines (opener 1, closer 2, tail 3). The BODY
+  // slot gets NO map - its gutter numbers by DEFAULT continuous 1..N (starts
+  // at 1, the one-way numbering), and no setter sits in its streaming path
+  // (the 0288 shared-gutter map went BLANK mid-stream: the linenums probe
+  // shows setLineNumbers fired once with an empty map at mount and never
+  // again while the text raced ahead).
+  const lineNumbers = createMemo(() => {
+    const n = props.text().split("\n").length
+    const base = props.lineStart()
+    const map = new Map<number, number>()
+    for (let i = 0; i < n; i++) map.set(i, base + i + 1)
+    return map
   })
-  // minHeight is applied for the ENTIRE life of the live view, not only
-  // while streaming (0179): the tool's input stream can end (streaming ->
-  // running) BEFORE the final render lands, and a content re-section at that
-  // boundary (the NEW: marker landing, moving lines from the left to the
-  // right column) settles the natural height below the peak the block
-  // opened at - releasing the clamp there made the block SHRINK before the
-  // completed view replaced it (user's live catch 2026-08-17: "it should
-  // only ever be able to shrink below its initial size at the end of the
-  // turn, when the final render is present"). The re-section is a SHRINK
-  // (rows goes down), so this boundary is still held by the grow-only
-  // branch - only a later GROWTH (or the release at completion) lets the
-  // clamp re-anchor. The clamp drops unconditionally only at the release
-  // (the completed carry-over).
-  return (
-    <box minHeight={maxRows()} flexShrink={0}>
-      {props.children}
-    </box>
-  )
-}
-
-// Measured grow-only rows (0179): read each streaming code element's
-// laid-out height - the natural wrapped height exactly - and return the
-// taller column's current legitimate height. The GrowOnly clamp latches the
-// max over time, so the block tracks the natural without the +/-2-7 row
-// oscillation of the char-wrap estimate (the extra empty lines).
-//
-// getElements() returns a map of side -> code element (mounted once the
-// content exists); trigger() is a reactive value read each flush (the
-// content) so the caller's effect re-runs.
-//
-// SAMPLING is done on TWO paths so the clamp never lags the rendered
-// height (the source of the left->right column-handoff drop the user
-// caught on video): the Solid-effect read runs BEFORE the renderer's layout
-// pass and returns the previous frame's layout (one frame behind the block
-// the user sees), so the peak a transient left-column wrap reached was not
-// latched and the block dropped to the settled content when the NEW: marker
-// re-sectioned the columns. The mount-once 10ms interval samples AFTER a
-// render frame, returning the CURRENT laid-out height - the true rendered
-// height - and writes it.
-//
-// CATCH-UP (0266): the returned value is the CURRENT natural height (it can
-// go DOWN as the content settles), NOT a running max. The GrowOnly clamp
-// previously held the all-time max for the whole live view, so a transient
-// overshoot peak (a wrap spike the content settled below and never re-filled)
-// stayed as permanent blank lines under the stream, stacking under repeated
-// overshoots. The clamp now holds through SHRINKS and releases GROWTH-
-// PROPORTIONALLY (1 reserved line per content line grown) - to do that it
-// must see the live height dropping, so the running-max latch is removed.
-//
-// The gate (per side): a sample is legitimate only while the element's
-// laid-out width does not DROP below 75% of its previous legitimate width -
-// the transient wrap-width collapse (0165) shrinks the intrinsic width
-// toward 1-3 chars mid re-flow and the text wraps into a tall spike;
-// latching that height would balloon the clamp (the 0165 trap). Legit width
-// changes are content-intrinsic growth, so they never drop sharply. The
-// flash (one frame above the clamp) remains the documented OPEN risk.
-function measuredGrowRows(
-  getElements: () => Record<string, any>,
-  trigger: () => void,
-): { current: () => number; widths: () => Record<string, number> } {
-  const prevWidth: Record<string, number> = {}
-  const widths = {} as Record<string, number>
-  const [rows, setRows] = createSignal(0)
-  const sample = () => {
-    let h = 0
-    for (const side of Object.keys(getElements())) {
-      const el = getElements()[side]
-      let l: any
-      try {
-        l = el?.getLayoutNode?.()?.getComputedLayout?.()
-      } catch {}
-      if (!l || !(l.width > 1) || !(l.height > 0)) continue
-      widths[side] = l.width
-      const prev = prevWidth[side]
-      if (prev === undefined || l.width >= prev * 0.75) {
-        prevWidth[side] = l.width
-        if (l.height > h) h = l.height
-      }
-    }
-    // Track the CURRENT natural height (up AND down). Skip the frame when
-    // no side produced a legitimate measurement (an all-collapsed frame -
-    // h stays 0) so the live value never zeroes out mid-stream; the clamp
-    // holds through those anyway (a zero is indistinguishable from a deep
-    // shrink).
-    if (h > 0) setRows(h)
+  // Guarded height driver only - the 100ms trace ticker was dropped (a slot's
+  // element could be torn down mid-tick; the per-slot probes multiplied the
+  // destroyed-buffer reads that crashed the TUI).
+  const streamHeight = useFixedStreamHeight(props.text, undefined)
+  const ref = (el: any) => {
+    streamHeight.ref(el)
   }
-  // Solid-effect sampling (content-keyed; the layout read lags a frame but
-  // provides the baseline for the very first frames).
-  createEffect(() => {
-    void trigger()
-    sample()
-  })
-  // Mount-once post-render sampling: runs after render frames, so the
-  // layout read is the CURRENT rendered height - the true peak gets latched
-  // even when a transient wrap (the width settle) was taller than what the
-  // lagged Solid read saw. The interval is NOT content-keyed (a keyed
-  // effect re-runs on every delta and clears the interval before it fires
-  // on a fast local stream).
-  createEffect(() => {
-    const id = setInterval(sample, 10)
-    onCleanup(() => clearInterval(id))
-  })
-  return { current: rows, widths: () => prevWidth }
+  // ONE code element per slot for the whole stream - never replaced, only
+  // its content/height/streaming accessors update.
+  const el = (
+    <code
+      ref={ref}
+      height={streamHeight.height()}
+      filetype={props.lang()}
+      width="100%"
+      drawUnstyledText={false}
+      streaming={props.streaming()}
+      syntaxStyle={syntax()}
+      content={props.text()}
+      conceal={props.conceal()}
+      fg={props.fg()}
+    />
+  )
+  // Bash gutters appear once the content passes a line, OR the moment the
+  // command resolves into a heredoc; body slots number from their first line.
+  // The toggle is a line_number-only Show (fallback = the SAME `el`) - the
+  // code element never re-mounts (the solid adapter disposes the gutter node
+  // only, and `el` persists across the flip).
+  const gutterOn = createMemo(() =>
+    props.show() && (props.restart() || props.text().includes("\n") || props.segmented()),
+  )
+  // The solid adapter constructs native elements with { id } only and applies
+  // props via node[name]=value, so a gutter's minWidth/paddingRight (captured
+  // in the native constructor) are IMMOVABLE at runtime - only the lineNumbers
+  // map reaches the gutter (set lineNumbers forwards into it). The body's
+  // 1-col indent therefore comes from wrapping its row in a padded box: the
+  // body gutter and code recede together as a unit, and the body gutter still
+  // justifies on its own digit count (10+ widens ONLY it).
+  return (
+    <Show when={props.show()}>
+      <box paddingLeft={props.restart() ? 1 : 0}>
+        <Show when={gutterOn()} fallback={el}>
+          <line_number
+            fg={theme.textMuted}
+            minWidth={3}
+            paddingRight={1}
+            {...(props.restart() ? {} : { lineNumbers: lineNumbers() })}
+          >
+            {el}
+          </line_number>
+        </Show>
+      </box>
+    </Show>
+  )
 }
 
 function LiveToolStream(props: {
@@ -3672,7 +3926,7 @@ function LiveToolStream(props: {
   filetype?: string
   gutter?: boolean
   conceal?: boolean
-  segments?: { text: string; lang: string }[]
+  segments?: StreamSegmentData[]
   // 0199 carry-over: the SAME code element persists through
   // streaming -> running -> completed (the caller flips these props instead
   // of remounting a fresh completed element). fg is the code's unstyled
@@ -3692,18 +3946,39 @@ function LiveToolStream(props: {
 }) {
   const { theme, syntax } = useTheme()
   const ctx = use()
-  // The gutter must FOLLOW the streamed content: the Shell's gutter prop
-  // is a frozen first-render value (the first delta rarely carries a
-  // newline), so the numbers would never appear for heredoc streams.
-  // Compute the decision here from the reactive content - the ternary
-  // flips once when the first newline lands (heredoc bodies get their
-  // numbers mid-stream; single-line commands never flip - no '1' noise,
-  // no width change, no judder). A caller that passes gutter={true}
-  // (the write tool - its completed view is always guttered) keeps the
-  // line_number from the first frame: no Show flip, no code element
-  // recreation (the flip mounts a fresh instance whose buffer starts
-  // raw-grey and whose first highlight arrives a flush late).
-  const showGutter = createMemo(() => props.gutter !== false && props.content.includes("\n"))
+  // 0289e: ONE structure from the first frame. The gutter decision moved per
+  // slot (StreamSegment's gutterOn) - the whole command lives in slot 0 and
+  // heredoc bodies/tails mount as later slots; there is no single-element
+  // branch to flip into. The PROBE keeps summary state only.
+  createEffect((prev) => {
+    const state = {
+      gutterOn: props.content.includes("\n") || (props.segments?.length ?? 0) > 1,
+      nl: props.content.includes("\n"),
+      contentLen: props.content.length,
+      lineNumbers: 0,
+      segments: props.segments?.length ?? 0,
+      streaming: props.streaming,
+    }
+    const key = JSON.stringify(state)
+    if (key !== prev) {
+      try {
+        require("fs").appendFileSync(
+          "/tmp/opencode/gutter-gate.jsonl",
+          JSON.stringify({
+            t: Date.now(),
+            ...state,
+            preview: props.content.split("\n")[0]?.slice(0, 30) ?? "",
+            // The first ~5 lines of the content with JSON escaping, so the
+            // indentation of the heredoc body lines is verifiable verbatim.
+            bodyLines: props.content.split("\n").slice(0, 5).map((l) =>
+              l.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\t/g, "\\t").slice(0, 40),
+            ),
+          }) + "\n",
+        )
+      } catch {}
+    }
+    return key
+  }, "")
   // The streaming view must match the completed view's conceal choice.
   // The write completed view renders conceal={false}; if the live view
   // hides comments (conceal=true), the concealed spans keep their text
@@ -3712,134 +3987,75 @@ function LiveToolStream(props: {
   // (the 2026-08-17 duplicate-grey-copy report, video-confirmed), and
   // the colors snap in at completion when the conceal=false block lands.
   const conceal = createMemo(() => props.conceal ?? ctx.conceal())
-  // The streaming code's per-line width for the wrap-aware row estimate:
-  // the message width from the session context minus the gutter (minWidth
-  // 3 + paddingRight 1) when shown, minus a small margin so the estimate
-  // is conservative (narrower column -> more estimated rows -> the grow
-  // clamp never under-holds). The edit diff (LiveEditDiff, 0174) uses the
-  // same pattern; write/bash are full-width single columns (no 50/50
-  // split). The estimate is STABLE (no transient layout measurement - the
-  // 0165 balloon trap).
-  const codeWidth = createMemo(() => Math.max(20, use().width - (showGutter() ? 6 : 2)))
-  const wrappedRows = (text: string) => {
-    if (text.length === 0) return 0
-    return text
-      .split("\n")
-      .reduce((acc, line) => acc + Math.max(1, Math.ceil(line.length / codeWidth())), 0)
+  // 0289e: ONE uniform segmentation - the caller's segments (heredoc split)
+  // when present, otherwise the whole content as a single bash segment. The
+  // bash/heredoc structure is identical from the first frame: slot 0 carries
+  // the bash (the whole command while not a heredoc, the opener once it is),
+  // heredoc bodies/tails land in the later slots as they resolve. Slots only
+  // ever MOUNT (segment counts are monotonic), never dispose mid-life - the
+  // earlier branch flip between a single element and a slot box disposed live
+  // elements with pending prop updates and crashed the TUI.
+  const segs = createMemo(() => {
+    if (props.segments && props.segments.length > 0) return props.segments
+    const c = props.content
+    return c.length > 0 ? [{ text: c, lang: props.filetype ?? "bash" }] : []
+  })
+  // The SHELL sections run a CONTINUOUS line counter across segments (opener
+  // 1..K, closer/tail K+1...); heredoc BODY segments are excluded entirely -
+  // they restart at 1 in their own gutter, so they never feed the bash counter
+  // regardless of what language they sniffed to (an SH-valued body still
+  // resets the count). lineStart[i] = the bash row the i-th slot's first line
+  // labels.
+  const bashStarts = createMemo(() => {
+    const s = segs()
+    const starts: number[] = []
+    let acc = 0
+    for (let i = 0; i < s.length; i++) {
+      const isShell = s[i]!.lang === "bash" && !s[i]!.body
+      starts[i] = isShell ? acc : 0
+      if (isShell) acc += Math.max(1, s[i]!.text.split("\n").length)
+    }
+    return starts
+  })
+  // The fixed slot junctions - created ONCE, mounted once (the box children
+  // getter here is a plain const read, nothing reactive, so the box never
+  // re-renders). Each slot hides until its segment exists, then only its
+  // content/numbers/streaming ACCESSORS update per delta - in place.
+  const slotEls: JSX.Element[] = []
+  for (let i = 0; i < MAX_SLOTS; i++) {
+    slotEls.push(
+      <StreamSegment
+        text={() =>
+          i < MAX_SLOTS - 1
+            ? segs()[i]?.text ?? ""
+            : // the last slot absorbs any overflow segments - no text lost.
+              segs().slice(i).map((s) => s.text).join("")
+        }
+        lang={() => segs()[i]?.lang ?? "bash"}
+        streaming={() => props.streaming}
+        fg={() => props.fg ?? theme.textMuted}
+        conceal={() => conceal()}
+        lineStart={() => bashStarts()[i] ?? 0}
+        restart={() => segs()[i]?.body === true}
+        show={() => i < segs().length}
+        segmented={() => segs().length > 1}
+      />,
+    )
   }
-  // Measured grow-only driver (0179): the clamp tracks the code element's
-  // laid-out height (the natural wrapped height exactly) instead of the
-  // char-wrap estimate (codeWidth/wrappedRows above remain only for the
-  // segments fallback path). The width-collapse gate (measuredGrowRows)
-  // skips the 0165 flash frames so a transient artifact cannot balloon the
-  // clamp. The single element is measured; the unused segments path falls
-  // back to the estimate.
-  const streamEls: { el?: any } = {}
-  const measured = measuredGrowRows(() => streamEls, () => props.content)
-  const rows = () => (props.segments ? wrappedRows(props.content) : measured.current())
-  // The single streaming code element - the SAME object in both gutter
-  // branches (see below), so the line_number mount never recreates it.
-  const singleEl = (
-    <code
-      ref={(el: any) => {
-        streamEls.el = el
-      }}
-      {...(props.filetype ? { filetype: props.filetype } : {})}
-      // width="100%" (0179): wrap at the block's final width from the first
-      // frame (no content-intrinsic width settle, so the natural height is
-      // monotonic - see the LiveEditDiff note).
-      width="100%"
-      // drawUnstyledText={false} + streaming: colored-as-it-streams
-      // (the buffer keeps the last landed highlight, one flush
-      // behind) - same as the segment branch and the reasoning part.
-      // The empty first frame is fixed in opentui (0142), not by
-      // flipping this flag.
-      drawUnstyledText={false}
-      // 0199 carry-over: streaming flips false and fg brightens at
-      // completion IN PLACE - the element is never recreated, so its
-      // buffer (the last landed highlight of the identical content)
-      // keeps painting through the transition. The 0196 already-painting
-      // guard in opentui keeps the buffer visible during the fresh
-      // highlight - no blank, no raw-white first paint.
-      streaming={props.streaming}
-      syntaxStyle={syntax()}
-      content={props.content}
-      conceal={conceal()}
-      fg={props.fg ?? theme.textMuted}
-      // wrapMode removed (0178): the streaming view WRAPS long lines like
-      // the completed view (a long single-line bash truncated while
-      // streaming; the completed heredoc's first body line wrapped but the
-      // streamed view didn't - the user's live catches, 2026-08-17). The
-      // 0165 transient wrap-width-collapse flash remains the documented
-      // OPEN risk (a long first line can wrap to many rows for ONE frame
-      // while the width re-flows); the grow-only clamp below is now
-      // WRAP-AWARE (the 0174 diff pattern) so the steady-state shrink from
-      // wrap re-flow is held.
-    />
-  )
-  // line_number only accepts a code element target - a wrapper box is
-  // silently dropped, so segments are guttered individually (numbers
-  // restart per segment).
-  const code = props.segments ? (
+  // No branch flips: the slots box is the ONE structure for the whole block
+  // life (it renders nothing while every slot is hidden). Each slot's gutter
+  // toggles line_number-only inside StreamSegment.
+  const code = (
     <box flexDirection="column">
-      {props.segments.map((seg, i) => {
-        const el = (
-          <code
-            // key-less: opentui CodeProps has no key field; segments re-render in place
-            filetype={seg.lang}
-            // drawUnstyledText={false} + streaming: the content setter
-            // defers to the async highlight, so the buffer keeps the LAST
-            // LANDED HIGHLIGHT (colored, one flush behind) - the same
-            // colored-as-it-streams behavior as the reasoning part. The
-            // flicker is NOT here: it was the EMPTY first frame on new
-            // segment mounts, fixed in opentui's
-            // ensureVisibleTextBeforeHighlight (0142) - initial streaming
-            // content now renders its raw text immediately instead of
-            // waiting for the first highlight. 0199: the segments branch
-            // is the COMPLETED heredoc only (static - no per-delta
-            // recreation), so streaming=false + the caller's fg apply.
-            drawUnstyledText={false}
-            streaming={props.streaming}
-            syntaxStyle={syntax()}
-            content={seg.text}
-            conceal={conceal()}
-            fg={props.fg ?? theme.textMuted}
-          />
-        )
-        return props.gutter === false ? (
-          el
-        ) : (
-          <line_number key={i} fg={theme.textMuted} minWidth={3} paddingRight={1}>
-            {el}
-          </line_number>
-        )
-      })}
+      {slotEls}
     </box>
-  ) : (
-    // The line_number appears as soon as the streamed content exceeds
-    // one line (Show = a reactive memo, so it flips mid-stream - the
-    // body's ternary is frozen at the first render). The code element
-    // is the SAME object in both branches - the gutter mount does not
-    // recreate it, the buffer and colors persist. Single-line commands
-    // never flip (no '1' noise, no width change, no judder). Numbers
-    // run continuously 1..N over the whole command; the completed view
-    // below re-splits into per-segment gutters.
-    <Show when={showGutter()} fallback={singleEl}>
-      <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
-        {singleEl}
-      </line_number>
-    </Show>
   )
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.spinner ?? props.streaming} onClick={props.onClick}>
       {/* above: label/content between the title and the streamed code
           (squash-output's "summary" line) - never shifts the code's margin. */}
       {props.above}
-      <Show when={props.content.length > 0}>
-        <GrowOnly rows={rows()} release={props.release}>
-          {code}
-        </GrowOnly>
-      </Show>
+      <Show when={props.content.length > 0}>{code}</Show>
       {/* 0199: caller content after the code (bash's output + expand
           toggle) - renders in the same BlockTool so the carry-over
           structure keeps one box for the whole life of the block. */}
@@ -4246,22 +4462,24 @@ function LiveEditDiff(props: {
     setRight(r.join("\n"))
   })
   const lang = () => props.filetype
-  // The block's height driver is the two columns (the parsed OLD/NEW lines),
-  // not the raw patch text - clamp on the taller column. The columns WRAP
-  // (0169) while streaming. Driver generations: the logical line count
-  // (0165) could not capture wrapped rows (the shrink); the char-wrap
-  // per-line estimate (0174/0178) tracked the natural within +/-2-7 rows
-  // but word-wrap does not equal char-wrap and the estimated width is never
-  // exactly the laid-out width - its latched overshoots held extra empty
-  // lines at the bottom of the block while streaming (live catch
-  // 2026-08-17, the 3-4 trailing LF's). 0179 MEASURES the code elements'
-  // laid-out heights (the natural wrapped height exactly) per flush and
-  // clamps on the max legitimate observation (measuredGrowRows gates out
-  // the 0165 transient width-collapse frames so a flash artifact cannot
-  // balloon the clamp).
-  const els: { left?: any; right?: any } = {}
-  const measured = measuredGrowRows(() => els, () => props.content)
-  const rows = createMemo(() => measured.current())
+  // 0277: GrowOnly/measuredGrowRows REMOVED - each column wraps at its own
+  // real width (the 0276 root cause fix); the block grows/shrinks with the
+  // content like upstream.
+  const traceL = useToolTrace(left, "diffL")
+  const traceR = useToolTrace(right, "diffR")
+  // 0276b: fixed-height driver per column - the code element's own height
+  // must be the buffer's wrapped count at its real width, not the native
+  // width-1 measure (persistent +1 phantom on the diff columns at cw~66).
+  const heightL = useFixedStreamHeight(left, traceL)
+  const heightR = useFixedStreamHeight(right, traceR)
+  const refL = (el: any) => {
+    heightL.ref(el)
+    traceL(el)
+  }
+  const refR = (el: any) => {
+    heightR.ref(el)
+    traceR(el)
+  }
   // STEP 2 ladder: the line arrays + the diff anchor. The anchor is the
   // first index where OLD[i] !== NEW[i] (or the shorter length when one
   // column is a prefix of the other). Only moves forward as the stream
@@ -4291,59 +4509,55 @@ function LiveEditDiff(props: {
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
       <Show when={props.content.length > 0}>
-        <GrowOnly rows={rows()}>
-          <box flexDirection="row">
-            <box width="50%" paddingRight={1}>
-              {/* Block-relative line numbers (1..N per column; the step-2
-                  ladder tints the changed region via lineColors - context
-                  stays neutral, removed gets the diffRemoved band). The
-                  gutter width keeps the code's x-position aligned with the
-                  completed diff, which is always guttered - no sideways
-                  snap at completion. */}
-              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={leftColors()}>
-                <code
-                  ref={(el: any) => {
-                    els.left = el
-                  }}
-                  {...(lang() ? { filetype: lang() } : {})}
-                  // width="100%" (0179): the streaming code element must wrap
-                  // at its FINAL column width from the first frame. Without it
-                  // the element's width is content-intrinsic (W6->W31->W80 as
-                  // content lands), so the content wraps at transiently narrow
-                  // widths during the settle and the natural height is
-                  // non-monotonic - the block flashed tall then dropped (the
-                  // left->right column-handoff shrink the user caught on
-                  // video) and the clamp latched the settle peaks as blank
-                  // lines at the bottom. The completed diff uses width="100%".
-                  width="100%"
-                  drawUnstyledText={false}
-                  streaming={true}
-                  syntaxStyle={syntax()}
-                  content={left()}
-                  conceal={false}
-                  fg={theme.textMuted}
-                />
-              </line_number>
-            </box>
-            <box width="50%">
-              <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={rightColors()}>
-                <code
-                  ref={(el: any) => {
-                    els.right = el
-                  }}
-                  {...(lang() ? { filetype: lang() } : {})}
-                  width="100%"
-                  drawUnstyledText={false}
-                  streaming={true}
-                  syntaxStyle={syntax()}
-                  content={right()}
-                  conceal={false}
-                  fg={theme.textMuted}
-                />
-              </line_number>
-            </box>
+        <box flexDirection="row">
+          <box width="50%" paddingRight={1}>
+            {/* Block-relative line numbers (1..N per column; the step-2
+                ladder tints the changed region via lineColors - context
+                stays neutral, removed gets the diffRemoved band). The
+                gutter width keeps the code's x-position aligned with the
+                completed diff, which is always guttered - no sideways
+                snap at completion. */}
+            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={leftColors()}>
+              <code
+                ref={refL}
+                height={heightL.height()}
+                {...(lang() ? { filetype: lang() } : {})}
+                // width="100%" (0179): the streaming code element must wrap
+                // at its FINAL column width from the first frame. Without it
+                // the element's width is content-intrinsic (W6->W31->W80 as
+                // content lands), so the content wraps at transiently narrow
+                // widths during the settle and the natural height is
+                // non-monotonic - the block flashed tall then dropped (the
+                // left->right column-handoff shrink the user caught on
+                // video) and the clamp latched the settle peaks as blank
+                // lines at the bottom. The completed diff uses width="100%".
+                width="100%"
+                drawUnstyledText={false}
+                streaming={true}
+                syntaxStyle={syntax()}
+                content={left()}
+                conceal={false}
+                fg={theme.textMuted}
+              />
+            </line_number>
           </box>
-        </GrowOnly>
+          <box width="50%">
+            <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={rightColors()}>
+              <code
+                ref={refR}
+                height={heightR.height()}
+                {...(lang() ? { filetype: lang() } : {})}
+                width="100%"
+                drawUnstyledText={false}
+                streaming={true}
+                syntaxStyle={syntax()}
+                content={right()}
+                conceal={false}
+                fg={theme.textMuted}
+              />
+            </line_number>
+          </box>
+        </box>
       </Show>
     </BlockTool>
   )
@@ -4705,7 +4919,13 @@ function SquashOutput(props: ToolProps) {
           streaming={stream.streaming()}
           content={stream.display()}
           // Prose, not code: stream in its final color (white) - no
-          // textMuted -> text flip at completion.
+          // textMuted -> text flip at completion. filetype="" is required:
+          // the segs default is "bash" (below), and a truthy filetype routes
+          // the text through the tree-sitter tokenizer, which colors the
+          // summary despite the fg below. Empty string = the unstyled text
+          // buffer (opentui code.tsx: _shouldRenderTextBuffer = drawUnstyledText
+          // || !filetype), rendered in fg as intended.
+          filetype=""
           fg={theme.text}
           release={completed()}
           gutter={false}

@@ -91,6 +91,25 @@ export function findLastSummaryId(msgs: SessionV1.WithParts[]): string | null {
   return newest?.info.id ?? null
 }
 
+/** The active epoch record for the chain (record whose boundary matches the newest
+ * completed summary), or undefined. Exposed for prompt.ts to decide whether the
+ * request is INSIDE a frozen epoch (serve frozen bytes / instruction delta is
+ * meaningless) or in the POST-COMPACTION GAP (the chain was just compacted - the
+ * record rode the dropped first user message - so this request MUST re-snapshot
+ * with the full system rather than serve a stripped live one). */
+export function activeRecord(msgs: SessionV1.WithParts[]): EpochRecord | undefined {
+  const boundary = findLastSummaryId(msgs)
+  for (const msg of msgs) {
+    for (const part of msg.parts) {
+      if (part.type === "text" && part.metadata?.epoch) {
+        const record = part.metadata.epoch as EpochRecord
+        if (record.boundary === boundary) return record
+      }
+    }
+  }
+  return undefined
+}
+
 /** Bounded line diff (LCS) of two texts; returns up to maxLines -/+ lines. */
 export function lineDiff(oldText: string, newText: string, maxLines = MAX_DIFF_LINES): { lines: string[]; truncated: boolean } {
   const a = oldText.split("\n")
