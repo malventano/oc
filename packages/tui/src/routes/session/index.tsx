@@ -2499,6 +2499,23 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     setExpanded((prev) => !prev)
   }
 
+  // 0274: the reasoning body was the LAST streaming code element without
+  // the 0179/0266 treatment (width="100%" + the measured grow-only clamp).
+  // It streamed via a raw code element with content-intrinsic width and a
+  // clamp that never released, so a transient wrap overshoot latched extra
+  // blank rows at the block bottom - they grew during long reasoning and
+  // persisted between the reasoning block and the output (the same
+  // stacked-LF class 0179/0266 fixed for tool and diff streams). Same
+  // fix: width="100%" makes the natural height monotonic (wrap at the
+  // final column width from frame one), measuredGrowRows reports the
+  // CURRENT laid-out height, and GrowOnly keeps the peak through shrinks
+  // while releasing reserved rows 1:1 as the stream grows. The clamp drops
+  // at completion (isDone) so the settled block ends exactly at its
+  // content height - no residual LF between reasoning and output.
+  const els: { el?: any } = {}
+  const measured = measuredGrowRows(() => els, () => summary().body)
+  const rows = createMemo(() => measured.current())
+
   return (
     <Show when={content() || opaque()}>
       <box
@@ -2521,15 +2538,24 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         </box>
         <Show when={!opaque() && (!inMinimal() || expanded()) && summary().body}>
           <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
-            <code
-              filetype="markdown"
-              drawUnstyledText={false}
-              streaming={true}
-              syntaxStyle={syntax()}
-              content={summary().body}
-              conceal={ctx.conceal()}
-              fg={theme.textMuted}
-            />
+            <GrowOnly rows={rows()} release={isDone()}>
+              <code
+                ref={(el: any) => {
+                  els.el = el
+                }}
+                // width="100%" (0179): wrap at the block's final width from
+                // the first frame (no content-intrinsic width settle, so the
+                // natural height is monotonic).
+                width="100%"
+                filetype="markdown"
+                drawUnstyledText={false}
+                streaming={true}
+                syntaxStyle={syntax()}
+                content={summary().body}
+                conceal={ctx.conceal()}
+                fg={theme.textMuted}
+              />
+            </GrowOnly>
           </box>
         </Show>
       </box>
