@@ -105,6 +105,44 @@ function escapeRegex(text: string): string {
  * file) is diagnosed as such instead of leaving the agent guessing. Bounded:
  * limit small, best-effort (any Ripgrep failure returns "").
  */
+/** Bounded basename search from a root - the 0226 parallel BFS, factored so
+ *  both bare-header resolution and the file-not-found hint share one walk.
+ *  `maxDepth` bounds how deep it goes: the hint uses a SHALLOW 2 (workspace
+ *  root -> sibling project/dir -> file, ~10-20ms); bare-header resolution uses
+ *  12 (full tree). Caps: 32 matches, FOLDERS skip. Returns every file named
+ *  `needle` under `root`, or [] when none. */
+const findBasename = (
+  fs: FSUtil.Interface,
+  root: string,
+  needle: string,
+  maxDepth = 12,
+): Effect.Effect<string[]> =>
+  Effect.gen(function* () {
+    const matches: string[] = []
+    const walk = (dirs: string[], depth: number): Effect.Effect<void> => {
+      if (depth > maxDepth || dirs.length === 0 || matches.length >= 32) return Effect.void
+      return Effect.gen(function* () {
+        const entries = yield* Effect.all(
+          dirs.map((dir) => fs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))),
+          { concurrency: 32 },
+        )
+        const children: string[] = []
+        for (let i = 0; i < dirs.length; i++) {
+          for (const entry of entries[i]!) {
+            if (entry.type === "directory") {
+              if (!FOLDERS.has(entry.name)) children.push(path.join(dirs[i]!, entry.name))
+            } else if (entry.type === "file" && entry.name === needle) {
+              matches.push(path.join(dirs[i]!, entry.name))
+            }
+          }
+        }
+        if (matches.length < 32) yield* walk(children, depth + 1)
+      })
+    }
+    yield* walk([root], 0)
+    return matches
+  })
+
 const wrongFileHint = Effect.fn("EditTool.wrongFileHint")(function* (
   ripgrep: Ripgrep.Interface,
   dir: string,
@@ -286,47 +324,43 @@ export const EditTool = Tool.define(
           // waited on 38k sequential readdirs (~1.3s here) and made a bare
           // [path] header visible as "patch streams in, 2s pause, diff snaps
           // in" on large worktrees.
-          const resolveSourcePath = (filePath: string): Effect.Effect<string> =>
+          // Resolve a section's target path. Trust order (oc 0259):
+          //   1. The `filePath` argument when present (single-section patches
+          //      only - it cannot map to multiple headers, and it is almost
+          //      always the model's correct absolute path; the header's bare
+          //      basename is the lazy echo of the read tool's rendering).
+          //   2. The header path itself (absolute, or joined to the project
+          //      root - os-root and project-relative are the two forms models
+          //      produce correctly).
+          //   3. The bare-basename BFS worktree walk (last resort: deep files
+          //      whose full path a model cannot know, e.g. archive tmp/).
+          //
+          // Tiers 1-2 are cheap (one stat). Tier 3 is the expensive walk -
+          // reached only when the cheap tiers miss, so ambiguity/scan cost is
+          // bounded by how often the model gets a path form entirely wrong
+          // from the two it knows. filePath is NOT the header substitute when
+          // it stat-fails (it could be stale) - fall through to the header.
+          const resolveSourcePath = (headerPath: string, preferPath?: string): Effect.Effect<string> =>
             Effect.gen(function* () {
-              const direct = resolvePath(filePath)
-              const info = yield* afs.stat(direct).pipe(Effect.catch(() => Effect.succeed(undefined)))
-              const bare = !filePath.includes("/") && !filePath.includes("\\")
-              if (info || !bare) return direct
-              const matches: string[] = []
-              // Bounded-parallel BFS (0226): the old walk recursed SERIALLY
-              // through every directory, so a bare-basename [path] header
-              // waited on 38k sequential readdirs (~1.3s on this box) before
-              // the edit's diff could render - the "patch streams in, sits,
-              // then the diff snaps in" lag on some files. All of a level's
-              // directory reads are independent: batch them into one
-              // bounded-concurrency Effect.all (32 deep - fast enough to keep
-              // the tree flat, shallow enough not to hammer the fd pool).
-              // Same caps as before: 12 levels, 32 matches, FOLDERS skip.
-              const walk = (dirs: string[], depth: number): Effect.Effect<void> => {
-                if (depth > 12 || dirs.length === 0 || matches.length >= 32) return Effect.void
-                return Effect.gen(function* () {
-                  const entries = yield* Effect.all(
-                    dirs.map((dir) => afs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))),
-                    { concurrency: 32 },
-                  )
-                  const children: string[] = []
-                  for (let i = 0; i < dirs.length; i++) {
-                    for (const entry of entries[i]!) {
-                      if (entry.type === "directory") {
-                        if (!FOLDERS.has(entry.name)) children.push(path.join(dirs[i]!, entry.name))
-                      } else if (entry.type === "file" && entry.name === filePath) {
-                        matches.push(path.join(dirs[i]!, entry.name))
-                      }
-                    }
-                  }
-                  if (matches.length < 32) yield* walk(children, depth + 1)
-                })
+              // Tier 1: the model's authoritative filePath, when it resolves.
+              if (preferPath) {
+                const pref = resolvePath(preferPath)
+                const pInfo = yield* afs.stat(pref).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                if (pInfo) return pref
               }
-              yield* walk([instance.directory], 0)
+              // Tier 2: the header path (absolute / project-relative).
+              const direct = resolvePath(headerPath)
+              const info = yield* afs.stat(direct).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              const bare = !headerPath.includes("/") && !headerPath.includes("\\")
+              if (info || !bare) return direct
+              // Tier 3: bare-basename BFS (the factored, bounded-parallel
+              // walk - 12 levels / 32 matches / FOLDERS skip). Reached only
+              // when the cheap tiers missed.
+              const matches = yield* findBasename(afs, instance.directory, headerPath)
               if (matches.length === 0) return direct
               if (matches.length === 1) return matches[0]
               throw new Error(
-                `Basename ${JSON.stringify(filePath)} is ambiguous (${matches.length} files match): ${matches.join(", ")}. Use the full path in the [PATH] section header.`,
+                `Basename ${JSON.stringify(headerPath)} is ambiguous (${matches.length} files match): ${matches.join(", ")}. Use the full path in the [PATH] section header.`,
               )
             })
 
@@ -344,7 +378,10 @@ export const EditTool = Tool.define(
           // be PASTEd by any later section.
           const registers = new Map<string, string[]>()
           for (const section of parsed.files) {
-            const sourcePath = yield* resolveSourcePath(section.filePath)
+            // oc 0259: trust the filePath argument on single-section patches
+            // (the model's authoritative path; cannot map to multiple headers).
+            const preferPath = parsed.files.length === 1 ? params.filePath : undefined
+            const sourcePath = yield* resolveSourcePath(section.filePath, preferPath)
             if (section.delete) {
               plannedByPath.delete(sourcePath)
               plans.push({
@@ -366,7 +403,53 @@ export const EditTool = Tool.define(
             const targetPath = section.rename ? resolvePath(section.rename) : sourcePath
 
             const info = yield* afs.stat(sourcePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-            if (!info) throw new Error(`File ${sourcePath} not found`)
+            if (!info) {
+              // oc 0259: on a file-not-found for an absolute/rooted path, hunt
+              // for the WRONG-PROJECT transcription. The model's os-root paths
+              // usually differ from the real file by ONE segment - the top-
+              // level sibling project (opencode vs allyn). The sibling shares
+              // the sub-path wiring after that segment, so check the SAME
+              // relative sub-path under every workspace child: one stat per
+              // sibling (~36 stats for /root/oc, capped), deterministic and
+              // cheap on the rare not-found path - not a tree walk.
+              let hint: string | undefined
+              if (path.isAbsolute(sourcePath)) {
+                const workspace = path.dirname(instance.directory)
+                const relToWorkspace = path.relative(workspace, sourcePath)
+                const segs = relToWorkspace.split(path.sep)
+                const firstChild = segs[0] // the sibling project dir in the header
+                const rest = segs.slice(1).join(path.sep) // sub-path after it
+                if (firstChild && rest) {
+                  const siblings = yield* afs
+                    .readDirectoryEntries(workspace)
+                    .pipe(Effect.catch(() => Effect.succeed([])))
+                  const hits: string[] = []
+                  // Raw readdir is OS order; sort for a stable scan. Skip
+                  // dotfiles - workspace project roots are never hidden, and
+                  // a dotfile-heavy root (e.g. /tmp with 1k+ .hm scratch
+                  // files) would otherwise push the real sibling past any
+                  // positional cap. Cap on hit count (2), not position: the
+                  // loop exits after the first couple of matches, so a large
+                  // workspace costs at most ~36 stats in practice.
+                  const ordered = [...siblings]
+                    .filter((e) => !e.name.startsWith("."))
+                    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+                  for (const entry of ordered) {
+                    if (entry.type !== "directory") continue
+                    const cand = path.join(workspace, entry.name, rest)
+                    const s2 = yield* afs.stat(cand).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                    if (s2 && cand !== sourcePath) hits.push(cand)
+                    if (hits.length >= 2) break
+                  }
+                  if (hits.length > 0) {
+                    hint = hits.map((p) => displayPath(instance.directory, p)).join(", ")
+                  }
+                }
+              }
+              throw new Error(
+                `File ${sourcePath} not found${hint ? `; a file with that name exists at ${hint} - wrong sibling project in the [PATH] header? Use the full path in the [PATH] header.` : ""}`,
+              )
+            }
             if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${sourcePath}`)
             // Same-path sections compose: the next section's OLD blocks
             // reference the ORIGINAL read content, so the previous section's
