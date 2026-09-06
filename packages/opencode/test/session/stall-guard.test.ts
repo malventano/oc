@@ -143,6 +143,29 @@ describe("stall-guard detect", () => {
     expect(StallGuard.detect("stop", "handling <reminder>content</reminder> inline", false)).toBeNull()
   })
 
+  test("marker-echo: does NOT fire on a backtick-quoted reference to the tag (0262 misfire)", () => {
+    // The 2026-09-06 misfire: a COMPLETE answer explaining the bash guard
+    // quoted the tag in backticks ("it appends a `<system-reminder>` to the
+    // tool output") - the content check fired marker-echo, the trim deleted
+    // the valid tail, and the "Continue." steer re-did the finished work.
+    const text =
+      "The fix is a passive correction loop keyed to the exact failure mechanism - it doesn't block the command. " +
+      "When the command string matches `rg -rn` it appends a `<system-reminder>` to the tool output as feedback. " +
+      "The reminder is model-visible text at the point of failure, so the next `rg` drops the `-rn`."
+    expect(StallGuard.detect("stop", text, false)).toBeNull()
+    // Also fine mid-list / near the end - the reference is quoted, not emitted.
+    expect(StallGuard.detect("stop", "covered in oc-spec/11 as class 20 (`<system-reminder>`).", false)).toBeNull()
+  })
+
+  test("marker-echo: still fires on a bare emitted tag (cadence shape, 0262)", () => {
+    // The negative lookbehind must NOT suppress genuine echoes: the tag
+    // preceded by whitespace/start (not a backtick) is a reproduction.
+    expect(StallGuard.detect("stop", "Continue.\n<system-reminder>V</system-reminder>\n\nCadence.", false)).not.toBeNull()
+    expect(StallGuard.detect("stop", "Continue.\n<system-reminder>V</system-reminder>\n\nCadence.", false)!.signature).toBe(
+      "marker-echo",
+    )
+  })
+
   test("marker-echo: beats the markup family on a real cadence echo (closing tag present)", () => {
     // Real cadence output carries the closer (</system-reminder>); the
     // end-anchored stray-closer check must NOT win the diagnosis. The redirect

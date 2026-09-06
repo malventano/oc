@@ -232,15 +232,25 @@ export function detect(
   // this and misdiagnose the echo as a stranded fragment - marker-echo is the
   // more specific diagnosis and its recovery is the targeted one (ignore the
   // reminder's wording, don't restate it).
-  if (/\s*<system-reminder>/i.test(text)) {
+  // Quote-exclusion (2026-09-06): the tag is legitimate in backticked QUOTED
+  // TEXT too - explaining "the guard appends a `\u003csystem-reminder\u003e` to
+  // tool output" is not imitating a cue, it is referencing it. A negative
+  // lookbehind rejects a backtick IMMEDIATELY before the tag, so a code-span
+  // reference (`\u003csystem-reminder\u003e`) never fires while a bare emitted
+  // marker (preceded by whitespace/start) still does. Live misfire: a complete
+  // answer about the bash-file-op-guard was flag-trimmed at request time (3
+  // marker-echo fires across 24h were all backtick-quoted references, not
+  // echoes).
+  const markerEcho = /(?<!`)\s*<system-reminder>/i.exec(text)
+  if (markerEcho) {
     return {
       signature: "marker-echo",
       detail: "response reproduces the session's own system-reminder markers as output",
       redirect: STALL_REDIRECT_MARKER_ECHO,
       // The marker-echo region is the whitespace run + the first reproduced
-      // tag (text.search returns the leading \s* start); the prose before it
-      // (if any) is worth keeping for the recovery.
-      trimAt: text.search(/\s*<system-reminder>/i),
+      // tag (the exec index returns the leading \s* start); the prose before
+      // it (if any) is worth keeping for the recovery.
+      trimAt: markerEcho.index,
     }
   }
   // End-anchored checks only: real remnants end the text, and mid-text
