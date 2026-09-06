@@ -69,7 +69,28 @@ function toTable(rows: Record<string, unknown>[]) {
   return [fmt(keys), widths.map((w) => "-".repeat(w)).join("  "), ...rows.map((r) => fmt(keys.map((k) => String(r[k] ?? ""))))].join("\n")
 }
 
+// A statement prefixed with `--` (line comment), `/* */` (block comment), or
+// blank/whitespace is still a perfectly safe read if the FIRST REAL token is a
+// read keyword - but the anchor must not be fooled: `--d\nDELETE FROM t` must
+// still fail read-only enforcement after stripping (it strips to DELETE). We
+// strip ONLY leading comments/whitespace, then anchor on the first code token,
+// so a DML/DDL statement under a comment is still rejected. (oc 0260: the
+// guard previously rejected comment-prefixed SELECTs like `-- filter\nSELECT
+// ...`, which is a legit read shape.)
 const READONLY_PREFIX = /^(SELECT|WITH|EXPLAIN|PRAGMA)\b/i
+export const acceptReadonlyStmt = (stmt: string): boolean => {
+  let s = stmt
+  // Iterate: strip leading whitespace + line/block comment repeats so a
+  // comment-only preamble (or blank lines) surfaces the real first token.
+  for (let i = 0; i < 20; i++) {
+    const before = s
+    s = s.replace(/^[\s\r\n]*/, "")
+    s = s.replace(/^--[^\r\n]*/, "")
+    s = s.replace(/^\/\*[\s\S]*?\*\//, "")
+    if (s === before || s.length === 0) break
+  }
+  return READONLY_PREFIX.test(s)
+}
 
 // The DB's `message`/`part`/`event` tables store their real content in a JSON
 // `data` blob (`{role,text}` / `{type,text}`) - nearly all "no such column:
@@ -166,7 +187,7 @@ export const SessionsQueryTool = Tool.define<typeof Parameters, Metadata, Databa
 
           if (op === "query") {
             const stmt = params.sql!.trim()
-            if (!READONLY_PREFIX.test(stmt)) throw new Error("query op only allows SELECT/WITH/EXPLAIN/PRAGMA (use execute for writes)")
+            if (!acceptReadonlyStmt(stmt)) throw new Error("query op only allows SELECT/WITH/EXPLAIN/PRAGMA (use execute for writes)")
             const format = params.format
             // db.all defects on a sqlite error; catchDefect recomputes the
             // hinted message and re-defects so the failed call teaches the
