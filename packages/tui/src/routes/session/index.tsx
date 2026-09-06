@@ -1795,19 +1795,35 @@ function UserMessage(props: {
             paddingLeft={2}
             paddingRight={2}
             marginTop={1}
+            flexShrink={0}
+            width="100%"
             backgroundColor={theme.backgroundPanel}
             customBorderChars={SplitBorder.customBorderChars}
             borderColor={theme.background}
           >
-            <text paddingLeft={3} fg={theme.textMuted}>
+            <text paddingLeft={3} paddingBottom={1} fg={theme.textMuted}>
               # Questions
             </text>
             <For each={questionDialogue()}>
               {(qa) => (
                 <Show when={qa.question || qa.answer}>
-                  <box flexDirection="column" paddingTop={0} paddingBottom={1}>
+                  <box flexDirection="column" paddingTop={0} paddingBottom={1} width="100%" flexShrink={0}>
+                    {/* width="100%" + flexShrink={0}: the box must stretch to
+                        the message column, not collapse to its children's
+                        content width - otherwise the lines wrap at the longest
+                        answer instead of the pane edge (the multi-line answers
+                        wrapped at ~90 cols vs the 151-col pane). */}
                     <text fg={theme.textMuted}>{qa.question}</text>
-                    <text fg={theme.text}>{qa.answer}</text>
+                    {/* A multi-select joins its answers with ", " - render each
+                        selection on its OWN line so the answers never wrap mid-
+                        text at the box edge. "not answered" stays one line. */}
+                    <For each={qa.answer.split(/,\s*/).filter((a) => a)}>
+                      {(line) => (
+                        <text fg={theme.text}>
+                          {`  ${line}`}
+                        </text>
+                      )}
+                    </For>
                   </box>
                 </Show>
               )}
