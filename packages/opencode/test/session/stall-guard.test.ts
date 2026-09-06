@@ -158,12 +158,47 @@ describe("stall-guard detect", () => {
   })
 
   test("marker-echo: still fires on a bare emitted tag (cadence shape, 0262)", () => {
-    // The negative lookbehind must NOT suppress genuine echoes: the tag
-    // preceded by whitespace/start (not a backtick) is a reproduction.
+    // The line-shape rule must NOT suppress genuine echoes: a bare tag at its
+    // own line start is a reproduction, not a reference.
     expect(StallGuard.detect("stop", "Continue.\n<system-reminder>V</system-reminder>\n\nCadence.", false)).not.toBeNull()
     expect(StallGuard.detect("stop", "Continue.\n<system-reminder>V</system-reminder>\n\nCadence.", false)!.signature).toBe(
       "marker-echo",
     )
+    // An indented standalone tag is still an echo.
+    expect(StallGuard.detect("stop", "Cadence.\n  <system-reminder>V</system-reminder>\n\nContinue.", false)).not.toBeNull()
+  })
+
+  test("marker-echo: does NOT fire on an inline code-span regex reference (0262b 4th misfire)", () => {
+    // The lookbehind only rejected a backtick IMMEDIATELY before the tag; a
+    // regex code-span like `/\s*<system-reminder>/i.test(text)` has the char
+    // before the tag = `*` (from \s*), so the first-pass fix still misfired on
+    // the 04:44:50Z restart continuation. Inline tag (prose/backtick/regex
+    // chars precede it on the same line) is NEVER an echo.
+    expect(StallGuard.detect("stop", "the old regex is `/\s*<system-reminder>/i.test(text)` and it misfired", false)).toBeNull()
+    // Full inline narrative with the ansbacktick'd tag mid-sentence.
+    expect(
+      StallGuard.detect("stop", "we changed the guard from `<system-reminder>` content-check to `(?<!`)\s*<system-reminder>`", false),
+    ).toBeNull()
+  })
+
+  test("marker-echo: does NOT fire on a fenced-quoted tag (0262b)", () => {
+    // A ``` ``` code block quoting the marker (e.g. copying a raw doc sample)
+    // is quoted material, not an echo - the fence-aware scan skips it.
+    expect(
+      StallGuard.detect(
+        "stop",
+        "Here's the cadence output from the bug:\n```\n<system-reminder>V</system-reminder>\n```\nSo the reminder is an echo.",
+        false,
+      ),
+    ).toBeNull()
+    // Fence-state resets so a REAL echo AFTER an unclosed quote still fires.
+    expect(
+      StallGuard.detect(
+        "stop",
+        "```\n<system-reminder>V</system-reminder>\n```\n\nNext.\n\n<system-reminder>V</system-reminder>",
+        false,
+      ),
+    ).not.toBeNull()
   })
 
   test("marker-echo: beats the markup family on a real cadence echo (closing tag present)", () => {
