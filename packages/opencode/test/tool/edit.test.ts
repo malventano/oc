@@ -582,6 +582,31 @@ describe("tool.edit", () => {
     )
   })
 
+  describe("fail quoting (oc 0257): the error names BOTH lines", () => {
+    it.instance("quotes the divergent line on a multi-line OLD mismatch", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "mismatch.txt")
+        // Line 1 of the block matches the file exactly; line 2 is genuinely
+        // ABSENT (not a tolerance-absorbable drift - the ladder's block
+        // anchor similarity and line trims all fail), so the exact-first-
+        // line branch fires the "not in the file" error. The 0257-motivating
+        // incident was the same shape: a continuation line the model
+        // reproduced with a wrong leading bullet.
+        yield* put(filepath, "alpha exact line one\nfile has this unique beta line\nfile has this unique gamma line\n")
+        const err = yield* fail({
+          input: fence([
+            { path: filepath, ops: [{ old: ["alpha exact line one", "DIFFERENT line not in file at all"], new: ["X"] }] },
+          ]),
+        })
+        expect(err.message).toMatch(/line 2 is not in the file/)
+        expect(err.message).toMatch(/file line 2/)
+        expect(err.message).toContain("your block:")
+        expect(err.message).toContain("unique beta line")
+      }),
+    )
+  })
+
   describe("register moves (CUT/PASTE)", () => {
     it.instance("cuts and pastes a block within one file", () =>
       Effect.gen(function* () {
