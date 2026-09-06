@@ -82,15 +82,24 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const other = createMemo(() => custom() && store.selected === options().length)
   const input = createMemo(() => store.custom[store.tab] ?? "")
   const multi = createMemo(() => question()?.multiple === true)
-  const customPicked = createMemo(() => {
-    const value = input()
-    if (!value) return false
-    return store.answers[store.tab]?.includes(value) ?? false
+  // The COMMITTED custom answer (the answers[] entry that is not one of the
+  // question's option labels) - independent of the live textarea text, which
+  // lives in store.custom. A committed answer survives clearing the field
+  // (only commitEdit's empty-commit removal takes it out), so dropdown submit
+  // and viaMouse uncheck key off THIS, not the live input.
+  const committedCustom = createMemo(() => {
+    const labels = new Set(options().map((o) => o.label))
+    const picked = store.answers[store.tab] ?? []
+    return picked.find((a) => !labels.has(a))
   })
-  // The custom row shows checked when its value is in the answers, or when
-  // it is the active selection (clicked/arrowed-to + confirmed) with the
-  // text still pending.
-  const customChecked = createMemo(() => customPicked() || (store.customActive[store.tab] ?? false))
+  const customPicked = createMemo(() => (committedCustom() !== undefined))
+  // The custom row is a checkbox that tracks the LIVE textarea content:
+  // as soon as there is text in the field the box reads checked, and clearing
+  // the field un-checks it (the textarea content-changed hook writes back
+  // into store.custom). This is display-only parity with the other options'
+  // check marks - the SUBMIT gate (allAnswered) still counts only COMMITTED
+  // answers, so typing without Enter never marks the question answered.
+  const customChecked = createMemo(() => (input().trim() !== ""))
   // Upstream semantics: only COMMITTED answers count (the custom row's check
   // without a committed text is a selection in progress, not an answer - the
   // user must press Enter in the textarea first). The memo re-evaluates
@@ -193,6 +202,67 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     }
   }
 
+  // Commit the custom-answer textarea. `advance` = move to the NEXT tab
+  // after committing (the Tab binding); Enter commits but STAYS on the tab
+  // so the user can still check other boxes on a multi question. Empty text
+  // commits a REMOVAL of any previous custom value (the only way to un-answer
+  // the custom row).
+  function commitEdit(advance: boolean) {
+    const text = textarea?.plainText?.trim() ?? ""
+    const prev = committedCustom() // the COMMITTED answer (survives live edits to store.custom)
+
+    if (!text) {
+      if (prev) {
+        const inputs = [...store.custom]
+        inputs[store.tab] = ""
+        setStore("custom", inputs)
+        const answers = [...store.answers]
+        answers[store.tab] = (answers[store.tab] ?? []).filter((x) => x !== prev)
+        setStore("answers", answers)
+      }
+      // An EMPTY commit un-checks the row unconditionally: the box's check
+      // tracks LIVE text (content-changed write-back), so clearing the field
+      // already un-checks while typing - the commit just finalizes + clears
+      // the pending-active marker and any committed answer that was removed.
+      setStore("customActive", store.tab, false)
+      setStore("editing", false)
+      if (advance) {
+        setStore("tab", (store.tab + 1) % tabs())
+        setStore("selected", 0)
+      }
+      return
+    }
+
+    if (multi()) {
+      const inputs = [...store.custom]
+      inputs[store.tab] = text
+      setStore("custom", inputs)
+      const existing = store.answers[store.tab] ?? []
+      const next = [...existing]
+      if (prev) {
+        // A revision replaces the committed answer (the live store.custom now
+        // holds the EDITED text, so prev must come from committedCustom()).
+        const index = next.indexOf(prev)
+        if (index !== -1) next.splice(index, 1)
+      }
+      if (!next.includes(text)) next.push(text)
+      const answers = [...store.answers]
+      answers[store.tab] = next
+      setStore("answers", answers)
+      setStore("editing", false)
+      if (advance) {
+        setStore("tab", (store.tab + 1) % tabs())
+        setStore("selected", 0)
+      }
+      return
+    }
+
+    // Single-select: picking a custom value moves to the next tab itself
+    // (and submits when the question is a lone single-select).
+    pick(text, true)
+    setStore("editing", false)
+  }
+
   function moveTo(index: number) {
     setStore("selected", index)
   }
@@ -203,7 +273,14 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     setStore("editing", false)
   }
 
-  function selectOption() {
+  // `viaMouse`: a real user click on the custom row. The custom row is a
+  // checkbox like the other options - clicking a COMMITTED row unchecks it
+  // (removes the answer + clears the text + closes the editor), clicking an
+  // uncommitted row opens the textarea. Keyboard Enter/Space/numbers are NOT
+  // a click: they reopen the editor for revision and must never toggle the
+  // committed answer off (the multi-question answer-loss regression - a
+  // second Enter after the text was accepted silenced-wiped the answer).
+  function selectOption(viaMouse = false) {
     if (other()) {
       if (!multi()) {
         // The custom row becomes the selection immediately: unlike the other
@@ -218,8 +295,20 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         return
       }
       const value = input()
-      if (value && customPicked()) {
-        toggle(value)
+      // A mouse click on a COMMITTED custom row = uncheck it (remove the
+      // answer, clear the pending text, close the editor) - the same toggle
+      // gesture as the other checkboxes. Keys off the committed answer (not
+      // the live textarea text, which store.custom now tracks).
+      if (viaMouse && customPicked()) {
+        const committed = committedCustom()
+        const answers = [...store.answers]
+        answers[store.tab] = (answers[store.tab] ?? []).filter((x) => x !== committed)
+        setStore("answers", answers)
+        const inputs = [...store.custom]
+        inputs[store.tab] = ""
+        setStore("custom", inputs)
+        setStore("customActive", store.tab, false)
+        setStore("editing", false)
         return
       }
       setStore("customActive", store.tab, true)
@@ -240,7 +329,9 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
     onCleanup(popMode)
   })
 
-  useBindings(() => ({
+  useBindings(() => {
+    const total = options().length + (custom() ? 1 : 0)
+    return {
     mode: QUESTION_MODE,
     enabled: store.editing && !confirm(),
     commands: [
@@ -276,49 +367,40 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
         key: "return",
         desc: "Submit answer edit",
         group: "Question",
+        cmd: () => commitEdit(false),
+      },
+      {
+        key: "tab",
+        desc: "Submit answer and go to next tab",
+        group: "Question",
+        cmd: () => commitEdit(true),
+      },
+      // Up/Down while editing: ALWAYS exit the editor and navigate the
+      // options (regardless of whether text is entered) - checkbox nav must
+      // not trap while the custom field is focused. The pending text is
+      // COMMITTED first (commitEdit, advance=false) so arrow-away keeps the
+      // typed answer - otherwise Confirm would show nothing entered.
+      {
+        key: "up",
+        desc: "Prior option",
+        group: "Question",
         cmd: () => {
-          const text = textarea?.plainText?.trim() ?? ""
-          const prev = store.custom[store.tab]
-
-          if (!text) {
-            if (prev) {
-              const inputs = [...store.custom]
-              inputs[store.tab] = ""
-              setStore("custom", inputs)
-
-              const answers = [...store.answers]
-              answers[store.tab] = (answers[store.tab] ?? []).filter((x) => x !== prev)
-              setStore("answers", answers)
-            }
-            setStore("editing", false)
-            return
-          }
-
-          if (multi()) {
-            const inputs = [...store.custom]
-            inputs[store.tab] = text
-            setStore("custom", inputs)
-
-            const existing = store.answers[store.tab] ?? []
-            const next = [...existing]
-            if (prev) {
-              const index = next.indexOf(prev)
-              if (index !== -1) next.splice(index, 1)
-            }
-            if (!next.includes(text)) next.push(text)
-            const answers = [...store.answers]
-            answers[store.tab] = next
-            setStore("answers", answers)
-            setStore("editing", false)
-            return
-          }
-
-          pick(text, true)
-          setStore("editing", false)
+          commitEdit(false)
+          moveTo((store.selected - 1 + total) % total)
+        },
+      },
+      {
+        key: "down",
+        desc: "Next option",
+        group: "Question",
+        cmd: () => {
+          commitEdit(false)
+          moveTo((store.selected + 1 + total) % total)
         },
       },
     ],
-  }))
+    }
+  })
 
   useBindings(() => {
     const opts = options()
@@ -343,23 +425,43 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
           key: "left",
           desc: "Previous question",
           group: "Question",
-          cmd: () => selectTab((store.tab - 1 + tabs()) % tabs()),
+          cmd: () => {
+            return selectTab((store.tab - 1 + tabs()) % tabs())
+          },
         },
         {
           key: "h",
           desc: "Previous question",
           group: "Question",
-          cmd: () => selectTab((store.tab - 1 + tabs()) % tabs()),
+          cmd: () => {
+            return selectTab((store.tab - 1 + tabs()) % tabs())
+          },
         },
-        { key: "right", desc: "Next question", group: "Question", cmd: () => selectTab((store.tab + 1) % tabs()) },
-        { key: "l", desc: "Next question", group: "Question", cmd: () => selectTab((store.tab + 1) % tabs()) },
+        {
+          key: "right",
+          desc: "Next question",
+          group: "Question",
+          cmd: () => {
+            return selectTab((store.tab + 1) % tabs())
+          },
+        },
+        {
+          key: "l",
+          desc: "Next question",
+          group: "Question",
+          cmd: () => {
+            return selectTab((store.tab + 1) % tabs())
+          },
+        },
         ...(single() || (confirm() && allAnswered())
           ? [
               {
                 key: "tab",
                 desc: "Next agent",
                 group: "Question",
-                cmd: () => local.agent.move(1),
+                cmd: () => {
+                  return local.agent.move(1)
+                },
               },
               {
                 // At the Confirm, shift+tab steps back to the last question
@@ -368,7 +470,9 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 key: "shift+tab",
                 desc: "Previous question",
                 group: "Question",
-                cmd: () => selectTab((store.tab - 1 + tabs()) % tabs()),
+                cmd: () => {
+                  return selectTab((store.tab - 1 + tabs()) % tabs())
+                },
               },
             ]
           : [
@@ -377,14 +481,40 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 desc: "Next question",
                 group: "Question",
                 cmd: ({ event }: { event: { shift: boolean } }) => {
-                  selectTab((store.tab + (event.shift ? -1 : 1) + tabs()) % tabs())
+                  return selectTab((store.tab + (event.shift ? -1 : 1) + tabs()) % tabs())
+                },
+              },
+              // At the Confirm (not all answered - this branch), shift+tab must
+              // still step back to the last question: the confirm-with-nothing
+              // path is NOT the allAnswered branch above, so without this the
+              // user is stuck at Confirm when they realize a box was missed.
+              {
+                key: "shift+tab",
+                desc: "Previous question",
+                group: "Question",
+                cmd: () => {
+                  return selectTab((store.tab - 1 + tabs()) % tabs())
                 },
               },
             ]),
         ...(confirm()
           ? [
-              { key: "return", desc: "Submit answer", group: "Question", cmd: () => submit() },
-              { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
+              {
+                key: "return",
+                desc: "Submit answer",
+                group: "Question",
+                cmd: () => {
+                  return submit()
+                },
+              },
+              {
+                key: "escape",
+                desc: "Reject question",
+                group: "Question",
+                cmd: () => {
+                  return reject()
+                },
+              },
               ...tuiConfig.keybinds.get("app.exit"),
             ]
           : [
@@ -401,18 +531,58 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 key: "up",
                 desc: "Previous answer",
                 group: "Question",
-                cmd: () => moveTo((store.selected - 1 + total) % total),
+                cmd: () => {
+                  return moveTo((store.selected - 1 + total) % total)
+                },
               },
               {
                 key: "k",
                 desc: "Previous answer",
                 group: "Question",
-                cmd: () => moveTo((store.selected - 1 + total) % total),
+                cmd: () => {
+                  return moveTo((store.selected - 1 + total) % total)
+                },
               },
-              { key: "down", desc: "Next answer", group: "Question", cmd: () => moveTo((store.selected + 1) % total) },
-              { key: "j", desc: "Next answer", group: "Question", cmd: () => moveTo((store.selected + 1) % total) },
-              { key: "return", desc: "Select answer", group: "Question", cmd: () => selectOption() },
-              { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
+              {
+                key: "down",
+                desc: "Next answer",
+                group: "Question",
+                cmd: () => {
+                  return moveTo((store.selected + 1) % total)
+                },
+              },
+              {
+                key: "j",
+                desc: "Next answer",
+                group: "Question",
+                cmd: () => {
+                  return moveTo((store.selected + 1) % total)
+                },
+              },
+              {
+                key: "return",
+                desc: "Select answer",
+                group: "Question",
+                cmd: () => {
+                  return selectOption()
+                },
+              },
+              {
+                key: "space",
+                desc: "Select answer",
+                group: "Question",
+                cmd: () => {
+                  return selectOption()
+                },
+              },
+              {
+                key: "escape",
+                desc: "Reject question",
+                group: "Question",
+                cmd: () => {
+                  return reject()
+                },
+              },
               ...tuiConfig.keybinds.get("app.exit"),
               // Undo/redo through the question box (see the editing group).
               ...tuiConfig.keybinds.gather("session", ["session.undo", "session.redo"]),
@@ -457,8 +627,12 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                           ? theme.backgroundElement
                           : theme.backgroundPanel
                     }
-                    onMouseOver={() => setTabHover(index())}
-                    onMouseOut={() => setTabHover(null)}
+                    onMouseOver={() => {
+                      setTabHover(index())
+                    }}
+                    onMouseOut={() => {
+                      setTabHover(null)
+                    }}
                     onMouseUp={() => {
                       if (renderer.getSelection()?.getSelectedText()) return
                       selectTab(index())
@@ -485,8 +659,12 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
               backgroundColor={
                 confirm() ? agentColor() : tabHover() === "confirm" ? theme.backgroundElement : theme.backgroundPanel
               }
-              onMouseOver={() => setTabHover("confirm")}
-              onMouseOut={() => setTabHover(null)}
+              onMouseOver={() => {
+                setTabHover("confirm")
+              }}
+              onMouseOut={() => {
+                setTabHover(null)
+              }}
               onMouseUp={() => {
                 if (renderer.getSelection()?.getSelectedText()) return
                 selectTab(questions().length)
@@ -512,8 +690,12 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                   const picked = () => store.answers[store.tab]?.includes(opt.label) ?? false
                   return (
                     <box
-                      onMouseOver={() => moveTo(i())}
-                      onMouseDown={() => moveTo(i())}
+                      onMouseOver={() => {
+                        moveTo(i())
+                      }}
+                      onMouseDown={() => {
+                        moveTo(i())
+                      }}
                       onMouseUp={() => {
                         if (renderer.getSelection()?.getSelectedText()) return
                         selectOption()
@@ -544,11 +726,15 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
               </For>
               <Show when={custom()}>
                 <box
-                  onMouseOver={() => moveTo(options().length)}
-                  onMouseDown={() => moveTo(options().length)}
+                  onMouseOver={() => {
+                    moveTo(options().length)
+                  }}
+                  onMouseDown={() => {
+                    moveTo(options().length)
+                  }}
                   onMouseUp={() => {
                     if (renderer.getSelection()?.getSelectedText()) return
-                    selectOption()
+                    selectOption(true)
                   }}
                 >
                   <box flexDirection="row">
@@ -573,6 +759,16 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                         ref={(val: TextareaRenderable) => {
                           textarea = val
                           val.traits = { status: "ANSWER" }
+                          // Live write-back: the custom row's check tracks the
+                          // textarea content (type -> checked, clear -> uncheck-
+                          // ed) - content-changed fires per character edit.
+                          const onEdit = (_ev: unknown) => {
+                            const inputs = [...store.custom]
+                            inputs[store.tab] = val.plainText
+                            setStore("custom", inputs)
+                            setStore("customActive", store.tab, true)
+                          }
+                          val.editBuffer.on("content-changed", onEdit)
                           queueMicrotask(() => {
                             val.focus()
                             val.gotoLineEnd()
