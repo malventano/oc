@@ -289,6 +289,41 @@ const restartEnv = LayerNode.compile(
 )
 const itRestart = testEffect(restartEnv)
 
+// Question tool turn: the tool result ends the turn like the restart (0269).
+// The processor closes it with finish=stop at the final cleanup write so the
+// TUI footer's final() gate renders the completed stats (clock stops) instead
+// of holding the tool-calls continuation state.
+const questionLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolInputStart({ id: "call-q1", name: "question" }),
+        LLMEvent.toolInputEnd({ id: "call-q1", name: "question" }),
+        LLMEvent.toolCall({
+          id: "call-q1",
+          name: "question",
+          input: { questions: [{ question: "Confirm?", options: [{ label: "Yes" }] }] },
+          providerExecuted: true,
+        }),
+        LLMEvent.toolResult({
+          id: "call-q1",
+          name: "question",
+          result: { type: "text", value: "Question pending" },
+          providerExecuted: true,
+        }),
+        LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+        LLMEvent.finish({ reason: "tool-calls" }),
+      ),
+  }),
+)
+const questionEnv = LayerNode.compile(
+  LayerNode.group([root, LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })]),
+  [...replacements, [LLM.node, questionLLM]],
+)
+const itQuestion = testEffect(questionEnv)
+
 // Loop-guard cut: repetitive text deltas trip the text-channel detector
 // mid-stream. The cut message must STAY finish-less - the loop-guard handler
 // marks it with a steer and the loop re-processes the user message; a
@@ -1356,6 +1391,49 @@ itRestart.live("session.processor effect tests the restart tool closes the turn 
         // The turn ends at the restart tool result, and the step finalizes
         // with the CLOSED finish (not tool-calls) so the TUI footer renders
         // the turn's stats right after the restart call.
+        expect(value).toBe("stop")
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role === "assistant") {
+          expect(stored.info.finish).toBe("stop")
+        }
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+itQuestion.live("session.processor effect tests the question tool closes the turn with finish=stop", () =>
+  provideTmpdirServer(
+    ({ dir }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "question")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "question" }],
+          tools: {},
+        })
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        // The turn ends at the question tool result (the ask closes the turn
+        // like the restart), and the step finalizes with the CLOSED finish
+        // (not tool-calls) so the TUI footer renders the completed stats
+        // (clock stops instead of vanishing when the question panel opens).
         expect(value).toBe("stop")
         expect(stored.info.role).toBe("assistant")
         if (stored.info.role === "assistant") {
