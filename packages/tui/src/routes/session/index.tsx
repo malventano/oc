@@ -2561,9 +2561,27 @@ function useToolTrace(content: () => string, tag: string) {
 // completed-snap path drops the blank, so the final diff was fine - the
 // regression only showed while streaming). Strip one row when the current
 // content ends in a newline so the box matches the visible buffered rows.
-function useFixedStreamHeight(content: () => string, trace: ((el: any) => void) | undefined) {
+function useFixedStreamHeight(
+  content: () => string,
+  trace: ((el: any) => void) | undefined,
+  opts?: { released?: () => boolean },
+) {
   let el: any = undefined
   const [rows, setRows] = createSignal(0)
+  const released = opts?.released ?? (() => false)
+  // opts.released(): re-measure when the "released" (streaming->completed /
+  // grow-only release) flag flips true. ROOT CAUSE of the "gutters but no
+  // text" family (heredoc body, write tool, completed patch diff): while
+  // streaming, Code.set content DEFERS the buffer update to the async
+  // highlight (Code.ts:103 - `_streaming && !_drawUnstyledText &&
+  // _filetype` -> requestRender, no setText). The height effect measures
+  // the buffer synchronously after content() changes and reads the OLD
+  // (1-line) buffer -> rows=1. When streaming then flips to completed, set
+  // content takes the synchronous textBuffer.setText branch, but content()
+  // is already stable so NOTHING re-triggers the measure -> the element
+  // keeps the stale height and paints 1 of N lines while the gutter
+  // (counting the content string) shows all N. Subscribing to the released
+  // transition re-measures once the buffer has caught up.
   // The streaming element's REAL width, read LIVE on each effect run (not a
   // createMemo: `el` is a plain closure var, so a memo would evaluate once and
   // pin the early 140 fallback forever - the 0286 phantom-gutter root cause).
@@ -2598,7 +2616,10 @@ function useFixedStreamHeight(content: () => string, trace: ((el: any) => void) 
     // reason). The line count includes any trailing newline's blank row, so
     // subtract one when the current content ends with a newline (0284b - the
     // gutter painted the blank row as a phantom line number).
+    // `released` (streaming/completed flip) also re-runs this: the buffer
+    // catches up synchronously at completion, fixing the stale-height member.
     void content()
+    void released()
     const viewed = el?.textBufferView
     if (!viewed?.measureForDimensions) {
       setRows(0)
@@ -3881,7 +3902,11 @@ function StreamSegment(props: {
   // Guarded height driver only - the 100ms trace ticker was dropped (a slot's
   // element could be torn down mid-tick; the per-slot probes multiplied the
   // destroyed-buffer reads that crashed the TUI).
-  const streamHeight = useFixedStreamHeight(props.text, undefined)
+  const streamHeight = useFixedStreamHeight(props.text, undefined, {
+    // Re-measure at the streaming -> completed transition: the buffer catches
+    // up synchronously then, fixing the "gutters but no text" stale height.
+    released: () => !props.streaming(),
+  })
   const ref = (el: any) => {
     streamHeight.ref(el)
   }
@@ -4486,8 +4511,8 @@ function LiveEditDiff(props: {
   // 0276b: fixed-height driver per column - the code element's own height
   // must be the buffer's wrapped count at its real width, not the native
   // width-1 measure (persistent +1 phantom on the diff columns at cw~66).
-  const heightL = useFixedStreamHeight(left, traceL)
-  const heightR = useFixedStreamHeight(right, traceR)
+  const heightL = useFixedStreamHeight(left, traceL, { released: () => !props.streaming })
+  const heightR = useFixedStreamHeight(right, traceR, { released: () => !props.streaming })
   const refL = (el: any) => {
     heightL.ref(el)
     traceL(el)
@@ -4688,8 +4713,13 @@ function Edit(props: ToolProps) {
                     // drawUnstyledText={false} (0196): the completed diff
                     // must defer to its async highlight instead of
                     // raw-painting white for a frame at completion (the
-                    // streaming->completed white flash).
-                    drawUnstyledText={false}
+                    // streaming->completed white flash). EXCEPT for
+                    // filetypes with no grammar ("none" - extensionless
+                    // shell scripts like vllm-start): the highlight never
+                    // fires, so deferring renders a PERMANENT BLANK
+                    // (conceal + no grammar => waiting forever). Render
+                    // those unstyled (raw, visible).
+                    drawUnstyledText={filetype(file.filePath) === "none"}
                     fg={theme.text}
                     addedBg={theme.diffAddedBg}
                     removedBg={theme.diffRemovedBg}
@@ -4729,7 +4759,10 @@ function Edit(props: ToolProps) {
                 width="100%"
                 wrapMode={ctx.diffWrapMode()}
                 // drawUnstyledText={false} (0196): see the per-file diff.
-                drawUnstyledText={false}
+                // "none" filetype (extensionless script) => no grammar =>
+                // the deferred highlight never fires => permanent blank;
+                // render unstyled.
+                drawUnstyledText={filetype(editPaths()[0] ?? "") === "none"}
                 fg={theme.text}
                 addedBg={theme.diffAddedBg}
                 removedBg={theme.diffRemovedBg}
