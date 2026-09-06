@@ -141,5 +141,5 @@ export function coalesceFiletype(language: string | undefined) {
 
 export function filetype(input?: string) {
   if (!input) return "none"
-  return coalesceFiletype(LANGUAGE_EXTENSIONS[path.extname(input)])
+  return coalesceFiletype(LANGUAGE_EXTENSIONS[path.extname(input)]) ?? "none"
 }
