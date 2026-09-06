@@ -283,4 +283,69 @@ describe("stall-guard detect", () => {
     expect(StallGuard.detect("stop", "Resume from here:", false, true)).toBeNull()
     expect(StallGuard.detect("stop", "Let me check the flag:", false, true)).toBeNull()
   })
+
+  test("let-me signature: ANY trailing-verb final intent sentence fires (0278)", () => {
+    // The missed 2026-09-06 stall: a long analysis closed with "Let me squash
+    // this output and build the decisive sim", finish=stop, no tool call.
+    // "squash"/"build" were not in the old verb list - the new detector keys
+    // on the final-sentence STRUCTURE, not the verb.
+    const hit = StallGuard.detect(
+      "stop",
+      "Given the trace is large, let me instead test directly.\n\nLet me squash this output and build the decisive sim.",
+      false,
+    )
+    expect(hit).not.toBeNull()
+    expect(hit!.signature).toBe("let-me")
+    expect(hit!.detail).toBe("stated an intent to perform an action but no tool call was delivered")
+    expect(hit!.trimAt).toBeNull()
+  })
+
+  test("let-me signature: a solely-intent reply still fires (old start-anchored case)", () => {
+    // The pre-0278 evidence shape: a reply that is ONLY an intent statement
+    // with no tool call (2026-08-18 message "Let me read the exact region of
+    // protocol.py and check the ReasoningEffort type").
+    expect(
+      StallGuard.detect(
+        "stop",
+        "Let me read the exact region of protocol.py and check the ReasoningEffort type",
+        false,
+      )!.signature,
+    ).toBe("let-me")
+  })
+
+  test("let-me signature: does not fire on a trailing verb list not in any list (0278 any-verb)", () => {
+    // ANY verb fires now - a final "let me <unlisted verb>" is still an intent.
+    expect(StallGuard.detect("stop", "Let me restructure the class and reflow the callers.", false)!.signature).toBe("let-me")
+    // ... on the trailing position specifically (mid-text announcement that
+    // delivered content is not a stall - the completed sentence follows).
+    expect(StallGuard.detect("stop", "Let me note it is version 3 old. The parser is now fixed.", false)).toBeNull()
+  })
+
+  test("let-me signature: does not fire when a tool call was delivered (fulfilled intent)", () => {
+    expect(StallGuard.detect("stop", "Let me check the file and report back.", true)).toBeNull()
+  })
+
+  test("let-me signature: does not fire on complete answers, quotes, or user-directed asks", () => {
+    // Completed sentences (any content after the intent word, or no intent at all).
+    expect(StallGuard.detect("stop", "Everything is done. The build passed.", false)).toBeNull()
+    expect(StallGuard.detect("stop", "No code change warranted.", false)).toBeNull()
+    // Quoted indirect mention - the final sentence is a report, not an intent.
+    expect(StallGuard.detect("stop", 'He said "let me look into it" and walked away.', false)).toBeNull()
+    // Conditional offer mid-sentence - "let me" is not the final-sentence start.
+    expect(StallGuard.detect("stop", "If anything looks off, let me check it.", false)).toBeNull()
+    // "let me know" asks the USER to respond (inform me) - never a model intent.
+    expect(StallGuard.detect("stop", "Let me know if you have questions!", false)).toBeNull()
+    // Inline delivery delimiter: "Let me check the value: it's 42." delivers
+    // the result inside the sentence - not an unfulfilled intent.
+    expect(StallGuard.detect("stop", "Let me check the value: it's 42.", false)).toBeNull()
+  })
+
+  test("let-me signature: leading discourse connector before the intent still fires", () => {
+    expect(StallGuard.detect("stop", "All set. So let me verify the numbers now.", false)!.signature).toBe("let-me")
+    expect(StallGuard.detect("stop", "Everything resolved. Now let me build the thing.", false)!.signature).toBe("let-me")
+    // Connector plus a user-directed ask stays excluded.
+    expect(StallGuard.detect("stop", "So let me know what you think.", false)).toBeNull()
+  })
 })
+
+
