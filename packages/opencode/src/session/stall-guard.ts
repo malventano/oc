@@ -176,6 +176,46 @@ const STRAY_CLOSER_END = /<\/[^\s<>]{0,40}>\s*$/
 // Fullwidth vertical bar: the model's slash homoglyph in degenerate output.
 const FULLWIDTH_BAR = "\uff5c"
 
+// Marker-echo line scan (0262b): return the trimAt position (the start of the
+// whitespace run before the FIRST bare `<system-reminder>` tag that sits at its
+// OWN line start and is not inside a ``` fence), or null when there is none.
+// This is the corrected discriminator: a genuine cadence echo emits the marker
+// as a standalone line (bare tag at line start), while every reference form -
+// backticked inline, regex code-span, sentence prose - has the tag preceded by
+// non-whitespace characters on its line. A tag inside a markdown ``` code block
+// is quoted material, never an echo.
+function markerEchoTrimAt(text: string): number | null {
+  let inFence = false
+  let lineStart = 0
+  for (;;) {
+    const nl = text.indexOf("\n", lineStart)
+    const lineEnd = nl === -1 ? text.length : nl
+    const line = text.slice(lineStart, lineEnd)
+    if (inFence) {
+      // Closing fence: ``` or ~~~ at line start (allow trailing whitespace).
+      if (/^\s*(?:```|~~~)/.test(line)) inFence = false
+    } else {
+      const fence = /^\s*(?:```|~~~)/.exec(line)
+      if (fence) {
+        // Opening fence. A fence that opens and closes on the same line
+        // (```foo```) never toggles state; a lone opener enters the block.
+        const rest = line.slice(fence[0].length)
+        if (/```/.test(rest)) inFence = false
+        else inFence = true
+      } else if (/^\s*<system-reminder>/i.test(line)) {
+        // Bare tag at its own line start: walk back over the contiguous
+        // whitespace run (old \s* semantics: trim from the run start, keeping
+        // any prose before it).
+        let at = lineStart
+        while (at > 0 && /\s/.test(text[at - 1])) at--
+        return at
+      }
+    }
+    if (nl === -1) return null
+    lineStart = nl + 1
+  }
+}
+
 // let-me intent-without-action: the response is a bare intent statement that
 // starts with "let me <tool-action-verb>" but delivered no tool call. Only
 // verbs that imply a TOOL action (read/check/verify/...) count - in-text
@@ -232,25 +272,30 @@ export function detect(
   // this and misdiagnose the echo as a stranded fragment - marker-echo is the
   // more specific diagnosis and its recovery is the targeted one (ignore the
   // reminder's wording, don't restate it).
-  // Quote-exclusion (2026-09-06): the tag is legitimate in backticked QUOTED
-  // TEXT too - explaining "the guard appends a `\u003csystem-reminder\u003e` to
-  // tool output" is not imitating a cue, it is referencing it. A negative
-  // lookbehind rejects a backtick IMMEDIATELY before the tag, so a code-span
-  // reference (`\u003csystem-reminder\u003e`) never fires while a bare emitted
-  // marker (preceded by whitespace/start) still does. Live misfire: a complete
-  // answer about the bash-file-op-guard was flag-trimmed at request time (3
-  // marker-echo fires across 24h were all backtick-quoted references, not
-  // echoes).
-  const markerEcho = /(?<!`)\s*<system-reminder>/i.exec(text)
-  if (markerEcho) {
+  // Reference-exclusion (2026-09-06, revised 0262b): the tag is legitimate in
+  // QUOTED TEXT too - explaining "the guard appends a `<system-reminder>` to
+  // tool output" (or an inline regex `` /\s*<system-reminder>/ ``) is not
+  // imitating a cue, it is referencing it. The discriminator is LINE SHAPE:
+  // a genuine echo emits the marker as a STANDALONE line (tag at its own line
+  // start, optionally indented) - the cadence output is bare
+  // `<system-reminder>V</system-reminder>` lines separated by blank lines -
+  // while a reference is always INLINE inside a sentence or code span, where
+  // the tag is preceded by prose/backtick/regex characters on the same line.
+  // (The first pass used a backtick lookbehind; the 4th live misfire - a
+  // restart-continuation answer citing `` `/\s*<system-reminder>/i.test(text)` ``
+  // - slipped through because the char before the tag was the regex `*`, not
+  // a backtick. Line-start anchoring fixes all of them.) Fence-aware: a tag
+  // inside a ``` ``` block is a quote, not an echo.
+  const markerEcho = markerEchoTrimAt(text)
+  if (markerEcho !== null) {
     return {
       signature: "marker-echo",
       detail: "response reproduces the session's own system-reminder markers as output",
       redirect: STALL_REDIRECT_MARKER_ECHO,
-      // The marker-echo region is the whitespace run + the first reproduced
-      // tag (the exec index returns the leading \s* start); the prose before
-      // it (if any) is worth keeping for the recovery.
-      trimAt: markerEcho.index,
+      // The marker-echo region is the whitespace run + the reproduced tag (the
+      // back-walk returns the run start, matching the old \s* semantics); the
+      // prose before it (if any) is worth keeping for the recovery.
+      trimAt: markerEcho,
     }
   }
   // End-anchored checks only: real remnants end the text, and mid-text
