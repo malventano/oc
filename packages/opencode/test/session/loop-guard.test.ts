@@ -90,6 +90,36 @@ describe("LoopGuard near-duplicate segments", () => {
     }
   })
 
+  test("does not fire when near-identical segments are scattered across the window (quote-replay, 2026-09-06)", () => {
+    // Question-tool FP (msg_07516e9c/07525e183/07526efa4): legit reasoning that
+    // re-quotes a pasted transcript matched 4 near-identical segments (the
+    // user's quoted text) at DEEP slots 10-14 + one recent slot, so the old
+    // 16-window cluster hit the floor. The RECENT_NEAR_DUP_WINDOW gate counts
+    // only matches within the newest 8 slots - a genuine loop's frames are
+    // back-to-back (offsets 1-8), the quote-replay's are spread far apart, so
+    // the scattered cluster stays under the bar. Structure: 3 near-identical
+    // segments buried under 8+ distinct paragraphs, then the final hit lands
+    // right after them (only the offset-1 match is recent).
+    const guard = LoopGuard.make()
+    const buried = Array.from({ length: 3 }, () => NEAR_DUP)
+    // 9 distinct paragraphs separate the buried trio from the final same-text
+    // segment: 3 (buried) + 9 (gap) + 1 (final) = 13 segments, so the buried
+    // trio sits at offsets 10-12 when the final one lands - outside the recent
+    // 8-slot gate. Without the gate (any-window cluster) the trio + slot-1
+    // final = 4 near-identical = the old fire.
+    const expr = [
+      ...buried,
+      ...Array.from({ length: 9 }, (_, i) => distinctParagraph(1 + i)),
+      NEAR_DUP,
+    ]
+    let hit: LoopGuard.LoopHit | null = null
+    for (const segment of expr) {
+      hit = guard.pushText(segment + SEP)
+      if (hit) break
+    }
+    expect(hit).toBeNull()
+  })
+
   test("a post-compaction re-loop still fires on a fresh detector (0214 keeps the loop guard active on compaction-continue)", () => {
     // 0214 exempts the STALL guard for compaction-continue steps only - its
     // endpoint signatures fire on every normal resume. The loop guard's
@@ -501,6 +531,63 @@ describe("LoopGuard micro-frame recycle (2026-09-01, word-agnostic loop TYPE)", 
     let hit: LoopGuard.LoopHit | null = null
     for (let i = 0; i < healthy.length; i += 30) {
       hit = guard.pushText(healthy.slice(i, i + 30))
+      if (hit) break
+    }
+    expect(hit).toBeNull()
+  })
+})
+
+describe("LoopGuard warning-echo (2026-09-06)", () => {
+  // The 09-06 fail class: the model reproduced the harness's OWN
+  // `<system-reminder>warning: ...</system-reminder>` catch-up directives as
+  // output. Exact text shape from msg_076500525001lfwZtWl9uu (the compaction
+  // gate investigation loop). Fires at >=3 standalone warning tag lines.
+  test("fires on standalone warning-echo tag lines reproduced as output", () => {
+    const guard = LoopGuard.make()
+    // Slice the WHOLE stream (lead narration + blank-separated echo tags) at
+    // arbitrary boundaries - real SSE deltas split tags mid-token. The
+    // detector rescans its accumulated window each push, so the tags complete.
+    const full =
+      "A stale \"compaction in progress\" state is a concrete lead. Let me find the gate.\n\n" +
+      "<system-reminder>warning: tool call now.</system-reminder>\n\n" +
+      "<system-reminder>warning: run them.</system-reminder>\n\n" +
+      "<system-reminder>warning: do the tool call now.</system-reminder>\n\n"
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < full.length && !hit; i += 17) {
+      hit = guard.pushText(full.slice(i, i + 17))
+    }
+    expect(hit?.hit).toContain("warning-echo")
+  })
+
+  test("the text channel fires but reasoning does not (marker-echo is model output, not injected time context)", () => {
+    // The time-context harness injects `<system-reminder>2026-08-13T...</system-reminder>`
+    // timestamps into reasoning - those never carry `warning:` so they must not
+    // trip the echo detector on either channel. Replaying the 08-13 message
+    // shape (ffdb3536b001xh4BICFZCX) must stay null.
+    const harness =
+      "<system-reminder>2026-08-13T20:33:31.900-04:00</system-reminder>\n\n" +
+      "<system-reminder>2026-08-13T20:36:55.140-04:00</system-reminder>\n\n" +
+      "<system-reminder>2026-08-14T00:29:13.164+00:00</system-reminder>\n\n" +
+      "<system-reminder>2026-08-14T00:33:31.900+00:00</system-reminder>\n\n" +
+      "<system-reminder>2026-08-14T00:34:49.776+00:00</system-reminder>\n\n" +
+      "<system-reminder>2026-08-14T00:40:12.005+00:00</system-reminder>"
+    const reasoning = LoopGuard.make()
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < harness.length; i += 40) {
+      hit = reasoning.pushReasoning(harness.slice(i, i + 40))
+    }
+    expect(hit).toBeNull()
+  })
+
+  test("a quoted inline reference (line has prose before the tag) is not an echo", () => {
+    const guard = LoopGuard.make()
+    const ref =
+      "explain that the guard appends a `<system-reminder>warning: check for leaks` to tool output in the docs\n\n" +
+      "then write the reference as: `` /\\s*<system-reminder>warning: /i `` in the skill\n\n" +
+      "confirm the tag appears only when quoted inline, not standalone"
+    let hit: LoopGuard.LoopHit | null = null
+    for (let i = 0; i < ref.length; i += 20) {
+      hit = guard.pushText(ref.slice(i, i + 20))
       if (hit) break
     }
     expect(hit).toBeNull()

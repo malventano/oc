@@ -216,14 +216,50 @@ function markerEchoTrimAt(text: string): number | null {
   }
 }
 
-// let-me intent-without-action: the response is a bare intent statement that
-// starts with "let me <tool-action-verb>" but delivered no tool call. Only
-// verbs that imply a TOOL action (read/check/verify/...) count - in-text
-// verbs (explain/help/clarify) do not, so a complete "Let me explain ..."
-// answer is never flagged. Gated on hadToolCall=false at the call site.
-const LET_ME_VERBS =
-  "read|check|look|verify|query|fetch|inspect|open|run|test|list|get|find|search|see|grep|examine|review|confirm|cat|ls|curl|stat|dig"
-const LET_ME_START = new RegExp(`^\\s*let me\\s+(${LET_ME_VERBS})\\b`, "i")
+// let-me intent-without-action (0278): the response's FINAL sentence is a
+// first-person intent clause ("let me <anything> ...") but the turn stopped
+// with no tool call after it. ANY verb applies - the intent signal is the
+// STRUCTURE (a sentence starting "let me" that ends the response with nothing
+// delivered), not the verb: whack-a-mole verb lists keep missing the next
+// phrasing (the missed 2026-09-06 stall closed a long analysis with "Let me
+// squash this output and build the decisive sim" - "squash"/"build" were not
+// in the old list). A solely "Let me ..." reply (the old start-anchored case)
+// is its own final sentence, so one detector covers both. Gated on
+// hadToolCall=false at the call site (fulfilled intents are excluded).
+//
+// Guarded against the non-intent shapes:
+//   - the clause must be the response's LAST sentence (find the last terminal
+//     `.`/`!`/`?` that ends a sentence, then require it to START the tail) -
+//     a mid-text announcement that later delivered content is not a stall;
+//   - a leading discourse connector (So/And/Now/OK/...) is allowed before it;
+//   - "let me know ..." is USER-acted request ("inform me"), not a model
+//     intent - excluded;
+//   - an inline delimiter (":" or ";") delivers the result inside the
+//     sentence ("Let me check the value: it's X") - not an unfulfilled intent;
+//   - quoted/indirect mentions never start the final sentence.
+// The intent statement itself is valid prose (trimAt null - plain continue).
+// A leading connector is allowed on the clause.
+function trailingLetMeIntent(text: string): boolean {
+  const t = text.replace(/[\s\u00a0]+$/u, "")
+  if (t.length === 0) return false
+  // The final sentence starts after the last terminal punctuation that is
+  // followed by whitespace (or at the text start when there is none).
+  let at = 0
+  for (let i = 0; i < t.length - 1; i++) {
+    if (/[.!?]/.test(t[i]) && /\s/.test(t[i + 1])) at = i + 1
+  }
+  const sent = t.slice(at).trim()
+  // Strip a leading discourse connector, then require the sentence to begin
+  // with "let me <verb>".
+  const strip = sent.replace(/^(?:(?:so|and|now|then|ok|okay|right|well|alright)[,.\s]+)+/i, "")
+  if (!/^let me\s+[a-z]/i.test(strip)) return false
+  // "let me know if / what / how..." is the model asking the USER ("inform
+  // me") - the user acts, so it is never a model-tool intent.
+  if (/^let me\s+know\b/i.test(strip)) return false
+  // An inline delivery delimiter ends the intent before the response does.
+  if (/[:;]/.test(sent)) return false
+  return true
+}
 
 /**
  * Pure detection: given the step's finish reason and accumulated text, classify.
@@ -340,9 +376,12 @@ export function detect(
       trimAt: colon.index,
     }
   }
-  // Intent-without-action: announced a tool action but delivered no tool call
+  // Intent-without-action: announced an intent but delivered no tool call
   // (the gate lives here: hadToolCall true means the intent was fulfilled).
-  if (!hadToolCall && LET_ME_START.test(text)) {
+  // 0278: ANY verb applies - the detector keys on the response's FINAL
+  // sentence being a "let me ..." intent clause, not on a verb list (the
+  // missed 2026-09-06 stall used "squash"/"build", outside the old list).
+  if (!hadToolCall && trailingLetMeIntent(text)) {
     return {
       signature: "let-me",
       detail: "stated an intent to perform an action but no tool call was delivered",

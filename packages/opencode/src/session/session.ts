@@ -939,21 +939,28 @@ const layer: Layer.Layer<
       yield* events.publish(MessageV2.Event.PartDelta, input)
     })
 
-    /** Finds the first message matching the predicate, searching newest-first. */
+    /**
+     * Finds the first message matching the predicate, searching newest-first.
+     *
+     * Bounded to the compaction+tail window (0282): the previous implementation
+     * paged EVERY message of the session (50/page) when the predicate never
+     * matched within the recent tail - the callers (currentModel at
+     * prompt.ts:724, the prefill gate at prompt.ts:1212) only ever match the
+     * newest few messages, so an unmatched predicate slid straight past the
+     * tail and walked the whole archive on every prompt. MessageV2.stream()
+     * caps the walk at two completed compaction markers + tail reachability
+     * (0188) - the same scope the other walkers use. Newest-first stream data
+     * preserves the search semantics: the first predicate hit is the newest.
+     */
     const findMessage: Interface["findMessage"] = Effect.fn("Session.findMessage")(function* (sessionID, predicate) {
-      const size = 50
-      let before: string | undefined
-      while (true) {
-        const page = yield* MessageV2.page({ sessionID, limit: size, before }).pipe(
-          Effect.provideService(Database.Service, database),
-        )
-        if (page.items.length === 0) break
-        for (let i = page.items.length - 1; i >= 0; i--) {
-          const item = page.items[i]
-          if (item && predicate(item)) return Option.some(item)
-        }
-        if (!page.more || !page.cursor) break
-        before = page.cursor
+      // Session existence first: the pre-0282 implementation paged and threw
+      // NotFoundError for a missing session (MessageV2.stream swallows it into
+      // `[]`, so without this an unknown session would return None instead of
+      // failing - a contract the callers and tests depend on).
+      yield* get(sessionID)
+      const msgs = yield* MessageV2.stream(sessionID).pipe(Effect.provideService(Database.Service, database))
+      for (const item of msgs) {
+        if (item && predicate(item)) return Option.some(item)
       }
       return Option.none<SessionV1.WithParts>()
     })

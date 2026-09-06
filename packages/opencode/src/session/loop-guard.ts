@@ -43,10 +43,29 @@ const VERBATIM_MIN_REPEATED_CHARS = 180
 const VERBATIM_MAX_UNIT = 60
 const SEGMENT_CHAR_CAP = 700
 const SEGMENT_MIN_NORM_CHARS = 60
+// Quote-replay false-positive gate (2026-09-06): a legit REASONING turn that
+// re-quotes a pasted question-tool transcript (or any user message block) while
+// analyzing it matches >= 4 near-identical segments spread across slots 10-14 of
+// the 16-window (msg_07516e9c/07525e183/07526efa4, "4 near-identical segments"
+// fires). A genuine loop matches RECENT slots - its frames are back-to-back.
+// Win8-8 shrank the BUFFER but muted genuine loops whose matches sit deeper but
+// densely (the deliberate trigger-test msg_0134d982 and the "11 near-identical"
+// heavy loop both went silent) - shrinking the window is a false-negative. The
+// recency gate instead keeps the 16-slot window but counts CLUSTER only over
+// matches within the last RECENT_NEAR_DUP_WINDOW slots (offsets 1..N): a genuine
+// loop's >= 4 matches all live near the newest segment (offset <= 8), while the
+// FP's 4 matches sit at offsets [12,11,1] - only the +1 slot is recent, so the
+// recent-count stays < 4 and it stays silent. Mirrors the span gate short-frame /
+// micro-frame already apply - this closes the same contiguity gap on near-dup.
 const SEGMENT_WINDOW = 16
 const SEGMENT_SIMILARITY = 0.8
 const SEGMENT_MIN_COUNT = 8
 const SEGMENT_MIN_CLUSTER = 4
+// Near-dup cluster counts only matches within the newest RECENT_NEAR_DUP_WINDOW
+// slots (offsets 1..N in the 16-buffer). Calibration: genuine loops cluster at
+// offsets 1-8 (storage-bench [5,4,2], no-colon [11,7,6,1] -> recent subset
+// {7,6,1} is still >= 3), quote-replay FPs cluster at offsets 10-14 + 1.
+const RECENT_NEAR_DUP_WINDOW = 8
 const LEX_NOVELTY_WINDOW = 8
 const LEX_STALL_NOVELTY_FLOOR = 0.2
 const LEX_STALL_MIN_RUN = 8
@@ -102,7 +121,29 @@ const MICRO_WINDOW = 14 // rolling frame window
 const MICRO_MIN_QUAL = 10 // >= 10 of 14 frames must be loop-type (density)
 const MICRO_MAX_DISTINCT = 8 // how many distinct loop-type shapes may recycle
 const MICRO_MIN_REPEAT = 0.5 // >= half the frames must repeat at least once
-const MICRO_MAX_SPAN = 16 // contiguous in the stream (window spans <= 16 segs)
+ const MICRO_MAX_SPAN = 16 // contiguous in the stream (window spans <= 16 segs)
+
+// Warning-echo marker recycle (2026-09-06 evidence, "oc slim work 1"
+// ses_004166c94ffexkmAPQ6kFTJ766, 28 messages 06:24-06:49Z): the model
+// reproduced the harness's OWN `<system-reminder>warning: ...</system-reminder>`
+// catch-up directives as OUTPUT - up to 244 standalone tag lines in one text
+// part (msg_0764d7544, user-aborted), ending tool-calls so the POST-stream
+// stall-guard marker-echo (needs finish=stop) never fired. The loops are
+// short frames < 60 norm chars (miss near-dup), no intent mouths (miss
+// short-frame/thrash), 29+ chars (miss micro-frame), non-contiguous variants
+// ("tool call now."/"NOW."/"go."/"do it.") (miss verbatim). The marker-echo
+// principle - "a legitimate reply NEVER emits a system-reminder tag" - is
+// finish-agnostic; count STANDALONE warning-prefixed tag lines (line-start
+// anchored, fence-aware, reference-exclusion) across a rolling raw window.
+// Full-DB sweep: 44 text hits at >=3 count, ALL in the target session; 0
+// reasoning; the `warning:` anchor excludes the time-context harness's own
+// `<system-reminder>2026-08-13T...</system-reminder>` timestamps (which would
+// FP an unanchored standalone-tag scan - ffdb3536b001xh4BICFZCX). The 09-03
+// cadence echoes (`<system-reminder>V</system-reminder>`) carry no `warning:`
+// and stay covered by the stall-guard marker-echo (finish=stop only).
+const WARNING_ECHO_MIN = 3 // fire at >=3 standalone warning tag lines
+const WARNING_ECHO_WINDOW = 1000 // scanning raw window (same as thrash)
+const WARNING_ECHO_LINE = /^\s*<system-reminder>\s*warning\b/i
 // Non-global copy of the anchor pattern: `.test()` on a `/g` regex is stateless
 // only if no /g flag is present (the concurrent matchAll call sites re-clone,
 // but MICRO_QUALIFY runs on every short segment and must not share lastIndex).
@@ -319,6 +360,12 @@ class TextLoopDetector {
   #textRaw = ""
   #textBase = 0
   #thrashRunStart: number | null = null
+  // Warning-echo marker recycle state: the raw text-channel window is shared
+  // with thrash (#textRaw/#textBase), so only the run-start anchor is private
+  // (kept across the window slice so a run longer than the window still trims
+  // from its true origin - mirrors #thrashRunStart).
+  #warningEchoFlag = false
+  #warningEchoRunStart: number | null = null
 
   // Thrash (intent-frame recycled-goal scan) is a TEXT-channel signature:
   // healthy reasoning is intent-framed narration about one artifact, so
@@ -345,6 +392,10 @@ class TextLoopDetector {
         this.#textRaw = this.#textRaw.slice(dropped)
         this.#textBase += dropped
       }
+      // Windows the SAME raw buffer thrash scans; runs on every text-channel
+      // delta (cheap: a line scan of at most THRASH_WINDOW chars).
+      const warningEcho = this.#scanWarningEcho()
+      if (warningEcho) return warningEcho
     }
     this.#tail += delta
     if (this.#tail.length > VERBATIM_TAIL_WINDOW) {
@@ -441,6 +492,64 @@ class TextLoopDetector {
     this.#textRaw = ""
     this.#textBase = 0
     this.#thrashRunStart = null
+    this.#warningEchoFlag = false
+    this.#warningEchoRunStart = null
+  }
+
+  // Warning-echo marker recycle: the model emitted standalone
+  // `<system-reminder>warning: ...</system-reminder>` lines as its OWN output
+  // (see the WARNING_ECHO_LINE comment). This scan runs on the same shared
+  // raw window as thrash (#textRaw/#textBase - text channel only, so no
+  // separate accumulator). Fence-aware + line-start anchored: a tag referenced
+  // inline in prose/backticks is not an echo. Returns the loop-start trimAt
+  // anchored to the FIRST echo of the run (the persistent run-start anchor).
+  #scanWarningEcho(): LoopHit | null {
+    const raw = this.#textRaw
+    if (raw.length < 100) return null
+    let inFence = false
+    let count = 0
+    let first: number | null = null
+    let at = 0
+    for (;;) {
+      const nl = raw.indexOf("\n", at)
+      const lineEnd = nl === -1 ? raw.length : nl
+      const line = raw.slice(at, lineEnd)
+      if (inFence) {
+        if (/^\s*(?:```|~~~)/.test(line)) inFence = false
+      } else {
+        const fence = /^\s*(?:```|~~~)/.exec(line)
+        if (fence) {
+          // Self-closing ("```foo```") never toggles state.
+          inFence = !/```/.test(line.slice(fence[0].length))
+        } else if (WARNING_ECHO_LINE.test(line)) {
+          // Walk back over the contiguous whitespace run (trim from its start,
+          // keeping any prose before it) - mirrors stall-guard markerEchoTrimAt.
+          let ws = at
+          while (ws > 0 && /\s/.test(raw[ws - 1])) ws--
+          if (first === null) first = ws
+          count++
+        }
+      }
+      if (nl === -1) break
+      at = nl + 1
+    }
+    if (first === null) {
+      // Run ended - no echo in the current window. Clear the run anchor so a
+      // later isolated echo doesn't inherit a stale loop start.
+      this.#warningEchoFlag = false
+      this.#warningEchoRunStart = null
+      return null
+    }
+    const absFirst = this.#textBase + first
+    if (count >= WARNING_ECHO_MIN) {
+      this.#warningEchoFlag = true
+      this.#warningEchoRunStart = this.#warningEchoRunStart ?? absFirst
+      return {
+        hit: `${count} warning-echo reminder lines reproduced as output`,
+        trimAt: this.#warningEchoRunStart,
+      }
+    }
+    return null
   }
 
   #scanThrash(): LoopHit | null {
@@ -600,9 +709,18 @@ class TextLoopDetector {
     }
 
     const fingerprint = trigramShingles(normalized)
+    // Cluster counts only matches within the newest RECENT_NEAR_DUP_WINDOW slots
+    // (offset 1 = immediate predecessor). The window's TAIL entries (offset >
+    // RECENT_NEAR_DUP_WINDOW) still shift out normally and seed the trim anchor,
+    // but a match that far back no longer counts toward the loop cluster - a
+    // quote-replay turn matches a pasted transcript at slots 10-14 (spread over
+    // the 16-window with only the +1 slot recent), a genuine loop matches its own
+    // back-to-back frames at offsets 1-8. See RECENT_NEAR_DUP_WINDOW.
     let cluster = 1
     let clusterStart = start
-    for (const prev of this.#window) {
+    const recentLimit = Math.max(0, this.#window.length - RECENT_NEAR_DUP_WINDOW)
+    for (let i = recentLimit; i < this.#window.length; i++) {
+      const prev = this.#window[i]!
       if (jaccard(fingerprint, prev.fp) >= SEGMENT_SIMILARITY) {
         cluster++
         clusterStart = Math.min(clusterStart, prev.start)

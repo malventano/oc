@@ -45,10 +45,13 @@ export const PlanExitTool = Tool.define(
 
           if (answers[0]?.[0] === "No") yield* new Question.RejectedError()
 
-          const messages = yield* session.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)
-          const lastUser = messages.findLast((item) => item.info.role === "user" && item.info.model)
-          const model =
-            lastUser?.info.role === "user" && lastUser.info.model ? lastUser.info.model : yield* provider.defaultModel()
+          // 0282: bounded to the compaction+tail window via findMessage
+          // (newest-first) - the previous full session.messages() walk paged
+          // the whole archive for one message.
+          const lastUser = yield* session
+            .findMessage(ctx.sessionID, (item) => item.info.role === "user" && item.info.model !== undefined)
+            .pipe(Effect.orDie)
+          const model = lastUser._tag === "Some" ? (lastUser.value.info as SessionV1.User).model : yield* provider.defaultModel()
 
           const msg: SessionV1.User = {
             id: MessageID.ascending(),

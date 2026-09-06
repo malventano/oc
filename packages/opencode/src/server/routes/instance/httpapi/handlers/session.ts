@@ -399,7 +399,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const reAskQuestion = Effect.fn("SessionHttpApi.reAskQuestion")(function* (sessionID: SessionID) {
       const info = yield* session.get(sessionID).pipe(Effect.orDie)
       if (!info.revert || info.revert.partID !== undefined) return
-      const all = yield* session.messages({ sessionID }).pipe(Effect.orDie)
+      // 0282: bounded to the compaction+tail window. The revert boundary and
+      // the question turn it exposes sit at the NEWEST end (undo/redo are
+      // tail operations - see revert.ts 0271) - never pre-compaction history.
+      // stream() is newest-FIRST, so the boundary's predecessors (older) sit
+      // at HIGHER indices than the boundary itself.
+      const all = yield* MessageV2.stream(sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.catch(() => Effect.succeed([])),
+      )
       const index = all.findIndex((msg) => msg.info.id === info.revert!.messageID)
       if (index < 1) return
       const pending = yield* questionSvc.list()
@@ -413,8 +421,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // (msgs.slice(index) includes the boundary message), keeping the
       // question turn - the model still sees the tool call + the fresh
       // answers after it.
+      // `all` is newest-first (below, at HIGHER index = OLDER): the boundary
+      // is at [index], the question turn it answered at [index+1].
       const boundary = all[index]
-      const turn = all[index - 1]
+      const turn = all[index + 1]
       if (boundary.info.role !== "user" || turn.info.role !== "assistant") return
       const part = [...turn.parts].reverse().find((p) => p.type === "tool" && p.tool === "question")
       if (!part || part.type !== "tool") return
@@ -444,10 +454,16 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // solidifies if the user undoes/redoes across it.
       yield* questionSvc.clearRejected(sessionID)
       if (!own.length) return
-      const all = yield* session.messages({ sessionID }).pipe(Effect.orDie)
+      // 0282: bounded to the compaction+tail window (newest-first) - the
+      // pending question's turn + its answers message are tail operations.
+      const all = yield* MessageV2.stream(sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.catch(() => Effect.succeed([])),
+      )
       for (const q of own) {
         const turnIndex = all.findIndex((m) => m.info.id === q.tool!.messageID)
-        const answers = turnIndex >= 0 ? all[turnIndex + 1] : undefined
+        // newest-first: the answers message (NEWER) sits at [turnIndex - 1].
+        const answers = turnIndex > 0 ? all[turnIndex - 1] : undefined
         if (answers?.info.id !== boundaryMessageID) {
           yield* questionSvc.cancel(q.id).pipe(Effect.ignore)
         }
@@ -501,9 +517,19 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // blocked until the session goes idle.
       const busy = Exit.isFailure(yield* runState.assertNotBusy(ctx.params.sessionID).pipe(Effect.exit))
       if (busy) {
-        const messages = yield* session
-          .messages({ sessionID: ctx.params.sessionID })
-          .pipe(Effect.catch(() => Effect.succeed([])))
+        // Bounded to the compaction+tail window (0281): a queued user message
+        // always sits at the NEWEST end (an assistant claim under it is the
+        // just-started work), so the deleteMessage pull-back never needs the
+        // FULL archive. The old `session.messages()` here walked EVERY page
+        // (50/page) on every ESC pull-back while a turn streamed - seconds of
+        // latency on deep sessions (the user's "escape takes 1-2s to register"
+        // while the queued prompt rendered instantly). MessageV2.stream() caps
+        // at two completed compaction pairs + tail reachability (the same
+        // bounded walk prompt.ts cancel() uses for its hasQueued check).
+        const messages = yield* MessageV2.stream(ctx.params.sessionID).pipe(
+          Effect.provideService(Database.Service, database),
+          Effect.catch(() => Effect.succeed([])),
+        )
         const message = messages.find((m) => m.info.id === ctx.params.messageID)
         const queued =
           message?.info.role === "user" &&

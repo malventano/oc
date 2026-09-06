@@ -12,7 +12,7 @@ import { Agent } from "@/agent/agent"
 import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { NotFoundError } from "@/storage/storage"
-
+import { Database } from "@opencode-ai/core/database/database"
 import { Effect, Layer, Context } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { isOverflow as overflow, usable } from "./overflow"
@@ -365,6 +365,7 @@ const layer = Layer.effect(
     const provider = yield* Provider.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const database = yield* Database.Service
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: SessionV1.Assistant["tokens"]
@@ -448,17 +449,23 @@ const layer = Layer.effect(
       if (!cfg.compaction?.prune) return
       yield* Effect.logInfo("pruning")
 
-      const msgs = yield* session
-        .messages({ sessionID: input.sessionID })
-        .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
-      if (!msgs) return
+      // 0282: prune walks NEWEST-FIRST and breaks at the first compaction
+      // marker (a completed summary) or the first already-compacted tool part
+      // - it never needs the pre-compaction archive. MessageV2.stream()
+      // returns newest-first within the compaction+tail window (0188), the
+      // exact range prune covers. The previous session.messages() paged the
+      // ENTIRE session (50/page) just to walk back one turn past the tail.
+      const msgs = yield* MessageV2.stream(input.sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed<SessionV1.WithParts[]>([])),
+      )
 
       let total = 0
       let pruned = 0
       const toPrune: SessionV1.ToolPart[] = []
       let turns = 0
 
-      loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
+      loop: for (let msgIndex = 0; msgIndex < msgs.length; msgIndex++) {
         const msg = msgs[msgIndex]
         if (msg.info.role === "user") turns++
         if (turns < 2) continue
@@ -761,20 +768,40 @@ TimeContext.stampUserMessages(msgs)
     const part = marker?.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")
     // A compaction marker without a finished summary means an LLM compaction
     // is still in flight: a second /compact must not queue another one on top.
+    // Look for the marker's OWN summary child (assistant with parentID === the
+    // marker): the previous code used findLast(assistant), but the message
+    // array from stream() is NEWEST-first, so findLast selects the OLDEST
+    // assistant in the window (a pre-compaction build message). Its parentID
+    // can never match the marker, so a completed compaction was reported
+    // "in_progress" on every second /compact (virtual toast bug, 2026-09-06).
     if (part) {
-  const lastAssistant = input.messages.findLast(
-    (m): m is SessionV1.WithParts & { info: SessionV1.Assistant } => m.info.role === "assistant",
-  )
+      const summary = input.messages.find(
+        (m): m is SessionV1.WithParts & { info: SessionV1.Assistant } =>
+          m.info.role === "assistant" && m.info.parentID === user!.id,
+      )
       const done =
-        !!lastAssistant?.info.summary &&
-        !!lastAssistant.info.finish &&
-        !lastAssistant.info.error &&
-        lastAssistant.info.parentID === user!.id
+        !!summary?.info.summary &&
+        !!summary.info.finish &&
+        !summary.info.error
       if (!done) return "in_progress" as const
     }
     if (!finished || !finished.summary || !finished.finish || finished.error) return "ineligible" as const
     if (!user || user.id !== finished.parentID) return "ineligible" as const
-    const markerIdx = input.messages.findIndex((m) => m.info.id === user.id)
+    // The index/slice math below needs the marker + its tail in chronological
+    // order (marker AFTER the tail it retained). Callers disagree on input
+    // order: the HTTP /compact handler passes MessageV2.stream() output
+    // (NEWEST-first), the tests and Session.messages() pass OLDEST-first.
+    // Detect the direction from the array bounds instead of assuming either.
+    // (0283b - the previous code ran findIndex directly on the newest-first
+    // array, so tail_start_id (older, deeper index) always compared >= the
+    // marker and a real retained tail was reported "virtual_empty".)
+    const first = input.messages[0]
+    const last = input.messages[input.messages.length - 1]
+    const newestFirst =
+      !!first && !!last && first !== last &&
+      first.info.time.created > last.info.time.created
+    const chronologicalOrNewest = newestFirst ? [...input.messages].reverse() : input.messages
+    const markerIdx = chronologicalOrNewest.findIndex((m) => m.info.id === user.id)
     if (!part || markerIdx < 0) return "virtual_empty" as const
     // no_tail (guard-origin compaction): nothing was retained verbatim, so
     // there is nothing a virtual compact could drop. Accessible only when the
@@ -803,15 +830,15 @@ TimeContext.stampUserMessages(msgs)
       if (!part.tail_start_id) {
         const model = yield* provider.getModel(user.model.providerID, user.model.modelID).pipe(Effect.orDie)
         const cfg = yield* config.get()
-        const size = yield* estimate({ messages: input.messages.slice(0, markerIdx), model })
+        const size = yield* estimate({ messages: chronologicalOrNewest.slice(0, markerIdx), model })
         if (size > preserveRecentBudget({ cfg, model })) return "virtual_empty" as const
       }
       const tailIdx = part.tail_start_id
-        ? input.messages.findIndex((m) => m.info.id === part.tail_start_id)
+        ? chronologicalOrNewest.findIndex((m) => m.info.id === part.tail_start_id)
         : 0
       if (tailIdx < 0 || tailIdx >= markerIdx) return "virtual_empty" as const
 
-      const retained = turns(input.messages.slice(tailIdx, markerIdx))
+      const retained = turns(chronologicalOrNewest.slice(tailIdx, markerIdx))
       if (retained.length === 0) return "virtual_empty" as const
 
       const count = retained.length
@@ -1070,6 +1097,7 @@ export const node = LayerNode.make({
     Provider.node,
     EventV2Bridge.node,
     RuntimeFlags.node,
+    Database.node,
   ],
 })
 

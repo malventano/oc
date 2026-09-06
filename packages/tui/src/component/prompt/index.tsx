@@ -562,7 +562,15 @@ export function Prompt(props: PromptProps) {
         name: "session.interrupt",
         category: "Session",
         hidden: true,
-        enabled: status().type !== "idle",
+        // Always armed (2026-09-06): the idle gate was introduced with the
+        // server+client race fixes to keep ESC dead while a queued prompt was
+        // still committing. The full-walk lag that made the commit window long
+        // is gone (bounded tail walks), so the gate outlived its purpose and a
+        // busy session could report idle mid-commit -> ESC does nothing. The
+        // server-side cancel is already a no-op when nothing is running
+        // (run-state.ts:80-84 sets idle and returns). If a gate is ever needed,
+        // it must be tied to the queue-write itself (an extremely short
+        // submit() window), NOT the session status.
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
@@ -1204,6 +1212,13 @@ export function Prompt(props: PromptProps) {
       // and injects the queue (abort with resume=true restarts the loop).
       // Also covers idle stranded queues (abort no-ops, resume still runs).
       // A plain empty submit otherwise stays a no-op.
+      // 0280: the run-processing ordering is guaranteed SERVER-side (the
+      // cancel fully awaits state.cancel then re-reads the settled queue,
+      // excluding zero-progress aborted claims - 0277). Do NOT await the
+      // prompt RPC here: session.prompt joins the running turn and its
+      // promise resolves only at turn COMPLETION, so awaiting it froze the
+      // abort until the turn ended (inject never fired) while holding
+      // submitting=true across the wait (later Enters + ESC were swallowed).
       if (queuedMessages().length > 0) {
         if (!props.sessionID) return false
         void sdk.client.session.abort({ sessionID: props.sessionID, resume: "true" })
