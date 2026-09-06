@@ -1705,66 +1705,69 @@ function UserMessage(props: {
   const questionAnswers = createMemo(() =>
     props.parts.some((x) => x.type === "text" && x.metadata?.kind === "question_answers"),
   )
-  const sessionMessages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
-  // The header marks the QUESTION turn's completion (it sits below the tool
-  // line), so it is tied to the previous turn's agent/model - NOT the
-  // submit-time agent the answers message carries.
-  const questionTurn = createMemo(() => {
-    if (!questionAnswers()) return undefined
-    const msgs = sessionMessages()
-    const idx = msgs.findIndex((m) => m.id === props.message.id)
-    // Walk back to the assistant turn that asked the question (the most
-    // recent assistant message with a question tool call) - NOT the
-    // immediate predecessor, which may be unrelated when the answers
-    // message follows other turns (e.g. after a revert/re-ask).
-    for (let i = idx - 1; i >= 0; i--) {
-      const msg = msgs[i]
-      if (msg.role !== "assistant") continue
-      const parts = sync.data.part[msg.id]
-      if (parts?.some((p) => p.type === "tool" && p.tool === "question")) return msg
+
+  // The question/answer dialogue (0268): the question tool call ends the turn
+  // (single line + completed footer above); the answered display lives HERE,
+  // as the question_answers user message's body - parsed from this message's
+  // OWN serialized `"Q"="Ans"` text (the same bytes the model sees, always
+  // present - no cross-message store lookup). Renders as a `# Questions` box
+  // so it reads as the answered question, not a typed prompt, and stays a
+  // real undoable user-prompt boundary (undo into it re-opens the panel).
+  const questionDialogue = createMemo(() => {
+    if (!questionAnswers()) return []
+    const serialized = props.parts
+      .filter((x): x is TextPart => x.type === "text" && !x.synthetic)
+      .map((x) => x.text)
+      .join(", ")
+    const pairs: Array<{ question: string; answer: string }> = []
+    const pairRe = /"((?:[^"\\]|\\.)*)"\s*=\s*"((?:[^"\\]|\\.)*)"/g
+    let m: RegExpExecArray | null
+    while ((m = pairRe.exec(serialized)) !== null) {
+      pairs.push({ question: m[1].replace(/\\(.)/g, "$1"), answer: m[2].replace(/\\(.)/g, "$1") })
     }
-    return undefined
-  })
-  const headerAgent = createMemo(() => questionTurn()?.agent ?? props.message.agent)
-  const headerColor = createMemo(() => local.agent.color(headerAgent()))
-  const modelName = createMemo(() => {
-    const turn = questionTurn()
-    if (turn) return Model.name(ctx.providers(), turn.providerID, turn.modelID)
-    const model = props.message.model
-    if (!model) return ""
-    return Model.name(ctx.providers(), model.providerID, model.modelID)
-  })
-  const pendingDuration = createMemo(() => {
-    const turn = questionTurn()
-    if (!turn?.time) return 0
-    return props.message.time.created - turn.time.created
+    return pairs
   })
 
   return (
     <>
       <Show when={text()}>
         <Show when={questionAnswers()}>
-          <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
-            <text marginTop={1}>
-              <span style={{ fg: headerColor() }}>▣{" "}</span>{" "}
-              <span style={{ fg: theme.text }}>{Locale.titlecase(headerAgent())}</span>
-              <Show when={modelName()}>
-                <span style={{ fg: theme.textMuted }}> · {modelName()}</span>
-              </Show>
-              <Show when={pendingDuration()}>
-                <span style={{ fg: theme.textMuted }}> · {Locale.duration(pendingDuration())}</span>
-              </Show>
+          <box
+            ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+            border={["left"]}
+            paddingTop={1}
+            paddingBottom={1}
+            paddingLeft={2}
+            paddingRight={2}
+            marginTop={1}
+            backgroundColor={theme.backgroundPanel}
+            customBorderChars={SplitBorder.customBorderChars}
+            borderColor={theme.background}
+          >
+            <text paddingLeft={3} fg={theme.textMuted}>
+              # Questions
             </text>
+            <For each={questionDialogue()}>
+              {(qa) => (
+                <Show when={qa.question || qa.answer}>
+                  <box flexDirection="column" paddingTop={0} paddingBottom={1}>
+                    <text fg={theme.textMuted}>{qa.question}</text>
+                    <text fg={theme.text}>{qa.answer}</text>
+                  </box>
+                </Show>
+              )}
+            </For>
           </box>
         </Show>
-        <box
-          id={props.message.id}
-          ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-          border={["left"]}
-          borderColor={color()}
-          customBorderChars={SplitBorder.customBorderChars}
-          marginTop={props.index === 0 ? 0 : 1}
-        >
+        <Show when={!questionAnswers()}>
+          <box
+            id={props.message.id}
+            ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+            border={["left"]}
+            borderColor={color()}
+            customBorderChars={SplitBorder.customBorderChars}
+            marginTop={props.index === 0 ? 0 : 1}
+          >
           <box
             onMouseOver={() => {
               setHover(true)
@@ -1816,6 +1819,7 @@ function UserMessage(props: {
             </Show>
           </box>
         </box>
+        </Show>
       </Show>
       <Show when={compaction()}>
         <box
@@ -4614,38 +4618,17 @@ function SquashOutput(props: ToolProps) {
 }
 
 function Question(props: ToolProps) {
-  const { theme } = useTheme()
   const questions = createMemo(() => parseQuestions(props.input.questions))
-  const answers = createMemo(() => parseQuestionAnswers(props.metadata.answers))
   const count = createMemo(() => questions().length)
-
-  function format(answer?: ReadonlyArray<string>) {
-    if (!answer?.length) return "(no answer)"
-    return answer.join(", ")
-  }
-
+  // The tool call ALWAYS renders as a single line (0268): the answered
+  // Q+A block is NOT inlined at the tool-call position - the turn ends at
+  // the ask (completed footer above), and the answered question renders
+  // SEPARATELY as the question_answers user message's "# Questions" body
+  // (undoable boundary), not inside the tool call.
   return (
-    <Switch>
-      <Match when={answers()}>
-        <BlockTool title="# Questions" part={props.part}>
-          <box gap={1}>
-            <For each={questions()}>
-              {(q, i) => (
-                <box flexDirection="column">
-                  <text fg={theme.textMuted}>{q.question}</text>
-                  <text fg={theme.text}>{format(answers()?.[i()])}</text>
-                </box>
-              )}
-            </For>
-          </box>
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="→" pending="Asking questions..." complete={count()} part={props.part}>
-          Asked {count()} question{count() !== 1 ? "s" : ""}
-        </InlineTool>
-      </Match>
-    </Switch>
+    <InlineTool icon="→" pending="Asking questions..." complete={count()} part={props.part}>
+      Asked {count()} question{count() !== 1 ? "s" : ""}
+    </InlineTool>
   )
 }
 
