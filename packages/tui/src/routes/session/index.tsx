@@ -3743,11 +3743,30 @@ function heredocSegments(text: string): StreamSegmentData[] | undefined {
   let cursor = 0
   // The language resolution is ONE chain for every opener kind: the
   // delimiter/interpreter name wins (HEREDOC_LANG for heredoc delimiters,
-  // EVAL_LANG for interpreters), then the write-tool sniffer on the body,
-  // then bash. Heredoc delimiters are conventionally uppercase (PY, JS)
-  // so the map key is case-insensitive; interpreter names are lowercase.
-  const segLang = (op: { delim: string; quote?: string }, body: string) =>
-    HEREDOC_LANG[op.delim.toUpperCase()] ?? EVAL_LANG[op.delim] ?? sniffFiletype(body, 0) ?? "bash"
+  // EVAL_LANG for interpreters), then the target FILE the heredoc is
+  // redirected into (cat > foo.py << 'EOF', tee foo.yaml << 'END' - the
+  // redirect's filename extension is authoritative, no content sniff),
+  // then the write-tool sniffer on the body, then bash. Heredoc delimiters
+  // are conventionally uppercase (PY, JS) so the map key is case-insensitive;
+  // interpreter names are lowercase. `opener` = the full opening line, used
+  // for the `> file` redirect target and a bare interpreter (`python3 - <<`).
+  const segLang = (op: { delim: string; quote?: string }, body: string, opener?: string) => {
+    const target = opener && /(?:^|[\s;&|(])(?:cat|tee|dd|cp)\s+[>\-]?\s*([A-Za-z0-9_./+\-]+)\s*(?:<<|<<<)/.exec(opener)
+    const targetFt = target ? coalesceFiletype(filetype(target[1]!)) : undefined
+    // Bare interpreter feeding stdin (python3 - << 'EOF', sqlite3 << 'END',
+    // node <<< 'code'): the word before `- <<`/`<<` names the runtime. `cat`
+    // matches here too but is not in EVAL_LANG, so it falls through to the
+    // redirect target / sniffer.
+    const interp = opener && /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\s+(?:-\s*)?(?:<<|<<<)/.exec(opener)
+    return (
+      HEREDOC_LANG[op.delim.toUpperCase()] ??
+      EVAL_LANG[op.delim] ??
+      (targetFt && targetFt !== "none" ? targetFt : undefined) ??
+      (interp ? EVAL_LANG[interp[1]!] : undefined) ??
+      sniffFiletype(body, 0) ??
+      "bash"
+    )
+  }
   for (const op of opens) {
     // Skip opens already consumed by a previous open's body: the body
     // text can legitimately contain the opener patterns (a manifest
@@ -3789,10 +3808,15 @@ function heredocSegments(text: string): StreamSegmentData[] | undefined {
         segs.push({ text: text.slice(cursor, lineEnd), lang: "bash" })
         cursor = lineEnd + 1
       } else {
-        segs.push({ text: text.slice(cursor, op.end), lang: "bash" })
+        const quoteOpener = text.slice(cursor, op.end)
+        segs.push({ text: quoteOpener, lang: "bash" })
         const body = text.slice(op.end, close === -1 ? text.length : close).replace(/^\n+/, "")
         if (body.length > 0) {
-          segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body), body: true })
+          segs.push({
+            text: body.endsWith("\n") ? body.slice(0, -1) : body,
+            lang: segLang(op, body, quoteOpener),
+            body: true,
+          })
         }
         if (close === -1) {
           // The closing quote is still streaming - the body is the open
@@ -3820,7 +3844,7 @@ function heredocSegments(text: string): StreamSegmentData[] | undefined {
     if (bodyEnd > lineEnd + 1) {
       const body = text.slice(lineEnd + 1, bodyEnd)
       // bodyEnd is the closer line's start, so the body ends with "\n".
-      segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body), body: true })
+      segs.push({ text: body.endsWith("\n") ? body.slice(0, -1) : body, lang: segLang(op, body, openerText), body: true })
     }
     if (close) {
       // The closing delimiter line is shell syntax - render it as bash.
