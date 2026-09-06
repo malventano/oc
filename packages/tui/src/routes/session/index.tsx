@@ -489,8 +489,16 @@ export function Session() {
     }
     // Re-seed on EVERY bind (the Prompt remounts when the session route's
     // visibility flips): args.prompt must land in the input regardless of
-    // mount count - idempotent.
-    if (args.prompt) r.set({ input: args.prompt, parts: [] })
+    // mount count - idempotent. EXCEPT once the resume prompt has been
+    // CONSUMED (auto-submitted at boot, module latch): re-seeding it after a
+    // later remount (e.g. the Prompt rebinding when a single-click question
+    // answer closes) would plant the stale "Restart complete: <reason>" text
+    // into the input field, visible but never re-submitted - the 0247 latch
+    // stops the submit, not the seed (live 2026-09-06: pasted the restart
+    // complete text into the prompt field after answering a push question).
+    if (args.prompt && !resumePromptFired.has(`${route.sessionID}\u0000${args.prompt}`)) {
+      r.set({ input: args.prompt, parts: [] })
+    }
   }
 
   // Tool-initiated restart (the `restart` tool): the processor ends the turn
