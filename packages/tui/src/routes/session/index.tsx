@@ -339,14 +339,40 @@ export function Session() {
   }
   // Stash the field's content for the position it currently occupies, but only
   // when it is a genuine user draft (differs from the position's message text).
+  // A draft must NEVER be overwritten by the position's message-derived text:
+  // after an undo restores the reverted prompt into the field, a subsequent
+  // stashCurrentDraft() (e.g. redo's) must not clobber the already-stashed
+  // draft with that message text - the bottom restore would then return the
+  // message instead of the draft (the 07-14 live catch: `test` draft came back
+  // as the restored message text). The `same` comparison must be against the
+  // expected text at the KEY ITSELF (bottom -> the last user message's text),
+  // not merely the render state, and an existing stash always wins.
   const stashCurrentDraft = () => {
     if (!prompt) return
     const cur = prompt.current
     if (!cur.input && cur.parts.length === 0) return
     const key = currentDraftKey()
-    const expected = expectedPromptAt(session()?.revert?.messageID)
-    if (cur.input === expected.input && cur.parts.length === expected.parts.length) return
-    draftStash.set(key, cur)
+    // Expected text at the KEY's OWN position: a bottom key expects the last
+    // user message's restorable text; a raw message id expects that message's
+    // text. A field holding the message text (an undo restore, not a user
+    // draft) matches and is skipped.
+    const expected =
+      key.startsWith(`${DRAFT_STASH_BOTTOM}:`)
+        ? expectedPromptAt(messages().findLast((m) => m.role === "user")?.id)
+        : expectedPromptAt(key)
+    const same = cur.input === expected.input && cur.parts.length === expected.parts.length
+    if (same) return
+    // Never clobber an existing stash: the first stash of a position wins.
+    if (draftStash.has(key)) return
+    // Store a CLONE, not the live store.prompt proxy: an undo restore
+    // repopulates the field with the message text via prompt.set, mutating
+    // the same object a by-reference stash would hold - the stashed draft
+    // would silently become the message text (live catch: `test` restored as
+    // the message text). The copy freezes the draft at stash time.
+    draftStash.set(key, {
+      input: cur.input,
+      parts: cur.parts.map((p) => ({ ...p })),
+    })
   }
   const foregroundTasks = createMemo(() =>
     sync.data.capabilities.experimentalBackgroundSubagents
@@ -913,7 +939,18 @@ export function Session() {
         dialog.clear()
         const messageID = session()?.revert?.messageID
         if (!messageID) return
-        const message = messages().find((x) => x.role === "user" && x.id > messageID)
+        // The next user message AFTER the revert point by ARRAY POSITION (the
+        // chronological store order), mirroring undo's findLast - NOT by a
+        // lexicographic `x.id > messageID` string compare. Message ids are not
+        // time-ordered as strings across id-generator eras (compaction tail
+        // re-insertion, restart; the 0252 lesson) - an ancient `msg_ffbe...`
+        // id sorts GREATER than a recent `msg_0755...`, so the string compare
+        // could pick a stale chronologically-EARLIER message as "next", undoing
+        // into a real prompt where the blank/restart spot was (the redo-shows-
+        // the-prior-prompt asymmetry).
+        const list = messages()
+        const revertIndex = list.findIndex((x) => x.id === messageID)
+        const message = revertIndex === -1 ? undefined : list.slice(revertIndex + 1).find((x) => x.role === "user")
         // Preserve the current draft before moving forward (undo->redo round
         // trip: the draft at the departure position must survive and come back
         // when the user returns to it).
@@ -922,7 +959,16 @@ export function Session() {
           void sdk.client.session.unrevert({
             sessionID: route.sessionID,
           })
-          const bottomKey = currentDraftKey()
+          // Read the BOTTOM stash key explicitly (last-user scoped, the same
+          // form the undo path stashed it under): currentDraftKey() prefers
+          // the still-active revert messageID here, which would MISS the draft
+          // stashed at the bottom (undo typed a draft with no revert active ->
+          // key `bottom:<lastUser.id>`, but the revert has fired by the redo,
+          // so currentDraftKey() returns the raw message id - the lookup comes
+          // up empty and the field clears, losing the draft even on a single
+          // undo+redo round trip).
+          const lastUser = messages().findLast((m) => m.role === "user")
+          const bottomKey = `${DRAFT_STASH_BOTTOM}:${lastUser?.id ?? "none"}`
           const clear = () => {
             if (prompt) {
               prompt.set(draftStash.get(bottomKey) ?? { input: "", parts: [] })
