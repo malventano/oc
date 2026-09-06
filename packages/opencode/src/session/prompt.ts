@@ -1827,7 +1827,16 @@ const layer = Layer.effect(
                     note += `\n\nPremature-stop tail trimmed at request time; continuing.`
                   }
                 }
-                steerPrompt = "Continue."
+                // Neutral evaluate-and-resume steer (0262). Plain "Continue."
+                // forced the model to redo COMPLETE work on a false positive
+                // (a quoted `<system-reminder>` reference was flagged, trimmed,
+                // and re-worked - the loop-guard kill that precipitated this).
+                // Short (0203 kept it discourse-free to avoid the artifact
+                // persisting in context) but evaluation-focused: the model
+                // judges whether it actually stalled. It does NOT re-state the
+                // stall claim or the guard's name (the banner carries that).
+                steerPrompt =
+                  "Your previous response was flagged as possibly ending prematurely. If it was actually complete, no further action is needed - do not redo it. If it was incomplete, continue from where it stopped."
               } else if (autoCompactRounds === 0) {
                 if (compactingPrompt) {
                   note += `\n\nStall guard fired 3 times this turn - the compaction summary is stalling. No nested auto-compaction; the summary retries with the steer.`
