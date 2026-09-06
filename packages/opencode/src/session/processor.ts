@@ -108,6 +108,14 @@ interface ProcessorContext extends Input {
   stallHit: string | null
   stallGuardEnabled: boolean
   restartClosed: boolean
+  // The question tool ALSO ends the turn at the tool result (0269): the ask
+  // closes the turn like the restart - finish forced to "stop" so the TUI
+  // footer's final() gate renders the completed stats (clock stops + stays)
+  // instead of holding the tool-calls continuation state (clock vanishes
+  // when the question panel opens). The answers arrive as a fresh user
+  // prompt; the orphan re-loop keys on parentID, never on the asker's
+  // finish, so "stop" is safe.
+  questionClosed: boolean
 }
 
 type StreamEvent = LLMEvent
@@ -162,6 +170,7 @@ const layer = Layer.effect(
         stallGuardEnabled: input.stallGuardEnabled ?? true,
         stallGuardCompactionContinue: input.stallGuardCompactionContinue ?? false,
         restartClosed: false,
+        questionClosed: false,
       }
       let aborted = false
 
@@ -530,6 +539,10 @@ const layer = Layer.effect(
               ctx.restartClosed = true
               ctx.blocked = ctx.shouldBreak
             } else if (value.name === "question") {
+              // The ask ENDS the turn (0269): like the restart, the question
+              // tool result closes it - finish forced to "stop" at the final
+              // write so the TUI footer renders the completed stats.
+              ctx.questionClosed = true
               ctx.blocked = ctx.shouldBreak
             }
             return
@@ -784,7 +797,7 @@ const layer = Layer.effect(
         // finish + completed) always did. The loop-guard handler writes the
         // message itself (with the error banner).
         if (!ctx.loopGuardFired) {
-          if (ctx.restartClosed && !ctx.assistantMessage.error) ctx.assistantMessage.finish = "stop"
+          if ((ctx.restartClosed || ctx.questionClosed) && !ctx.assistantMessage.error) ctx.assistantMessage.finish = "stop"
           ctx.assistantMessage.finish ??= "stop"
           ctx.assistantMessage.time.completed = Date.now()
           yield* session.updateMessage(ctx.assistantMessage)
@@ -885,16 +898,17 @@ const layer = Layer.effect(
           // Stall detection runs AFTER the stream completes (unlike the loop
           // guard, which fires mid-stream): classify the step's finish reason
           // + accumulated text into the three stall signatures.
-          // The stall guard is skipped for a restart-closed step: the turn
-          // ends BY DESIGN at the restart tool result (finish set to "stop"
-          // above), so a premature-stop signature (text ending in ":") must
-          // not re-open the turn with a steer.
+          // The stall guard is skipped for a restart-closed OR question-closed
+          // step (0269): the turn ends BY DESIGN at the tool result (finish
+          // set to "stop" above), so a premature-stop signature (text ending
+          // in ":" - a question ask often ends mid-sentence announcing it)
+          // must not re-open the turn with a steer.
           // Compaction-continue steps are NOT gated here (0227): detect()
           // exempts only the ambiguous resume shapes (colon/silent/let-me)
           // but still fires the markup-fragment family (eaten-call,
           // stray-closer) - a response ending in leaked tool-call markup is
           // never a valid resume.
-          if (ctx.stallGuardEnabled && !ctx.restartClosed && !ctx.assistantMessage.error) {
+          if (ctx.stallGuardEnabled && !ctx.restartClosed && !ctx.questionClosed && !ctx.assistantMessage.error) {
             const hit = StallGuard.detect(
               ctx.assistantMessage.finish,
               ctx.stallText,
