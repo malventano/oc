@@ -8,7 +8,7 @@ const DESCRIPTION = `Replace a past tool output in this session with a short sum
 
 WHY: every prompt re-prefills every output already in the chain. An unexpectedly large output you won't reference again (ls, grep, docker logs, build logs) costs its full size on every future prompt until compaction - squashing it saves real tokens.
 
-WHEN: only when the output is both unexpectedly large AND carries little you'll need again. Don't squash reference material you'll consult again, or files you're about to edit - small outputs' savings don't justify the rewrite.
+WHEN: only when the output is both unexpectedly large AND carries little you'll need again. Don't squash reference material you'll consult again, or files you're about to edit - small outputs' savings don't justify the rewrite. NEVER squash skill tool output: its full body is load-bearing for the 'Skill context drift' reminder machinery (a squashed load becomes a bogus drift baseline - oc 0256). The tool refuses it regardless; reload the skill with the skill tool if you want a smaller view.
 
 HOW: call it in the message right after the big output arrives, before other work. A rewrite invalidates the cached prefix of everything after it, so squashing late busts the cache of all the output you've produced since - squash early and the miss covers only the squash call. If you missed the moment, squash anyway; the large output keeps costing on every future prompt.
 
