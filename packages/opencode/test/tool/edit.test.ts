@@ -584,6 +584,66 @@ describe("tool.edit", () => {
     )
   })
 
+  describe("path resolution (oc 0259): filePath-first + not-found hint", () => {
+    it.instance("trusts the filePath argument on single-section patches", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        // The header uses a bare basename that does NOT resolve at the root;
+        // the filePath param carries the authoritative absolute path.
+        yield* makeDirectory(path.join(test.directory, "nested"))
+        yield* put(path.join(test.directory, "nested", "target.txt"), "alpha\n")
+        yield* run({
+          filePath: path.join(test.directory, "nested", "target.txt"),
+          input: fence([{ path: "target.txt", ops: [{ old: ["alpha"], new: ["ALPHA"] }] }]),
+        })
+        expect(yield* load(path.join(test.directory, "nested", "target.txt"))).toBe("ALPHA\n")
+      }),
+    )
+
+    it.instance("falls through to the header when filePath does not resolve", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        // Stale filePath + correct header path -> header wins.
+        yield* put(path.join(test.directory, "real.txt"), "beta\n")
+        yield* run({
+          filePath: path.join(test.directory, "stale-nonexistent.txt"),
+          input: fence([{ path: path.join(test.directory, "real.txt"), ops: [{ old: ["beta"], new: ["BETA"] }] }]),
+        })
+        expect(yield* load(path.join(test.directory, "real.txt"))).toBe("BETA\n")
+      }),
+    )
+
+    it.instance("not-found hint names the file that exists in a sibling workspace project", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        // Emulate the pcper_conv.py incident: the real file lives in a
+        // sibling project dir (same sub-path wiring, one top-level segment
+        // different); the header has the wrong project segment. Use a unique
+        // sibling name so the /tmp scan cannot collide with other tests, and
+        // clean up after.
+        const ws = path.dirname(test.directory) // the code hunts this level
+        // Sort FIRST so the 64-entry cap always includes it.
+        const sibling = "ac-exclusive-sibling-" + Math.random().toString(36).slice(2)
+        const wrongProject = "ac-exclusive-wrong-" + Math.random().toString(36).slice(2)
+        const real = path.join(ws, sibling, "scripts", "tool.py")
+        yield* makeDirectory(path.join(ws, sibling))
+        yield* makeDirectory(path.join(ws, sibling, "scripts"))
+        yield* put(real, "tool content\n")
+        try {
+          const wrongRoot = path.join(ws, wrongProject, "scripts", "tool.py")
+          const err = yield* fail({
+            input: fence([{ path: wrongRoot, ops: [{ old: ["tool content"], new: ["x"] }] }]),
+          })
+          expect(err.message).toContain("not found")
+          expect(err.message).toContain("tool.py")
+          expect(err.message).toContain(sibling)
+        } finally {
+          yield* Effect.promise(() => fs.rm(path.join(ws, sibling), { recursive: true, force: true }))
+        }
+      }),
+    )
+  })
+
   describe("fail quoting (oc 0257): the error names BOTH lines", () => {
     it.instance("quotes the divergent line on a multi-line OLD mismatch", () =>
       Effect.gen(function* () {
