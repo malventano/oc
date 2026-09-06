@@ -91,6 +91,11 @@ const POSITIVE = [
   ["grep -n foo bar.txt", "grep -n bare"],
   ["grep -rn foo src/", "grep recursive dir"],
   ["grep -P 'foo' file.txt", "grep -P"],
+  ["rg -rn foo src/", "rg -rn (--replace n foot-gun)"],
+  ["rg -rn \"state.output\" src", "rg -rn quoted destructure"],
+  ["cd x && rg -rn foo", "rg -rn after cd"],
+  ["cat in.txt | rg -rn foo", "rg -rn in pipe"],
+  ["rg -r n foo file.txt", "rg -r n split"],
   ["rg -n foo file.txt", "rg is sanctioned but still a file search - no fire expected (see negative)"],
   ["wc -l file.txt", "wc -l"],
   ["wc file.txt", "wc bare"],
@@ -156,6 +161,12 @@ const NEGATIVE = [
   ["touch --help", "touch --help"],
   // not bash
   ["cat file.txt", "non-bash tool (checked separately)"],
+  // legit rg forms (not -rn): must stay silent
+  ["rg -n foo file.txt", "rg -n sanctioned"],
+  ["rg -l foo src", "rg -l"],
+  ["rg foo file.txt", "rg plain"],
+  ["rg --replace x file.txt", "rg --replace long form"],
+  ["rg -r x file.txt", "rg -r with explicit value"],
 ]
 
 const main = async () => {
