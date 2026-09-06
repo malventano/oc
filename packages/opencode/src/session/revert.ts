@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Database } from "@opencode-ai/core/database/database"
 import { Deferred, Effect, Layer, Context, Schema } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -35,6 +36,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const summary = yield* SessionSummary.Service
     const state = yield* SessionRunState.Service
+    const database = yield* Database.Service
 
     // In-flight revert latch per session (2026-09-04): the TUI undo fires
     // `revert` fire-and-forget and can follow it with an immediate Enter ->
@@ -63,9 +65,40 @@ const layer = Layer.effect(
       inflight.set(input.sessionID, done)
       try {
         yield* state.assertNotBusy(input.sessionID)
-        const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-        let lastUser: SessionV1.User | undefined
         const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+        // Undo BOUNDED to the compaction+tail window (0271): full
+        // `sessions.messages()` pages EVERY message of a long session per
+        // undo/redo (21921 msgs = hundreds of pages, several seconds). The
+        // revert only needs the messages the undo affects: the TARGET, prior
+        // user messages for rev.messageID, and everything NEWER than the target
+        // (that is where the snapshot patches collect). MessageV2.stream()
+        // walks newest-first and caps AFTER two completed compaction markers +
+        // tail reachability - the whole live-chain tail, exactly the range. A
+        // target below the newest compaction boundary (undoing INTO or across
+        // pre-compaction history) isn't inside the bounded window, so the walk
+        // falls back to the full paging (the user's rule: cap walks within the
+        // compaction+tail range; only walk back further when an undo/redo
+        // crosses a boundary).
+        const bounded = yield* MessageV2.stream(input.sessionID).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        const targetable = (m: SessionV1.WithParts) =>
+          (!input.partID && m.info.id === input.messageID) ||
+          (!!input.partID && m.parts.some((p) => p.id === input.partID))
+        const startIndex = bounded.findIndex((m) => targetable(m))
+        // bounded is newest- FIRST; the target's index is where the newest
+        // copy of it sits, and everything BEFORE it (indices 0..startIndex)
+        // is NEWER - exactly the messages the revert's patch collection falls
+        // on (patches accumulate after `rev` is found). Reversing
+        // bounded.slice(0, startIndex+1) yields target + newer messages in
+        // chronological order - a strict subset of what the full walk
+        // produced, so the same loop logic applies. The target's own
+        // `lastUser` resolves to itself when it is a user message (the TUI
+        // undo always passes one), so no OLDER history is needed.
+        const all = startIndex === -1
+          ? yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+          : bounded.slice(0, startIndex + 1).reverse()
+        let lastUser: SessionV1.User | undefined
 
       let rev: Session.Info["revert"]
       const patches: Snapshot.Patch[] = []
@@ -160,7 +193,7 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Session.node, Snapshot.node, Storage.node, EventV2Bridge.node, SessionSummary.node, SessionRunState.node],
+  deps: [Session.node, Snapshot.node, Storage.node, EventV2Bridge.node, Database.node, SessionSummary.node, SessionRunState.node],
 })
 
 export * as SessionRevert from "./revert"
