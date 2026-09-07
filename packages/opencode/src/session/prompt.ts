@@ -1682,6 +1682,16 @@ const layer = Layer.effect(
               sessionID,
               parentSessionID: session.parentID,
               system,
+              // Frozen-system epoch: serve the snapshot bytes verbatim when an
+              // epoch is active (byte-identical n-1 prefix). Dropped at the
+              // 4b68d672e2 system-block refactor - the freeze computed a
+              // frozen value but the wire always got the live join, so ANY
+              // live system drift (the env date rolling at midnight, an
+              // AGENTS.md/section change) invalidated the whole prefix on
+              // every real user prompt (2026-09-07, ses_004166c: 00:00:03
+              // large miss in=160191 read=16128 - "Today's date" flipped
+              // Sun->Mon in the env block).
+              epochSystem: epoch.frozen,
               messages: [
                 ...modelMsgs,
                 ...(isLastStep && !compactingPrompt ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
