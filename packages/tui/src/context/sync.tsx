@@ -29,7 +29,7 @@ import { createSimpleContext } from "./helper"
 import { onStreamFlush } from "./sdk"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, onMount } from "solid-js"
+ import { batch, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { usePermission } from "./permission"
@@ -354,11 +354,11 @@ export const {
           break
         }
 
-        case "message.updated": {
+         case "message.updated": {
           touchMessage(event.properties.info.sessionID, event.properties.info.id)
           const messages = store.message[event.properties.info.sessionID]
           if (!messages) {
-            setStore("message", event.properties.info.sessionID, [event.properties.info])
+             setStore("message", event.properties.info.sessionID, [event.properties.info])
             break
           }
           const result = search(messages, messageKey(event.properties.info), messageKey)
@@ -673,14 +673,26 @@ export const {
                 if (!match.found) draft.session.splice(match.index, 0, session.data!)
                 draft.todo[sessionID] = todo.data ?? []
                 const currentMessages = draft.message[sessionID] ?? []
-                const infos = (messages.data ?? []).flatMap((message) => {
-                  if (!tracker.messages.has(message.info.id)) return [message.info]
+                 const infos = (messages.data ?? []).flatMap((message) => {
+                  // Preserve the LIVE store proxy whenever one exists, not just
+                  // tracker-marked ones. Replacing a store proxy with the fetch
+                  // snapshot's copy detaches whatever the rendered shell is
+                  // already bound to - the first-turn footer clock then never
+                  // sees the terminal reconcile (BUG_TUI_ADAPTER_UNTRACK) - and
+                  // the tracker only grows once the sync starts, so create
+                  // events that fired just before it (trackerMsgs=0) left the
+                  // live message unprotected. The fetch is a seed for messages
+                  // this client has never seen. Tracker-marked ids that are NO
+                  // LONGER in the store were removed live during the sync -
+                  // never resurrect them from the fetch.
                   const current = currentMessages.find((item) => item.id === message.info.id)
-                  return current ? [current] : []
+                  if (current) return [current]
+                  if (tracker.messages.has(message.info.id)) return []
+                  return [message.info]
                 })
                 infos.push(
                   ...currentMessages.filter(
-                    (message) => tracker.messages.has(message.id) && !infos.some((item) => item.id === message.id),
+                    (message) => !infos.some((item) => item.id === message.id),
                   ),
                 )
                 infos.sort(compareMessage)
