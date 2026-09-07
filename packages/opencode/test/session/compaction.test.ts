@@ -2671,6 +2671,43 @@ describe("hasNewerPrompt", () => {
     ]
     expect(hasNewerPrompt(messages, "msg_0702554aa001u5Z4SVPhl3UDML" as MessageID)).toBe(false)
   })
+
+  // A synthetic compaction_continue message is created by finalize when NO
+  // real prompt was queued (auto-compaction continuation). It is not a queued
+  // real prompt, so it must NOT trip hasNewerPrompt: the prompt.ts
+  // pendingCompaction break queries the settled chain AFTER finalize has
+  // created this continuation, and treating it as "newer" broke the runLoop,
+  // orphaning the continuation (stall-guard 3rd-fire auto-compaction sits
+  // after the summary with no follow-up, 2026-09-06 ses_0450cc2c0ffe).
+  test("false when the only later user message is the synthetic compaction_continue", () => {
+    const continuePart = {
+      type: "text",
+      synthetic: true,
+      metadata: { compaction_continue: true },
+    } as unknown as SessionV1.Part
+    const messages = [marker("msg_2"), msg("msg_3", "user", [continuePart])]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(false)
+  })
+
+  // A post-compaction continuation uses an ordinary user text part (not
+  // synthetic) - keep that as a real newer prompt.
+  test("true when a real user message follows the synthetic continue", () => {
+    const continuePart = {
+      type: "text",
+      synthetic: true,
+      metadata: { compaction_continue: true },
+    } as unknown as SessionV1.Part
+    const messages = [marker("msg_2"), msg("msg_3", "user", [continuePart]), msg("msg_4", "user")]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(true)
+  })
+
+  // A synthetic continue with an ordinary (non-continue) metadata shape still
+  // counts as a real prompt.
+  test("true when a later synthetic user message is NOT a compaction_continue", () => {
+    const otherPart = { type: "text", synthetic: true, metadata: {} } as unknown as SessionV1.Part
+    const messages = [marker("msg_2"), msg("msg_3", "user", [otherPart])]
+    expect(hasNewerPrompt(messages, "msg_2" as MessageID)).toBe(true)
+  })
 })
 
 describe("preMarkerHistory", () => {

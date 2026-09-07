@@ -76,6 +76,14 @@ export const hasNewerPrompt = (messages: SessionV1.WithParts[], parentID: Messag
     (m) =>
       m.info.role === "user" &&
       !m.parts.some((p) => p.type === "compaction") &&
+      // The synthetic auto-continue (created by finalize when NO real prompt
+      // was queued) is not a queued real prompt: it must not trip this check,
+      // or the post-compaction runLoop breaks and orphans the continuation
+      // (the stall-guard 3rd-fire auto-compaction sit-after-summary, 2026-09-06
+      // ses_0450cc2c0ffe). The two gate call sites (process/finalize) run
+      // BEFORE the continue exists, so this exclusion is inert there; the
+      // prompt.ts pendingCompaction break runs AFTER, and it is the fix.
+      !(m.parts.some((p) => p.type === "text" && p.synthetic && p.metadata?.compaction_continue)) &&
       ((m.info.time?.created ?? 0) > t0 || ((m.info.time?.created ?? 0) === t0 && m.info.id > parentID)),
   )
 }
