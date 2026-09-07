@@ -582,6 +582,90 @@ describe("tool.edit", () => {
         expect(result.output).not.toContain("Matched with tolerance")
       }),
     )
+
+    it.instance("re-bases a tolerance match whose OLD+NEW both lost the file indent (0301)", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "misindent.txt")
+        yield* put(filepath, "function alpha() {\n    const one = 1\n    const two = 2\n}\n")
+        // Model copied OLD and NEW from a trimmed rendering (both at 0 indent);
+        // the ladder matches via LineTrimmed - the rebase restores 4-space.
+        const result = yield* run({
+          input: fence([
+            {
+              path: filepath,
+              ops: [{ old: ["const one = 1", "const two = 2"], new: ["const one = 100", "const two = 200"] }],
+            },
+          ]),
+        })
+        expect(yield* load(filepath)).toBe("function alpha() {\n    const one = 100\n    const two = 200\n}\n")
+        expect(result.output).toContain("Matched with tolerance")
+        expect(result.output).toContain("indentation re-based")
+      }),
+    )
+
+    it.instance("strips a stray leading space the model added on a NEW line (0301)", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "stray.txt")
+        yield* put(filepath, "alpha = 1\nbeta = 2\n")
+        // OLD is byte-exact (exact path); the model's NEW added a leading
+        // space on the first line - the rebase adopts the file's (none).
+        const result = yield* run({
+          input: fence([
+            {
+              path: filepath,
+              ops: [{ old: ["alpha = 1", "beta = 2"], new: [" alpha = 1", "beta = 2"] }],
+            },
+          ]),
+        })
+        expect(yield* load(filepath)).toBe("alpha = 1\nbeta = 2\n")
+        expect(result.output).toContain("indentation re-based")
+      }),
+    )
+
+    it.instance("preserves a deliberate uniform re-indent of a file-accurate block (0301)", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "reindent.txt")
+        yield* put(filepath, "function alpha() {\n    const one = 1\n    const two = 2\n}\n")
+        // OLD is byte-exact; NEW shifts every line one level deeper uniformly
+        // - a deliberate block move, kept as authored.
+        const result = yield* run({
+          input: fence([
+            {
+              path: filepath,
+              ops: [
+                {
+                  old: ["    const one = 1", "    const two = 2"],
+                  new: ["        const one = 100", "        const two = 200"],
+                },
+              ],
+            },
+          ]),
+        })
+        expect(yield* load(filepath)).toBe("function alpha() {\n        const one = 100\n        const two = 200\n}\n")
+        expect(result.output).not.toContain("indentation re-based")
+      }),
+    )
+
+    it.instance("leaves structural (line-count-changing) replacements unrebased (0301)", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "structural.txt")
+        yield* put(filepath, "const one = 1\n")
+        const result = yield* run({
+          input: fence([
+            {
+              path: filepath,
+              ops: [{ old: ["const one = 1"], new: ["    const a = 1", "    const b = 2"] }],
+            },
+          ]),
+        })
+        expect(yield* load(filepath)).toBe("    const a = 1\n    const b = 2\n")
+        expect(result.output).not.toContain("indentation re-based")
+      }),
+    )
   })
 
   describe("path resolution (oc 0259): filePath-first + not-found hint", () => {
