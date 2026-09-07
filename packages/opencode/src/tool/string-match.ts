@@ -582,3 +582,77 @@ export function resolveSpan(
   }
   throw new Error("Found multiple matches for the text. Provide more surrounding context to make the match unique.")
 }
+
+function leadingWhitespace(line: string): string {
+  const m = line.match(/^[ \t]*/)
+  return m ? m[0] : ""
+}
+
+/**
+ * Post-match indentation rebase for the edit tool (0301).
+ *
+ * The OLD/NEW splices apply the model's NEW block VERBATIM over the matched
+ * region:
+ * - On the exact path the region is byte-accurate, so any NEW deviation is
+ *   either a deliberate indentation change or an authoring stray.
+ * - On a tolerance (non-byte-exact) path, the model may have authored BOTH
+ *   its OLD and NEW at an indentation level that differs from the file's
+ *   region - the splice then lands the model's (wrong) indent in the file:
+ *   the recurring "stray leading space" / "should be 8 spaces" fix-up class
+ *   (measured ~26 correction cycles in 12h, 2026-09-07 - the matcher tiers
+ *   compare TRIMMED lines, so the mismatch is invisible until review).
+ *
+ * Rule (intent-respecting): when the matched region and the NEW block share
+ * a line count (>= 2) and the model did NOT deliberately re-indent the whole
+ * block, each non-empty NEW line adopts the FILE region line's leading
+ * whitespace. A deliberate re-indent is detected as a UNIFORM shift of every
+ * non-empty line whose OLD counterpart was file-accurate (the model knew the
+ * file's indent and moved the block on purpose) - those keep the model's
+ * indent. `matched` is the FILE's matched text (on the exact path pass the
+ * OLD block; `oldText` is the model's OLD block, used only for intent).
+ */
+export function rebaseIndentation(
+  matched: string,
+  oldText: string,
+  newText: string,
+): { text: string; rebased: number } {
+  const matchedLines = matched.split("\n")
+  const oldLines = oldText.split("\n")
+  const newLines = newText.split("\n")
+
+  // A structural replacement (line counts differ) or a single line: per-line
+  // position mapping is meaningless - the model's indentation is its own.
+  if (matchedLines.length < 2 || matchedLines.length !== newLines.length) {
+    return { text: newText, rebased: 0 }
+  }
+
+  // Non-empty line indices, position-aligned across the three blocks.
+  const inds: number[] = []
+  for (let i = 0; i < newLines.length; i++) {
+    if (i < oldLines.length && newLines[i].trim().length > 0) {
+      if (matchedLines[i].trim().length > 0 && oldLines[i].trim().length > 0) inds.push(i)
+    }
+  }
+  if (inds.length === 0) return { text: newText, rebased: 0 }
+
+  // Deliberate whole-block re-indent: every non-empty line shifted by the
+  // SAME constant AND the model's OLD was file-accurate throughout.
+  const deltas = new Set<number>()
+  let oldAccurate = true
+  for (const i of inds) {
+    deltas.add(leadingWhitespace(newLines[i]).length - leadingWhitespace(matchedLines[i]).length)
+    if (leadingWhitespace(oldLines[i]) !== leadingWhitespace(matchedLines[i])) oldAccurate = false
+  }
+  if (deltas.size === 1 && !deltas.has(0) && oldAccurate) return { text: newText, rebased: 0 }
+
+  let rebased = 0
+  for (const i of inds) {
+    const fileLead = leadingWhitespace(matchedLines[i])
+    const newLead = leadingWhitespace(newLines[i])
+    if (newLead !== fileLead) {
+      newLines[i] = fileLead + newLines[i].slice(newLead.length)
+      rebased++
+    }
+  }
+  return { text: newLines.join("\n"), rebased }
+}

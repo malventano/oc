@@ -21,7 +21,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { parseFencePatch } from "./grammar-fence"
-import { resolveSpan } from "./string-match"
+import { resolveSpan, rebaseIndentation } from "./string-match"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -563,7 +563,26 @@ export const EditTool = Tool.define(
                   const span = resolveSpan(joined, op.old.join("\n"))
                   const before = joined.slice(0, span.index)
                   const after = joined.slice(span.index + span.length)
-                  work = toWork(before + op.new.join("\n") + after)
+                  // 0301: on a tolerance (non-byte-exact) match, rebase the
+                  // NEW block's leading whitespace onto the FILE region's
+                  // actual indent - the model often authored OLD+NEW at a
+                  // wrong indent level the trim-based tiers can't see, and
+                  // the splice would otherwise land that drift verbatim.
+                  let newText = op.new.join("\n")
+                  if (span.tier !== "Simple") {
+                    const rebased = rebaseIndentation(
+                      joined.slice(span.index, span.index + span.length),
+                      op.old.join("\n"),
+                      newText,
+                    )
+                    newText = rebased.text
+                    if (rebased.rebased > 0) {
+                      fallbackNotes.push(
+                        `indentation re-based: ${rebased.rebased} line(s) adopted the file's leading whitespace (the tolerance match accepted a block whose indent differed from the file)`,
+                      )
+                    }
+                  }
+                  work = toWork(before + newText + after)
                   fallbackNotes.push(`OLD matched via ${span.tier} at line ${lineOf(span.index, joined)}`)
                   continue
                 } catch (e) {
@@ -635,7 +654,18 @@ export const EditTool = Tool.define(
                     .join(", ")}); extend the OLD block with surrounding lines to disambiguate`,
                 )
               }
-              work.splice(hits[0], op.old.length, ...op.new)
+              // 0301: on the exact path too, rebase NEW's leading whitespace
+              // onto the matched (byte-accurate) region's indent - a NEW
+              // line deviating from the region's indent is the stray-leading-
+              // space class unless the whole block was deliberately moved
+              // (which the rebase guard preserves).
+              const rebased = rebaseIndentation(op.old.join("\n"), op.old.join("\n"), op.new.join("\n"))
+              if (rebased.rebased > 0) {
+                fallbackNotes.push(
+                  `indentation re-based: ${rebased.rebased} line(s) adopted the file's leading whitespace (the NEW block deviated from the matched region's indent)`,
+                )
+              }
+              work.splice(hits[0], op.old.length, ...(rebased.rebased > 0 ? rebased.text.split("\n") : op.new))
             }
 
             const before = source.text
