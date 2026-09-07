@@ -1,3 +1,187 @@
+diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
+index e5e5874..bab6156 100644
+--- a/chunk-bun-tkm837n2.js
++++ b/chunk-bun-tkm837n2.js
+@@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
+   _position = {};
+   _opacity = 1;
+   _flexShrink = 1;
++  _flexShrinkExplicit = false;
+   _childrenInLayoutOrder = [];
+   _childrenInZIndexOrder = [];
+   needsZIndexSort = false;
+@@ -519,7 +520,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._width = value;
+     this.yogaNode.setWidth(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -534,7 +535,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._height = value;
+     this.yogaNode.setHeight(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -593,6 +594,7 @@ class Renderable extends BaseRenderable {
+       node.setFlexGrow(0);
+     }
+     if (options.flexShrink !== undefined) {
++      this._flexShrinkExplicit = true;
+       this._flexShrink = options.flexShrink;
+       node.setFlexShrink(options.flexShrink);
+     } else {
+@@ -750,6 +752,7 @@ class Renderable extends BaseRenderable {
+   }
+   set flexShrink(shrink) {
+     const value = shrink == null ? 1 : shrink;
++    this._flexShrinkExplicit = true;
+     this._flexShrink = value;
+     this.yogaNode.setFlexShrink(value);
+     this.requestRender();
+@@ -2986,6 +2989,7 @@ class TextBufferRenderable extends Renderable {
+       this.requestRender();
+     }
+   }
++
+   onResize(width, height) {
+     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
+     this.yogaNode.markDirty();
+@@ -3310,7 +3314,10 @@ class CodeRenderable extends TextBufferRenderable {
+     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
+     if (this._streaming && !isInitialContent) {
+       this._shouldRenderTextBuffer = true;
+-    } else if (shouldDrawUnstyledNow) {
++    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
++      // streaming initial content: render the raw text immediately (no
++      // EMPTY first frame while the async highlight is in flight - the
++      // flicker's collapse half); the highlight colors it when it lands.
+       if (this._initialStyledText) {
+         this.textBuffer.setStyledText(this._initialStyledText);
+       } else {
+@@ -3318,8 +3325,30 @@ class CodeRenderable extends TextBufferRenderable {
+       }
+       this.setRenderedLineSources(undefined);
+       this._shouldRenderTextBuffer = true;
++    } else if (this._shouldRenderTextBuffer) {
++      // Already painting (an element carried across the streaming->running
++      // ->completed transitions, or a completed element whose content
++      // changed): the buffer already shows text (the last landed
++      // content/highlight). Keep it visible and defer to the incoming
++      // highlight - a raw re-paint here is the 0167 raw-WHITE flash, a
++      // defer-with-blank here is the pre-0167 one-frame no-text flicker.
+     } else {
+-      this._shouldRenderTextBuffer = false;
++      // Fresh non-streaming completed mount with drawUnstyledText=false
++      // (the write/bash completed elements, the edit diff): the buffer was
++      // set in the constructor but is not painted (_shouldRenderTextBuffer
++      // = false). Keep it unpainted and defer to the async highlight - a
++      // sub-frame blank for typical content, then the highlight colors it.
++      // 0167's raw paint replaced this with a WHITE first frame, which is
++      // the worse artifact (a full-brightness frame vs a brief blank).
++      // BUN VARIANT ALIGNED WITH NODE (2026-09-07): deferring left the
++      // buffer unpainted and the GUTTER full while the async highlight was
++      // in flight - the persistent "gutters but no text" blank (heredoc
++      // re-split fresh mounts at completion). The buffer ALREADY holds the
++      // content (constructor setText), so paint it raw now and let the
++      // highlight color it - never a persistent blank.
++      this.textBuffer.setText(content);
++      this.setRenderedLineSources(undefined);
++      this._shouldRenderTextBuffer = true;
+     }
+   }
+   async startHighlight() {
+diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
+index 4a2cb78..07da349 100644
+--- a/chunk-node-51kpf0mz.js
++++ b/chunk-node-51kpf0mz.js
+@@ -225,6 +225,7 @@ class Renderable extends BaseRenderable {
+   _position = {};
+   _opacity = 1;
+   _flexShrink = 1;
++  _flexShrinkExplicit = false;
+   _childrenInLayoutOrder = [];
+   _childrenInZIndexOrder = [];
+   needsZIndexSort = false;
+@@ -518,7 +519,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._width = value;
+     this.yogaNode.setWidth(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -533,7 +534,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._height = value;
+     this.yogaNode.setHeight(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -592,6 +593,7 @@ class Renderable extends BaseRenderable {
+       node.setFlexGrow(0);
+     }
+     if (options.flexShrink !== undefined) {
++      this._flexShrinkExplicit = true;
+       this._flexShrink = options.flexShrink;
+       node.setFlexShrink(options.flexShrink);
+     } else {
+@@ -749,6 +751,7 @@ class Renderable extends BaseRenderable {
+   }
+   set flexShrink(shrink) {
+     const value = shrink == null ? 1 : shrink;
++    this._flexShrinkExplicit = true;
+     this._flexShrink = value;
+     this.yogaNode.setFlexShrink(value);
+     this.requestRender();
+@@ -2985,6 +2988,7 @@ class TextBufferRenderable extends Renderable {
+       this.requestRender();
+     }
+   }
++
+   onResize(width, height) {
+     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
+     this.yogaNode.markDirty();
+@@ -3309,7 +3313,10 @@ class CodeRenderable extends TextBufferRenderable {
+     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
+     if (this._streaming && !isInitialContent) {
+       this._shouldRenderTextBuffer = true;
+-    } else if (shouldDrawUnstyledNow) {
++    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
++      // streaming initial content: render the raw text immediately (no
++      // EMPTY first frame while the async highlight is in flight - the
++      // flicker's collapse half); the highlight colors it when it lands.
+       if (this._initialStyledText) {
+         this.textBuffer.setStyledText(this._initialStyledText);
+       } else {
+@@ -3318,7 +3325,16 @@ class CodeRenderable extends TextBufferRenderable {
+       this.setRenderedLineSources(undefined);
+       this._shouldRenderTextBuffer = true;
+     } else {
+-      this._shouldRenderTextBuffer = false;
++      // Non-streaming completed views with drawUnstyledText=false (the
++      // write/bash completed elements): the buffer would stay BLANK until
++      // the async highlight lands - the one-frame no-text flicker at the
++      // streaming->completed transition. Render the raw text immediately
++      // (the completed first paint is raw-white for a frame, then the
++      // highlight colors it) - the same treatment as the streaming initial
++      // content above.
++      this.textBuffer.setText(content);
++      this.setRenderedLineSources(undefined);
++      this._shouldRenderTextBuffer = true;
+     }
+   }
+   async startHighlight() {
+diff --git a/index.bun.js b/index.bun.js
+index 815856b..657f8a0 100644
 --- a/index.bun.js
 +++ b/index.bun.js
 @@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
@@ -269,7 +453,7 @@
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11959,6 +12129,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11959,6 +12133,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -278,6 +462,8 @@
      } finally {
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
+diff --git a/index.node.js b/index.node.js
+index 0ddf03b..54ba1ef 100644
 --- a/index.node.js
 +++ b/index.node.js
 @@ -5664,7 +5664,8 @@ class DiffRenderable extends Renderable {
@@ -469,7 +655,7 @@
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12096,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11958,6 +12100,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -478,90 +664,8 @@
      } finally {
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
---- a/chunk-bun-tkm837n2.js
-+++ b/chunk-bun-tkm837n2.js
-@@ -2986,6 +2986,7 @@ class TextBufferRenderable extends Renderable {
-       this.requestRender();
-     }
-   }
-+
-   onResize(width, height) {
-     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
-     this.yogaNode.markDirty();
-@@ -3310,7 +3311,10 @@ class CodeRenderable extends TextBufferRenderable {
-     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
-     if (this._streaming && !isInitialContent) {
-       this._shouldRenderTextBuffer = true;
--    } else if (shouldDrawUnstyledNow) {
-+    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
-+      // streaming initial content: render the raw text immediately (no
-+      // EMPTY first frame while the async highlight is in flight - the
-+      // flicker's collapse half); the highlight colors it when it lands.
-       if (this._initialStyledText) {
-         this.textBuffer.setStyledText(this._initialStyledText);
-       } else {
-@@ -3318,7 +3322,21 @@ class CodeRenderable extends TextBufferRenderable {
-       }
-       this.setRenderedLineSources(undefined);
-       this._shouldRenderTextBuffer = true;
-+    } else if (this._shouldRenderTextBuffer) {
-+      // Already painting (an element carried across the streaming->running
-+      // ->completed transitions, or a completed element whose content
-+      // changed): the buffer already shows text (the last landed
-+      // content/highlight). Keep it visible and defer to the incoming
-+      // highlight - a raw re-paint here is the 0167 raw-WHITE flash, a
-+      // defer-with-blank here is the pre-0167 one-frame no-text flicker.
-     } else {
-+      // Fresh non-streaming completed mount with drawUnstyledText=false
-+      // (the write/bash completed elements, the edit diff): the buffer was
-+      // set in the constructor but is not painted (_shouldRenderTextBuffer
-+      // = false). Keep it unpainted and defer to the async highlight - a
-+      // sub-frame blank for typical content, then the highlight colors it.
-+      // 0167's raw paint replaced this with a WHITE first frame, which is
-+      // the worse artifact (a full-brightness frame vs a brief blank).
-       this._shouldRenderTextBuffer = false;
-     }
-   }
---- a/chunk-node-51kpf0mz.js
-+++ b/chunk-node-51kpf0mz.js
-@@ -2985,6 +2985,7 @@ class TextBufferRenderable extends Renderable {
-       this.requestRender();
-     }
-   }
-+
-   onResize(width, height) {
-     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
-     this.yogaNode.markDirty();
-@@ -3309,7 +3310,10 @@ class CodeRenderable extends TextBufferRenderable {
-     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
-     if (this._streaming && !isInitialContent) {
-       this._shouldRenderTextBuffer = true;
--    } else if (shouldDrawUnstyledNow) {
-+    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
-+      // streaming initial content: render the raw text immediately (no
-+      // EMPTY first frame while the async highlight is in flight - the
-+      // flicker's collapse half); the highlight colors it when it lands.
-       if (this._initialStyledText) {
-         this.textBuffer.setStyledText(this._initialStyledText);
-       } else {
-@@ -3318,7 +3322,16 @@ class CodeRenderable extends TextBufferRenderable {
-       this.setRenderedLineSources(undefined);
-       this._shouldRenderTextBuffer = true;
-     } else {
--      this._shouldRenderTextBuffer = false;
-+      // Non-streaming completed views with drawUnstyledText=false (the
-+      // write/bash completed elements): the buffer would stay BLANK until
-+      // the async highlight lands - the one-frame no-text flicker at the
-+      // streaming->completed transition. Render the raw text immediately
-+      // (the completed first paint is raw-white for a frame, then the
-+      // highlight colors it) - the same treatment as the streaming initial
-+      // content above.
-+      this.textBuffer.setText(content);
-+      this.setRenderedLineSources(undefined);
-+      this._shouldRenderTextBuffer = true;
-     }
-   }
-   async startHighlight() {
+diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
+index 62ce331..1e922c8 100644
 --- a/renderables/Diff.d.ts
 +++ b/renderables/Diff.d.ts
 @@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
