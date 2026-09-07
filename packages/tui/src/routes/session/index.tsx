@@ -16,7 +16,6 @@ import {
 } from "solid-js"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
-import { appendFileSync } from "node:fs"
 import { useRoute, useRouteData } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
@@ -2488,62 +2487,6 @@ const PART_MAPPING = {
 
 const INLINE_TOOL_ICON_WIDTH = 2
 
-// ============ TEMP INSTRUMENTATION (0277: tool-block grow/shrink/jitter) ============
-// Reusable tool code-element tracer: mirrors the ReasoningPart tracer but for
-// the streaming tool code elements (write/bash single stream, heredoc segments,
-// edit-diff left/right columns). Logs each change + a 100ms tick to
-// /tmp/tool-trace.jsonl so GrowOnly removal can be validated for jitter across
-// ALL narrowed-width blocks, not just reasoning.
-function useToolTrace(content: () => string, tag: string) {
-  let el: any = undefined
-  const layout = (e: any) => {
-    try {
-      return e?.getLayoutNode?.().getComputedLayout?.()
-    } catch {
-      return undefined
-    }
-  }
-  const sample = (cause: string) => {
-    try {
-      const l = layout(el)
-      const viewed = el?.textBufferView
-      const cw = l?.width ?? 140
-      const v = typeof el?.virtualLineCount === "number" ? el.virtualLineCount : -1
-      const m139 = viewed?.measureForDimensions ? viewed.measureForDimensions(139, 99999)?.lineCount ?? -1 : -1
-      const m140 = viewed?.measureForDimensions ? viewed.measureForDimensions(140, 99999)?.lineCount ?? -1 : -1
-      appendFileSync(
-        "/tmp/tool-trace.jsonl",
-        JSON.stringify({
-          t: Date.now(),
-          tag,
-          cause,
-          len: content().length,
-          codeH: l?.height ?? -1,
-          cw,
-          v,
-          m139,
-          m140,
-        }) + "\n",
-      )
-    } catch (e) {
-      try {
-        appendFileSync("/tmp/tool-trace.jsonl", JSON.stringify({ t: Date.now(), tag, cause, err: String(e) }) + "\n")
-      } catch {}
-    }
-  }
-  createEffect(() => {
-    void content()
-    sample("change")
-  })
-  onMount(() => {
-    const id = setInterval(() => sample("tick"), 100)
-    onCleanup(() => clearInterval(id))
-  })
-  return (ref: any) => {
-    el = ref
-  }
-}
-
 // 0276b: the width-1 height fix, generalized to streaming tool code elements.
 // The native Yoga measure wraps at width-1 while the textBufferView wraps at
 // the full width, so a streamed line crossing the wrap boundary gives the box
@@ -2551,8 +2494,7 @@ function useToolTrace(content: () => string, tag: string) {
 // height from `measureForDimensions(layoutW).lineCount` - the buffer's OWN
 // wrapped count at the real laid-out width, always correct. This hook applies
 // the same driver to a code element directly (no wrapper box, so line_number
-// keeps its direct code target). `trace` optionally chains the jitter tracer's
-// ref assignment onto the same element.
+// keeps its direct code target).
 // 0284b: the trailing-newline blank row. `measureForDimensions(...).lineCount`
 // counts a trailing "\n" as an extra (empty) row, and the driver passed that
 // count straight to the code box height - so streamed content ending in "\n"
@@ -2563,7 +2505,6 @@ function useToolTrace(content: () => string, tag: string) {
 // content ends in a newline so the box matches the visible buffered rows.
 function useFixedStreamHeight(
   content: () => string,
-  trace: ((el: any) => void) | undefined,
   opts?: { released?: () => boolean },
 ) {
   let el: any = undefined
@@ -2630,58 +2571,27 @@ function useFixedStreamHeight(
     // changes virtualLineCount, which the native measure consumes, which
     // changes the laid-out width, re-firing this effect with a new width ->
     // the box bounced between wrap states (lines "extending outside bounds and
-    // snapping back", live). The driver is READ-ONLY measure again; the
-    // instrumentation below logs the width / virtualLineCount / measure /
-    // applied-rows gap so the phantom-gutter mechanism can be pinned before a
-    // proper fix.
-    const _pqjWidth = width()
-    // The renderable's OWN width (the paint probe shows the diff cols are ~60;
-    // getComputedLayout().width may return undefined early and pin the fallback).
-    let _pqjElWidth = -1
-    try {
-      _pqjElWidth = typeof el?.width === "number" ? el.width : -1
-    } catch {}
-    let _pqjLayoutW = -1
-    try {
-      _pqjLayoutW = el?.getLayoutNode?.().getComputedLayout?.().width ?? -1
-    } catch {}
-    // A destroyed TextBufferView THROWS on virtualLineCount/measure (0289:
-    // the slot elements made this easy to hit - a slot's code element can be
-    // torn down while its StreamSegment measure hook still lives, crashing the
-    // whole TUI with "TextBufferView is destroyed"). Guard the measurement.
-    let _pqjVlc = -1
+    // snapping back", live). The driver is READ-ONLY measure. A destroyed
+    // TextBufferView THROWS on virtualLineCount/measure (0289: the slot
+    // elements made this easy to hit - a slot's code element can be torn down
+    // while its StreamSegment measure hook still lives, crashing the whole TUI
+    // with "TextBufferView is destroyed"). Guard the measurement.
+    const w = width()
     let c = 0
     try {
-      _pqjVlc = typeof viewed.getVirtualLineCount === "function" ? viewed.getVirtualLineCount() : -1
-      // Measure at the element's real width (the 0286 root cause: the memo pinned
-      // 140, undersizing the box and phantom-numbering the gutter). Both
-      // `measure.lineCount` and `virtualLineCount` count the trailing-newline
-      // blank row identically, so the box height and gutter agree - no strip.
-      c = viewed.measureForDimensions(_pqjWidth, 99999)?.lineCount ?? 0
-      const _pqjRows = Math.max(0, c)
-      setRows(_pqjRows)
+      // Measure at the element's real width (the 0286 root cause: the memo
+      // pinned 140, undersizing the box and phantom-numbering the gutter).
+      // Both `measure.lineCount` and `virtualLineCount` count the
+      // trailing-newline blank row identically, so the box height and gutter
+      // agree - no strip.
+      c = viewed.measureForDimensions(w, 99999)?.lineCount ?? 0
+      setRows(Math.max(0, c))
     } catch {
       setRows(0)
     }
-    try {
-      appendFileSync(
-        "/tmp/gutter-jump.jsonl",
-        JSON.stringify({
-          t: Date.now(),
-          len: content().length,
-          width: _pqjWidth,
-          elWidth: _pqjElWidth,
-          layoutW: _pqjLayoutW,
-          vlc: _pqjVlc,
-          measure: c,
-          rows: c,
-        }) + "\n",
-      )
-    } catch {}
   })
   const ref = (node: any) => {
     el = node
-    trace?.(node)
   }
   return { height: rows, ref }
 }
@@ -2715,82 +2625,6 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     setExpanded((prev) => !prev)
   }
 
-  // ============ TEMP INSTRUMENTATION (0276 tracer: wrap-width-1 measure) ============
-  const traceID = props.part.id
-  let traceOuter: BoxRenderable | undefined
-  let traceInner: any = undefined
-  let traceCodeEl: any = undefined
-  const layoutH = (el: any) => {
-    try {
-      return el?.getLayoutNode?.().getComputedLayout?.().height ?? -1
-    } catch {
-      return -1
-    }
-  }
-  const trace = (cause: string) => {
-    try {
-      const body = summary().body ?? ""
-      const safe = <T,>(fn: () => T, def: T): T => {
-        try {
-          return fn()
-        } catch {
-          return def
-        }
-      }
-      const bufLen = safe(() => traceCodeEl?.textBuffer?.getPlainText?.().length ?? -1, -1)
-      const lineInfo = safe(() => traceCodeEl?.lineInfo ?? null, null)
-      const wrappedRows = lineInfo ? (lineInfo.lineStartCols ?? []).length : -1
-      const virtLines = safe(() => traceCodeEl?.virtualLineCount ?? -1, -1)
-      const viewed = safe(() => traceCodeEl?.textBufferView ?? null, null)
-      const codeWidth = (() => {
-        try {
-          return traceCodeEl?.getLayoutNode?.().getComputedLayout?.().width ?? 140
-        } catch {
-          return 140
-        }
-      })()
-      const measured = viewed ? {
-        lineCountAtWidth: viewed.measureForDimensions ? viewed.measureForDimensions(codeWidth, 99999)?.lineCount ?? -1 : -1,
-        lineCount139: viewed.measureForDimensions ? viewed.measureForDimensions(139, 99999)?.lineCount ?? -1 : -1,
-        lineCount140: viewed.measureForDimensions ? viewed.measureForDimensions(140, 99999)?.lineCount ?? -1 : -1,
-        codeWidth,
-        elWidth: safe(() => traceCodeEl?.width ?? -1, -1),
-      } : null
-      appendFileSync(
-        "/tmp/reasoning-trace.jsonl",
-        JSON.stringify({
-          t: Date.now(),
-          id: traceID,
-          cause,
-          done: isDone(),
-          len: body.length,
-          bufLen,
-          wrappedRows,
-          virtLines,
-          measured,
-          outerH: layoutH(traceOuter),
-          innerH: layoutH(traceInner),
-          codeH: layoutH(traceCodeEl),
-        }) + "\n",
-      )
-    } catch (e) {
-      try {
-        appendFileSync(
-          "/tmp/reasoning-trace.jsonl",
-          JSON.stringify({ t: Date.now(), id: traceID, cause, traceError: String(e) }) + "\n",
-        )
-      } catch {}
-    }
-  }
-  createEffect(() => {
-    void summary()
-    void isDone()
-    trace("change")
-  })
-  onMount(() => {
-    const id = setInterval(() => trace("tick"), 100)
-    onCleanup(() => clearInterval(id))
-  })
   // 0276 experiment: the box height driver = the buffer's wrapped row count at
   // the element's REAL laid-out width (measureForDimensions at codeWidth), not
   // the native layout height (which wraps at width-1 and yields the +1).
@@ -2798,6 +2632,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   // in the trace) - NOT a 50% column like the diff halves - so its layoutW memo
   // pinning 140 is correct and was left untouched. Only useFixedStreamHeight
   // (the diff columns + tool stream) had the wrong-width bug.
+  let traceCodeEl: any = undefined
   const [streamRowsCount, setStreamRowsCount] = createSignal(0)
   const layoutW = createMemo(() => {
     try {
@@ -2818,14 +2653,12 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     const c = el.textBufferView.measureForDimensions(layoutW(), 99999)?.lineCount ?? 0
     setStreamRowsCount(c)
   })
-  // ========================================================================
 
   return (
     <Show when={content() || opaque()}>
       <box
         ref={(el: BoxRenderable) => {
           alwaysSeparate.add(el)
-          traceOuter = el
         }}
         paddingLeft={3}
         paddingRight={2}
@@ -2850,9 +2683,6 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
               real laid-out width (lineCountAtWidth == virtualLineCount, always
               correct) instead of the compromised layout height. */}
           <box
-            ref={(el: any) => {
-              traceInner = el
-            }}
             height={streamRowsCount()}
             paddingLeft={inMinimal() ? 2 : 0}
             marginTop={1}
@@ -3926,7 +3756,7 @@ function StreamSegment(props: {
   // Guarded height driver only - the 100ms trace ticker was dropped (a slot's
   // element could be torn down mid-tick; the per-slot probes multiplied the
   // destroyed-buffer reads that crashed the TUI).
-  const streamHeight = useFixedStreamHeight(props.text, undefined, {
+  const streamHeight = useFixedStreamHeight(props.text, {
     // Re-measure at the streaming -> completed transition: the buffer catches
     // up synchronously then, fixing the "gutters but no text" stale height.
     released: () => !props.streaming(),
@@ -4011,39 +3841,6 @@ function LiveToolStream(props: {
 }) {
   const { theme, syntax } = useTheme()
   const ctx = use()
-  // 0289e: ONE structure from the first frame. The gutter decision moved per
-  // slot (StreamSegment's gutterOn) - the whole command lives in slot 0 and
-  // heredoc bodies/tails mount as later slots; there is no single-element
-  // branch to flip into. The PROBE keeps summary state only.
-  createEffect((prev) => {
-    const state = {
-      gutterOn: props.content.includes("\n") || (props.segments?.length ?? 0) > 1,
-      nl: props.content.includes("\n"),
-      contentLen: props.content.length,
-      lineNumbers: 0,
-      segments: props.segments?.length ?? 0,
-      streaming: props.streaming,
-    }
-    const key = JSON.stringify(state)
-    if (key !== prev) {
-      try {
-        require("fs").appendFileSync(
-          "/tmp/opencode/gutter-gate.jsonl",
-          JSON.stringify({
-            t: Date.now(),
-            ...state,
-            preview: props.content.split("\n")[0]?.slice(0, 30) ?? "",
-            // The first ~5 lines of the content with JSON escaping, so the
-            // indentation of the heredoc body lines is verifiable verbatim.
-            bodyLines: props.content.split("\n").slice(0, 5).map((l) =>
-              l.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\t/g, "\\t").slice(0, 40),
-            ),
-          }) + "\n",
-        )
-      } catch {}
-    }
-    return key
-  }, "")
   // The streaming view must match the completed view's conceal choice.
   // The write completed view renders conceal={false}; if the live view
   // hides comments (conceal=true), the concealed spans keep their text
@@ -4530,20 +4327,16 @@ function LiveEditDiff(props: {
   // 0277: GrowOnly/measuredGrowRows REMOVED - each column wraps at its own
   // real width (the 0276 root cause fix); the block grows/shrinks with the
   // content like upstream.
-  const traceL = useToolTrace(left, "diffL")
-  const traceR = useToolTrace(right, "diffR")
   // 0276b: fixed-height driver per column - the code element's own height
   // must be the buffer's wrapped count at its real width, not the native
   // width-1 measure (persistent +1 phantom on the diff columns at cw~66).
-  const heightL = useFixedStreamHeight(left, traceL, { released: () => !props.streaming })
-  const heightR = useFixedStreamHeight(right, traceR, { released: () => !props.streaming })
+  const heightL = useFixedStreamHeight(left, { released: () => !props.streaming })
+  const heightR = useFixedStreamHeight(right, { released: () => !props.streaming })
   const refL = (el: any) => {
     heightL.ref(el)
-    traceL(el)
   }
   const refR = (el: any) => {
     heightR.ref(el)
-    traceR(el)
   }
   // STEP 2 ladder: the line arrays + the diff anchor. The anchor is the
   // first index where OLD[i] !== NEW[i] (or the shorter length when one
