@@ -3758,6 +3758,14 @@ function StreamSegment(props: {
   // appear even for single-line opener/closer lines, so a lone "1" next to
   // the body block is legitimate.
   segmented: () => boolean
+  // Caller gutter override. false = NEVER gutter (the squash-output summary
+  // - prose, not code; a substantive trailing newline on the streamed text
+  // would otherwise flip the heuristic below on and give a single wrapping
+  // line a phantom 1/2 gutter). true/undefined = the heuristic (the
+  // single-line bash no-gutter rule still applies - the Shell caller's
+  // gutter={() => true} is a stub and must NOT force gutters on a lone
+  // single-line command).
+  gutter: () => boolean | undefined
 }) {
   const { theme, syntax } = useTheme()
   // Bash slots pass a small continuation map so the closer/tail keep
@@ -3793,6 +3801,21 @@ function StreamSegment(props: {
       height={streamHeight.height()}
       filetype={props.lang()}
       width="100%"
+      // flexShrink={1}: the code sits in line_number's flex row AFTER the
+      // gutter (a fixed sibling). width="100%" alone would resolve to the
+      // line_number's full content width, ignoring the gutter the element
+      // occupies beside - so the code must SHRINK to `ln width - gutter`.
+      // WITHOUT this the element overflows the box by the gutter count. The
+      // default is flexShrink=0 whenever width OR height is a NUMBER
+      // (core setupYogaProperties) - the 0276b numeric height driver made
+      // this element a number-heighted one, silently flipping it to no-shrink
+      // (the 2026-09-07 wrap-regression: streaming diff columns spilled into
+      // each other + past the box; the completed `diff` codes use
+      // height="100%" (string) and shrink correctly - that's why only the
+      // streaming state overflowed). Explicit flexShrink=1 restores the
+      // pre-driver behavior; the wrap width tracks the shrunk layout width
+      // (setViewport -> wrap_width), so wraps now land inside the box.
+      flexShrink={1}
       drawUnstyledText={false}
       streaming={props.streaming()}
       syntaxStyle={syntax()}
@@ -3806,9 +3829,14 @@ function StreamSegment(props: {
   // The toggle is a line_number-only Show (fallback = the SAME `el`) - the
   // code element never re-mounts (the solid adapter disposes the gutter node
   // only, and `el` persists across the flip).
-  const gutterOn = createMemo(() =>
-    props.show() && (props.restart() || props.text().includes("\n") || props.segmented()),
-  )
+  const gutterOn = createMemo(() => {
+    // Hard override: the squash-output summary is prose (gutter={false}) -
+    // never number it, even when the streamed text trails a newline (the
+    // includes("\n") heuristic below would otherwise flip it on and print
+    // a phantom 1/2 gutter against a single wrapping line).
+    if (props.gutter() === false) return false
+    return props.show() && (props.restart() || props.text().includes("\n") || props.segmented())
+  })
   // The solid adapter constructs native elements with { id } only and applies
   // props via node[name]=value, so a gutter's minWidth/paddingRight (captured
   // in the native constructor) are IMMOVABLE at runtime - only the lineNumbers
@@ -3922,6 +3950,7 @@ function LiveToolStream(props: {
         restart={() => segs()[i]?.body === true}
         show={() => i < segs().length}
         segmented={() => segs().length > 1}
+        gutter={() => props.gutter}
       />,
     )
   }
@@ -4411,6 +4440,13 @@ function LiveEditDiff(props: {
                 // video) and the clamp latched the settle peaks as blank
                 // lines at the bottom. The completed diff uses width="100%".
                 width="100%"
+                // flexShrink={1}: shrink to `line_number - gutter`. The
+                // numeric height driver (0276b) flips the core default to
+                // flexShrink=0 (number width OR height), so width="100%"
+                // resolved to the FULL column and the code overflowed its
+                // 50% box by the gutter count - spilling into the sibling
+                // column and past the box edge (2026-09-07 wrap regression).
+                flexShrink={1}
                 drawUnstyledText={false}
                 streaming={true}
                 syntaxStyle={syntax()}
@@ -4427,6 +4463,11 @@ function LiveEditDiff(props: {
                 height={heightR.height()}
                 {...(lang() ? { filetype: lang() } : {})}
                 width="100%"
+                // flexShrink={1}: see the left column - shrink to
+                // `line_number - gutter` so the right column never blows
+                // past the box edge (the numeric height driver defaulted it
+                // to flexShrink=0, overflowing by the gutter count).
+                flexShrink={1}
                 drawUnstyledText={false}
                 streaming={true}
                 syntaxStyle={syntax()}
