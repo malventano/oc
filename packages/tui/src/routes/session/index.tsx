@@ -4004,27 +4004,45 @@ function Write(props: ToolProps) {
   // everywhere, or a content-first JS write streams "javascript" and snaps
   // to "typescript" when the path lands - the grammar axis of the
   // duplicate-grey-copy bug.
-  // Latched live filetype: the FIRST CONFIDENT resolution (the path once
-  // it lands and resolves, or a real content sniff) sticks for the
-  // stream's duration - a mid-stream flip reverts the view to plain and
-  // STAYS white (the 2026-08-17 write white-revert: the filePath arg
+  // Latched live filetype (0162): the FIRST CONFIDENT resolution (the
+  // path once it lands and resolves, or a real content sniff) sticks for
+  // the stream's duration - a mid-stream flip reverts the view to plain
+  // and STAYS white (the 2026-08-17 write white-revert: the filePath arg
   // landing mid-stream flipped the live type to undefined, likely via the
   // streamedJsonValue tail-garbage path). The low-content markdown
-  // default is NOT latched - a later confident signal still engages. The
-  // completed view re-evaluates from the actual filename.
+  // default is NOT latched - a later confident signal still engages.
+  // ONE-FLIP RULE (0302): the sniff flips at most ONCE while streaming
+  // (markdown -> first confident guess, then stuck) - a first guess that
+  // turns out wrong is NOT re-guessed mid-stream. AT COMPLETION the
+  // filename is known and authoritative, so the grammar REBASES on it
+  // (the 0199 carry-over keeps the same element; the highlight re-runs
+  // once with the final grammar while the content is already final) -
+  // this is the "wrong first sniff, corrected at the end" path.
+  // MUST be declared BEFORE the memo (0302 TDZ fix): Solid computes the
+  // memo eagerly inside the reactive root, so a memo getter referencing a
+  // LATER-const binding hits "Cannot access 'X' before initialization"
+  // and crashes every session load (the 0302 crash: the getter used
+  // completed() before its const ran).
+  const running = () => stream.status() === "running"
+  const completed = () => !stream.streaming() && !running()
   let latched: string | undefined
   const liveFiletype = createMemo(() => {
     const p = stream.livePath() ?? path()
+    if (completed()) {
+      // Rebase on the now-known name (0302): the finished file's real
+      // language wins over any stream-time guess. No path -> fall through
+      // to the latched/default (should not happen; write has a filePath).
+      if (p) {
+        const ft = filetype(p)
+        if (ft) return ft
+      }
+    }
     const pathFt = p ? filetype(p) : undefined
     const sniffed = coalesceFiletype(sniffFiletype(stream.display()))
     const candidate = pathFt ?? sniffed
     if (candidate) latched = candidate
-    if (latched) return latched
-    return "markdown"
+    return latched ?? "markdown"
   })
-
-  const running = () => stream.status() === "running"
-  const completed = () => !stream.streaming() && !running()
   return (
     <Switch>
       <Match when={status() === "error"}>
