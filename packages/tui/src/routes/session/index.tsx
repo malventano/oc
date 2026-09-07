@@ -3588,11 +3588,32 @@ function heredocSegments(text: string): StreamSegmentData[] | undefined {
     // matches here too but is not in EVAL_LANG, so it falls through to the
     // redirect target / sniffer.
     const interp = opener && /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\s+(?:-\s*)?(?:<<|<<<)/.exec(opener)
+    // The FIRST LINE of the heredoc body can carry the filename when the
+    // opener line has no redirect target and the delimiter is not a language
+    // name (plain `cat << 'EOF'` with the body starting `myfile.py` or
+    // `#!/usr/bin/env python3`). The opener chain above wins when it names a
+    // language already; this only fills the gap where the model puts the
+    // target filename on the body's first line instead of the shell line.
+    // Extract a bare filename/path token from the trimmed first line (a
+    // comment-headed body like `# file: foo.py` resolves through the same
+    // path, and a shebang line is picked up by sniffFiletype below as a
+    // fallback - the explicit token check is the "path-looking" case the
+    // sniffer has no rule for).
+    const bodyFt = (() => {
+      const first = body.split("\n", 1)[0]?.trim() ?? ""
+      // Anchored to line start so a prose first line ("# Installing node.js
+      // packages") cannot false-positive; the optional comment/label prefix
+      // covers the "# file: foo.py" / "path = foo.py" shapes. A shebang
+      // line has no extension token - sniffFiletype handles it below.
+      const m = /^(?:#\s*(?:file(?:name)?|path|source)?\s*[=:]?\s*|(?:file(?:name)?|path|source)\s*[=:]\s*|#!\s*)?([A-Za-z0-9_./+\-]+\.(?:py|js|mjs|cjs|ts|tsx|mts|sh|bash|zsh|json|ya?ml|md|rb|go|rs|sql|toml|ini|pl|pl6|pm|php|c|cpp|h|hpp|java|kt|swift|hs|lua|css|scss|sass|xml|html|vue|svelte|astro|zig|tf|hcl|nix|typ|bat|ps1|psm1|diff|patch|tex|bib|erl|ex|exs|dart|groovy|gradle|scala|clj|cljs|edn|jl))(?:\s|$|#|['\"]|,|:)/i.exec(first)
+      return m ? coalesceFiletype(filetype(m[1]!)) : undefined
+    })()
     return (
       HEREDOC_LANG[op.delim.toUpperCase()] ??
       EVAL_LANG[op.delim] ??
       (targetFt && targetFt !== "none" ? targetFt : undefined) ??
       (interp ? EVAL_LANG[interp[1]!] : undefined) ??
+      (bodyFt && bodyFt !== "none" ? bodyFt : undefined) ??
       sniffFiletype(body, 0) ??
       "bash"
     )
