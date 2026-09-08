@@ -41,6 +41,9 @@ import {
   getStreamHighlightMs,
   getStreamFlushMs,
   STREAM_WIDEN_MARGIN_MS,
+  getStreamDeltaMs,
+  STREAM_BATCH_MIN_MS,
+  STREAM_BATCH_MAX_MS,
 } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
@@ -95,6 +98,7 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
+import { getStreamProbe } from "./util/stream-probe"
 
 registerOpencodeSpinner()
 
@@ -240,28 +244,79 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       // controller. The per-view size heuristics are gone - one mechanism everywhere.
       const treeSitterClient = getTreeSitterClient()
       const originalHighlightOnce = treeSitterClient.highlightOnce.bind(treeSitterClient)
+      // Content-identity dedupe: highlightOnce is pure in (filetype, content),
+      // so a call whose content equals the last one for that filetype reuses the
+      // result instead of another worker round trip. Kills the pre-stream
+      // pile-up where the flush loop re-highlights an unchanged element per
+      // flush while the worker spins up (the 243-call front bump).
+      const lastHighlights = new Map<string, { content: string; result: any }[]>()
       treeSitterClient.highlightOnce = (async (content: string, filetype: string) => {
+        // Two slots per filetype: surfaces with the SAME filetype but DIFFERENT
+        // stable content (e.g. prompt echo + reasoning element) alternate, and a
+        // single slot would thrash - two keeps both hot.
+        const list = lastHighlights.get(filetype)
+        if (list) {
+          for (let i = 0; i < list.length; i++) {
+            if (list[i].content === content) {
+              if (i > 0) {
+                const [entry] = list.splice(i, 1)
+                list.unshift(entry)
+              }
+              getStreamProbe().onHighlightSkip()
+              return list[0].result
+            }
+          }
+        }
         const start = performance.now()
         const result = await originalHighlightOnce(content, filetype)
-        onStreamHighlight(performance.now(), performance.now() - start)
+        const workerMs = performance.now() - start
+        onStreamHighlight(performance.now(), workerMs)
+        getStreamProbe().onHighlight(filetype, content.length, workerMs, !!(result as any)?.incremental, (result as any)?.timings)
+        if (!list) {
+          lastHighlights.set(filetype, [{ content, result }])
+        } else {
+          list.unshift({ content, result })
+          if (list.length > 2) list.pop()
+        }
         return result
       }) as typeof treeSitterClient.highlightOnce
       {
-        // Window-relative thresholds: widen when the measured load (render pass +
-        // highlight worker update time) comes within slack of the current flush
-        // window (load > window - slack), so the window lands slightly above the
-        // worker's time and each flush's highlight completes before the next flush
-        // supersedes it; narrow back when a render is cheap relative to the window
-        // (load < window/4). Lowering the baseline window (STREAM_BATCH_MIN_MS) makes
-        // us hit the widen condition sooner, so the adaptive ramp is visible during
-        // streaming even at small content sizes.
-        const WIDEN_STREAK = 3
-        const NARROW_STREAK = 25
-        let wideStreak = 0
-        let narrowStreak = 0
+        // Fine settle (0307): the window tracks the measured load continuously -
+        // window = 1.1 * load (the 1.1x keeps ahead of the O(n) worker growth;
+        // no extra dwell offset - as a movement constraining it did nothing and
+        // the window is free to drift sub-millimeter, which is the smooth feel
+        // we want). Ratio derived from the named constants, no raw literals.
+        const STREAM_SETTLE_DWELL = STREAM_WIDEN_MARGIN_MS / (STREAM_BATCH_MIN_MS * 5)
+        const settleTarget = (load: number) =>
+          Math.max(
+            STREAM_BATCH_MIN_MS,
+            Math.min(STREAM_BATCH_MAX_MS, load * (1 + STREAM_SETTLE_DWELL)),
+          )
+        // Slide: the load is heavily low-passed (EMA, ~270ms time constant) to
+        // its trend, and the window is set straight to 1.1*trend + 2ms. The long
+        // time constant eats the frame-to-frame and sample-to-sample jitter, so
+        // the trend (and thus the window) moves only with real content-driven
+        // growth - a slow monotonic ramp in small increments, no 1ms toggles and
+        // no 2ms option-quanta, with spikes self-degrading as the EMA decays.
+        const STREAM_SETTLE_LPF = 1 / 64
+        let smoothLoad = 0
+        // Only settle the window while output deltas are actually flowing.
+        // With no changes (pre-stream burst, mid-turn thinking gaps) the window
+        // must not ratchet on highlight/frame noise - it is held, and reset
+        // toward baseline once the stream has been idle for a while.
+        const STREAM_BATCH_IDLE_MS = STREAM_BATCH_MIN_MS * 110
+        const STREAM_BATCH_RESET_MS = STREAM_BATCH_IDLE_MS * 5
         renderer.addPostProcessFn(() => {
           const now = performance.now()
           const windowMs = getStreamBatchWindow()
+          const deltaMs = getStreamDeltaMs(now)
+          getStreamProbe().onFrame(now - renderStartMs)
+          if (deltaMs > STREAM_BATCH_IDLE_MS) {
+            if (deltaMs > STREAM_BATCH_RESET_MS) {
+              setStreamBatchWindow(STREAM_BATCH_MIN_MS)
+            }
+            return
+          }
           // Highlight updates run on the worker thread (invisible to main-thread
           // renderMs): the measured gap between consecutive worker responses equals
           // the worker's per-update parse+query time while it is the binding
@@ -270,25 +325,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           // too: it runs between the delta and the frame, invisible to both the
           // frame duration and the worker, yet it is the measured mid-turn freeze
           // driver (turn-stats walk + code-element content setter).
-          const renderMs = Math.max(now - renderStartMs, getStreamHighlightMs(now), getStreamFlushMs(now))
-          if (renderMs > windowMs - STREAM_WIDEN_MARGIN_MS) {
-            wideStreak += 1
-            narrowStreak = 0
-            if (wideStreak >= WIDEN_STREAK) {
-              setStreamBatchWindow(windowMs * 2)
-              wideStreak = 0
-            }
-          } else if (renderMs < windowMs / 4) {
-            narrowStreak += 1
-            wideStreak = 0
-            if (narrowStreak >= NARROW_STREAK) {
-              setStreamBatchWindow(windowMs / 2)
-              narrowStreak = 0
-            }
-          } else {
-            wideStreak = 0
-            narrowStreak = 0
-          }
+          const load = Math.max(now - renderStartMs, getStreamHighlightMs(now), getStreamFlushMs(now))
+          smoothLoad = smoothLoad ? smoothLoad + (load - smoothLoad) * STREAM_SETTLE_LPF : load
+          setStreamBatchWindow(settleTarget(smoothLoad))
         })
       }
       win32DisableProcessedInput()

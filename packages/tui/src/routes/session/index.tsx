@@ -54,6 +54,7 @@ import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
 import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK, setStreamBatchWindow, STREAM_BATCH_MIN_MS } from "../../context/sdk"
+import { getStreamProbe } from "../../util/stream-probe"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
@@ -2625,7 +2626,12 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     const end = props.part.time.end
     return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
   })
-  const summary = createMemo(() => reasoningSummary(content()))
+  const summary = createMemo(() => {
+    const t0 = performance.now()
+    const v = reasoningSummary(content())
+    getStreamProbe().onFn("summary", performance.now() - t0)
+    return v
+  })
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
 
   const toggle = () => {
@@ -2650,6 +2656,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     }
   })
   createEffect(() => {
+    const t0 = performance.now()
     void layoutW()
     void summary()
     void isDone()
@@ -2659,11 +2666,13 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
       return
     }
     const c = el.textBufferView.measureForDimensions(layoutW(), 99999)?.lineCount ?? 0
+    getStreamProbe().onFn("measure", performance.now() - t0)
     // 0305-probe / TRIAL FIX: same partial-row clip as useFixedStreamHeight -
     // grow to the buffer's true wrapped count so the streaming partial row
     // paints (no by-line reveal).
     const vr = (el.textBufferView.getVirtualLineCount?.() as number) ?? 0
     setStreamRowsCount(Math.max(c, vr))
+    getStreamProbe().onReasoning({ len: summary().body.length, lineCount: c, virtual: vr })
   })
 
   return (

@@ -26,7 +26,8 @@ import { useEvent } from "./event"
 import { useSDK } from "./sdk"
 import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
-import { onStreamFlush } from "./sdk"
+import { onStreamFlush, markContentDelta } from "./sdk"
+import { getStreamProbe } from "../util/stream-probe"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
  import { batch, onMount } from "solid-js"
@@ -444,6 +445,8 @@ export const {
               target[last] = (existing ?? "") + event.properties.delta
             }),
           )
+          getStreamProbe().onDeltaChars(event.properties.delta.length)
+          markContentDelta()
           // Full synchronous tail per delta (handler + Solid flush + anything
           // before the next macrotask): the reactive flush is the measured
           // mid-turn UI-freeze driver and it is invisible to the frame-duration
