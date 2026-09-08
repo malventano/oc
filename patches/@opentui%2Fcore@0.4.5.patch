@@ -832,7 +832,7 @@ index 1b7549e..2074aff 100644
      const reusableState = await this.getReusableParser(filetype);
      if (!reusableState) {
        postWorkerMessage({
-@@ -4330,7 +4339,49 @@ class ParserWorker {
+@@ -4330,7 +4339,56 @@ class ParserWorker {
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
@@ -843,7 +843,14 @@ index 1b7549e..2074aff 100644
 +    let queryStart = 0;
 +    let queryEnd = 0;
 +    const timings = {};
-+    if (cached && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
++    // 0322o: the incremental tree-reuse branch is DISABLED (0308) - the shared
++    // one-shot cache is keyed by filetype only, so a DIFFERENT element's
++    // document can pass the startsWith prefix check and reuse another
++    // element's tree; tree.edit() + parse(content, foreignTree) aborts the
++    // WASM parser ("RuntimeError: Aborted()" - live 2026-09-08). Always parse
++    // fresh; the client's unchanged-content dedupe (0307) still skips
++    // identical content, so the lost incremental win is minor.
++    if (false && cached && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
 +      // Append-only streaming: the appended text is the only changed region
 +      // (the incremental parse alters just the tail), so the query is scoped to
 +      // it directly - no getChangedRanges walk, which is O(n) in tree-sitter.
