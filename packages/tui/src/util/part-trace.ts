@@ -129,21 +129,25 @@ let shortBeat = 0
 let maxLanded = 0
 let pulseStart = 0
 let pulseEnd = 0
+let pulseStage = 0
 let prevPulseStart = 0
 let prevPulseEnd = 0
+let prevPulseStage = 0
 function resetApplyTrackers() {
   maxLanded = 0
   pulseStart = 0
   pulseEnd = 0
+  pulseStage = 0
   prevPulseStart = 0
   prevPulseEnd = 0
+  prevPulseStage = 0
 }
 
 function startApplyFlush() {
   if (applyFlushStarted) return
   applyFlushStarted = true
   setInterval(() => {
-    const evs = (globalThis as { __ocPartApplyEvents?: Array<{ cl: number; sl: number; cc: string }> }).__ocPartApplyEvents
+    const evs = (globalThis as { __ocPartApplyEvents?: Array<{ cl: number; sl: number; cc?: string; kind?: string; t?: number }> }).__ocPartApplyEvents
     if (!evs || evs.length === 0) return
     let n = 0
     let short = 0
@@ -158,6 +162,15 @@ function startApplyFlush() {
       }
       if ((ev as { kind?: string }).kind === "hl-end") {
         if (ev.cl > pulseEnd) pulseEnd = ev.cl
+        continue
+      }
+      if ((ev as { kind?: string }).kind === "hl-stage") {
+        const rank = (ev as { stage?: string }).stage === "entry" ? 1 : (ev as { stage?: string }).stage === "parsed" ? 2 : (ev as { stage?: string }).stage === "queried" ? 3 : (ev as { stage?: string }).stage === "injected" ? 4 : 5
+        if (rank > pulseStage) pulseStage = rank
+        continue
+      }
+      if ((ev as { kind?: string }).kind === "worker-restart") {
+        write({ kind: "worker-restart", at: ev.t })
         continue
       }
       // 0322g: drop events (the snapshotId guard superseded a highlight
@@ -177,10 +190,11 @@ function startApplyFlush() {
       if (ev.cl > maxLanded) maxLanded = ev.cl
     }
     evs.length = 0
-    if (pulseStart !== prevPulseStart || pulseEnd !== prevPulseEnd) {
-      write({ kind: "hl-pulse", startCl: pulseStart, endCl: pulseEnd })
+    if (pulseStart !== prevPulseStart || pulseEnd !== prevPulseEnd || pulseStage !== prevPulseStage) {
+      write({ kind: "hl-pulse", startCl: pulseStart, endCl: pulseEnd, stage: pulseStage })
       prevPulseStart = pulseStart
       prevPulseEnd = pulseEnd
+      prevPulseStage = pulseStage
     }
     applyBeat += n
     shortBeat += short
