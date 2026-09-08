@@ -12,7 +12,7 @@ index 701d70d..adea59c 100644
          return;
        }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..9854db1 100644
+index e5e5874..005dd00 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -65,7 +65,28 @@ index e5e5874..9854db1 100644
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3248,6 +3252,18 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3155,6 +3159,20 @@ class CodeRenderable extends TextBufferRenderable {
+       this._highlightsDirty = true;
+       this._highlightSnapshotId++;
+       if (this._streaming && this._filetype && !this._drawUnstyledText) {
++        // 0312: a streaming element that mounted before its first content
++        // (the heredoc body slot at the transition) can consume the initial-
++        // content window on an empty frame, so the raw-paint branch never
++        // fires for the real content and the body depends only on the async
++        // highlight - a superseded highlight leaves it blank while the props
++        // gutter grows. Paint the FIRST real content raw (never painted yet),
++        // then let the highlight color it - strictly better than blank.
++        if (!this._shouldRenderTextBuffer) {
++          this.textBuffer.setText(value);
++          this.setRenderedLineSources(undefined);
++          this._shouldRenderTextBuffer = true;
++          this.requestRender();
++          return;
++        }
+         this.requestRender();
+         return;
+       }
+@@ -3248,6 +3266,18 @@ class CodeRenderable extends TextBufferRenderable {
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -84,7 +105,7 @@ index e5e5874..9854db1 100644
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3326,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3310,7 +3340,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -96,7 +117,7 @@ index e5e5874..9854db1 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3337,30 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,8 +3351,30 @@ class CodeRenderable extends TextBufferRenderable {
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -128,7 +149,19 @@ index e5e5874..9854db1 100644
      }
    }
    async startHighlight() {
-@@ -3393,6 +3434,15 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3329,7 +3384,10 @@ class CodeRenderable extends TextBufferRenderable {
+     if (!filetype)
+       return;
+     const isInitialContent = this._streaming && !this._hadInitialContent;
+-    if (isInitialContent) {
++    // 0312: do not consume the initial-content raw-paint window on an empty
++    // frame (the heredoc body slot can highlight an empty content at the
++    // transition) - leave it open so the first real content paints raw.
++    if (isInitialContent && content.length > 0) {
+       this._hadInitialContent = true;
+     }
+     this._isHighlighting = true;
+@@ -3393,6 +3451,15 @@ class CodeRenderable extends TextBufferRenderable {
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
