@@ -161,7 +161,22 @@ index e5e5874..005dd00 100644
        this._hadInitialContent = true;
      }
      this._isHighlighting = true;
-@@ -3393,6 +3451,15 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3386,3 +3444,14 @@ class CodeRenderable extends TextBufferRenderable {
+         const styledText = new StyledText(chunks);
+         this.textBuffer.setStyledText(styledText);
++        {
++          // 0322e: ALWAYS-ON apply-site probe (no env gate). cl = the content
++          // snapshot this highlight colored; sl = the chunk text length
++          // actually applied to the buffer. sl < cl = the applied styled text
++          // lost content (stale/missing chunks) - the live symptom path for
++          // the reasoning/answer mid-line cuts. Pushed to a global array; the
++          // TUI part-trace flushes + logs it (never stderr).
++          let __sl = 0;
++          for (const __ch of chunks || []) __sl += (__ch.text && __ch.text.length) || 0;
++          ((globalThis).__ocPartApplyEvents ??= []).push({ cl: content.length, sl: __sl, cc: content.slice(0, 32) });
++        }
+         this.setRenderedLineSources(renderedLineSources);
+@@ -3393,6 +3462,15 @@ class CodeRenderable extends TextBufferRenderable {
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
