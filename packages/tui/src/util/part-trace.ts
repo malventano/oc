@@ -122,6 +122,10 @@ let applyFlushStarted = false
 let applyBeat = 0
 let shortBeat = 0
 let maxLanded = 0
+let pulseStart = 0
+let pulseEnd = 0
+let prevPulseStart = 0
+let prevPulseEnd = 0
 function startApplyFlush() {
   if (applyFlushStarted) return
   applyFlushStarted = true
@@ -132,6 +136,17 @@ function startApplyFlush() {
     let short = 0
     for (const ev of evs) {
       n++
+      // 0322h: highlight request/response pulse - hl-start (issued) vs
+      // hl-end (worker responded). If startCl keeps advancing past endCl, the
+      // worker stopped responding (hang) - the cumulative-parser-state theory.
+      if ((ev as { kind?: string }).kind === "hl-start") {
+        if (ev.cl > pulseStart) pulseStart = ev.cl
+        continue
+      }
+      if ((ev as { kind?: string }).kind === "hl-end") {
+        if (ev.cl > pulseEnd) pulseEnd = ev.cl
+        continue
+      }
       // 0322g: drop events (the snapshotId guard superseded a highlight
       // result). If the dropped content is beyond the largest landed apply,
       // the final full-content highlight never landed - the mid-stream
@@ -149,6 +164,11 @@ function startApplyFlush() {
       if (ev.cl > maxLanded) maxLanded = ev.cl
     }
     evs.length = 0
+    if (pulseStart !== prevPulseStart || pulseEnd !== prevPulseEnd) {
+      write({ kind: "hl-pulse", startCl: pulseStart, endCl: pulseEnd })
+      prevPulseStart = pulseStart
+      prevPulseEnd = pulseEnd
+    }
     applyBeat += n
     shortBeat += short
   }, 100)
