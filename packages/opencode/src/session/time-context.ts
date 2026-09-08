@@ -37,7 +37,7 @@ export const SQUASH_HINT_MIN_CHARS = 25_600
 /**
 * Append a shrink hint reminder to very large tool outputs that lack
 * one. The hint tag is dropped again by shrink's extractOutput when
-* the output is squashed, so it never outlives the output it describes.
+* the output is shrunk, so it never outlives the output it describes.
 */
 export function stampSquashHint(output: { output?: string; [key: string]: unknown }): void {
   if (typeof output.output !== "string") return

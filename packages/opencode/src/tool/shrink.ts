@@ -8,20 +8,20 @@ import * as Tool from "./tool"
 
 const DESCRIPTION = `Replace a past tool output in this session with a short summary, so future prompts see the small version instead of the full output.
 
-WHY: every prompt re-prefills every output already in the chain. An unexpectedly large output you won't reference again (ls, grep, docker logs, build logs) costs its full size on every future prompt until compaction - squashing it saves real tokens.
+WHY: every prompt re-prefills every output already in the chain. An unexpectedly large output you won't reference again (ls, grep, docker logs, build logs) costs its full size on every future prompt until compaction - shrinking it saves real tokens.
 
-WHEN: only when the output is both unexpectedly large AND carries little you'll need again. Don't squash reference material you'll consult again, or files you're about to edit - small outputs' savings don't justify the rewrite. NEVER squash skill tool output: its full body is load-bearing for the 'Skill context drift' reminder machinery (a squashed load becomes a bogus drift baseline - oc 0256). The tool refuses it regardless; reload the skill with the skill tool if you want a smaller view.
+WHEN: only when the output is both unexpectedly large AND carries little you'll need again. Don't shrink reference material you'll consult again, or files you're about to edit - small outputs' savings don't justify the rewrite. NEVER shrink skill tool output: its full body is load-bearing for the 'Skill context drift' reminder machinery (a shrunken load becomes a bogus drift baseline - oc 0256). The tool refuses it regardless; reload the skill with the skill tool if you want a smaller view.
 
-HOW: call it in the message right after the big output arrives, before other work. A rewrite invalidates the cached prefix of everything after it, so squashing late busts the cache of all the output you've produced since - squash early and the miss covers only the squash call. If you missed the moment, squash anyway; the large output keeps costing on every future prompt.
+HOW: call it in the message right after the big output arrives, before other work. A rewrite invalidates the cached prefix of everything after it, so shrinking late busts the cache of all the output you've produced since - shrink early and the miss covers only the shrink call. If you missed the moment, shrink anyway; the large output keeps costing on every future prompt.
 
-Your summary permanently replaces the original - include anything you might need later; non-hint reminders survive. The TUI record stays; only future prompts see the summary. Cannot squash this tool's own output.
+Your summary permanently replaces the original - include anything you might need later; non-hint reminders survive. The TUI record stays; only future prompts see the summary. Cannot shrink this tool's own output.
 
 Target: omit for the most recent completed output, { part_id } for precision, { tool, input_contains } for a pattern, or "one"/"all" as a shorthand for match (match: "all" requires a pattern). minLength matches only outputs at least that many chars - use it to isolate one big output when input_contains also matches smaller ones. Depth (default 3): last 3 user turns; -1 reaches deeper incl. below the compaction boundary.`
 
 // SELF ids over time (2026-09-08 rename squash-output -> shrink): the
 // plugin-era id was "squash_output", the built-in was "squash-output", now
 // "shrink". Old sessions' parts carry the PRIOR strings verbatim, so ALL of
-// them must be excluded from squashing (the where-clause NOT IN) and past
+// them must be excluded from shrinking (the where-clause NOT IN) and past
 // parts must still render (the TUI switch matches old + new names).
 const SELF_ID = "shrink"
 const SELF_PRIOR = "squash-output"
@@ -36,7 +36,7 @@ export const Parameters = Schema.Struct({
       Schema.Literals(["one", "all"]),
       Schema.Struct({
         part_id: Schema.optional(Schema.String).annotate({
-          description: "Exact part id to squash (ids appear in sessions-browse/search output). Cannot be combined with tool/input_contains.",
+          description: "Exact part id to shrink (ids appear in sessions-browse/search output). Cannot be combined with tool/input_contains.",
         }),
         tool: Schema.optional(Schema.String).annotate({ description: "Tool name to match (e.g., 'bash', 'read')." }),
         input_contains: Schema.optional(Schema.String).annotate({
@@ -45,13 +45,13 @@ export const Parameters = Schema.Struct({
       }),
     ]),
   ).annotate({
-    description: "What to squash: omit for the most recent completed tool output, { part_id } for precision, { tool, input_contains } for a pattern, or 'one'/'all' as a shorthand for match.",
+    description: "What to shrink: omit for the most recent completed tool output, { part_id } for precision, { tool, input_contains } for a pattern, or 'one'/'all' as a shorthand for match.",
   }),
   minLength: Schema.optional(Schema.Number).annotate({
     description: "Only match tool outputs whose raw output is at least this many chars - excludes smaller outputs that also match the pattern (e.g. isolate a 49K dump from a 266-char check).",
   }),
   match: Schema.optional(Schema.Literals(["one", "all"])).annotate({
-    description: "'one' (default) squashes the single most recent match; 'all' squashes every match (requires a pattern target; aggregate length check).",
+    description: "'one' (default) shrinks the single most recent match; 'all' shrinks every match (requires a pattern target; aggregate length check).",
   }),
   depth: Schema.optional(Schema.Number).annotate({
     description: "Max user turns back from the most recent user message (default 3). Deeper targets are refused; -1 reaches any depth incl. below the compaction boundary (large prefix-cache invalidation).",
@@ -65,11 +65,11 @@ export function extractOutput(data: any) {
   const stampRun = rawOutput.match(/\n\n<system-reminder>[\s\S]*?<\/system-reminder>\s*$/)
   let stamp = ""
   if (stampRun) {
-    // Preserve every trailing reminder except squash hints: the hint must
-    // die with the squash, the timestamp (and any other reminder) stays.
+    // Preserve every trailing reminder except shrink hints: the hint must
+    // die with the shrink, the timestamp (and any other reminder) stays.
     const tags: string[] = stampRun[0].match(/<system-reminder>[\s\S]*?<\/system-reminder>/g) ?? []
     // Drop the shrink hint tag (the "call shrink NOW" reminder must die with
-    // the squash - 0325 rename: the hint now says shrink, and old parts carry
+    // the shrink - 0325 rename: the hint now says shrink, and old parts carry
     // the squash-output wording - drop both).
     const kept = tags.filter((t) => !t.includes("squash-output") && !t.includes("shrink NOW"))
     stamp = kept.length > 0 ? `\n\n${kept.join("\n\n")}` : ""
@@ -121,7 +121,7 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           }
           if (target.tool === "skill") {
             throw new Error(
-              "Refusing to squash skill tool output: the skill-delta walk uses a completed skill load's full output as the skill baseline (calibrating the 'Skill context drift' reminder). Squashing it rewrote the baseline to a summary and emitted a bogus drift (oc 0256). Reload the skill with the skill tool instead of squashing it."
+              "Refusing to shrink skill tool output: the skill-delta walk uses a completed skill load's full output as the skill baseline (calibrating the 'Skill context drift' reminder). Shrinking it rewrote the baseline to a summary and emitted a bogus drift (oc 0256). Reload the skill with the skill tool instead of shrinking it."
             )
           }
 
@@ -179,7 +179,7 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
                 ? `for tool '${target.tool ?? "(any)"}'${target.input_contains ? ` with input containing '${target.input_contains}'` : ""}`
                 : "for the most recent completed tool output"
             throw new Error(
-              `No completed tool output found ${where} to squash${params.minLength !== undefined ? ` with minLength >= ${params.minLength}` : ""}${depth >= 0 ? ` within the last ${depth} user turn(s)` : ""}.`
+              `No completed tool output found ${where} to shrink${params.minLength !== undefined ? ` with minLength >= ${params.minLength}` : ""}${depth >= 0 ? ` within the last ${depth} user turn(s)` : ""}.`
             )
           }
 
@@ -192,9 +192,9 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
             updates.push({ row, data, stamp, originalLen, outputPath: data.state?.metadata?.outputPath ?? null })
           }
           // 0316: publish the canonical PartUpdated event after each write so
-          // the TUI reconciles the squashed part IN PLACE - the raw DB UPDATE
+          // the TUI reconciles the shrunk part IN PLACE - the raw DB UPDATE
           // alone bypassed it and the TUI's later re-sync reconciled more
-          // coarsely (remount/cull -> the 1-frame viewport dip after a squash,
+          // coarsely (remount/cull -> the 1-frame viewport dip after a shrink,
           // the "scrollback heights reset then re-lock" report).
 
           // 0325: the guard now says WHICH parts it matched, so a
@@ -203,7 +203,7 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           const matchedDesc = updates.map((u) => `${u.data.tool}(${u.originalLen})`).join(", ")
           if (params.summary.length * updates.length >= aggregateOriginal) {
             throw new Error(
-              `Summary (${params.summary.length} chars) × ${updates.length} part(s) (${params.summary.length * updates.length} total) is not smaller than the original output (${aggregateOriginal} chars across ${updates.length} part(s), excluding timestamps). Matched: ${matchedDesc}. Squashing would make the prompt larger, not smaller. Extract only the essential findings, or don't squash. If the matched list shows the wrong (smaller) output, add target.minLength or use target.part_id.`
+              `Summary (${params.summary.length} chars) × ${updates.length} part(s) (${params.summary.length * updates.length} total) is not smaller than the original output (${aggregateOriginal} chars across ${updates.length} part(s), excluding timestamps). Matched: ${matchedDesc}. Shrinking would make the prompt larger, not smaller. Extract only the essential findings, or don't shrink. If the matched list shows the wrong (smaller) output, add target.minLength or use target.part_id.`
             )
           }
 
@@ -223,11 +223,11 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
               .pipe(Effect.orDie)
             const partsBack = (partsBackRow as { c: number }).c
             maxPartsBack = Math.max(maxPartsBack, partsBack)
-            // Intervening TOOL work between the target and this squash - the
+            // Intervening TOOL work between the target and this shrink - the
             // LATE signal. Structural parts (step-start/step-finish/reasoning/
             // the intro text/this call itself) always land after any target,
-            // so counting ALL parts flagged every in-turn squash as late. Only
-            // real tool calls (or a cross-turn squash) mean the moment passed.
+            // so counting ALL parts flagged every in-turn shrink as late. Only
+            // real tool calls (or a cross-turn shrink) mean the moment passed.
             const interveningRow = yield* db
               .get(sql`SELECT COUNT(*) AS c FROM part p WHERE p.session_id = ${sessionID} AND json_extract(p.data, '$.type') = 'tool' AND json_extract(p.data, '$.tool') NOT IN (${SELF_ID}, ${SELF_LEGACY}) AND p.time_created > ${u.row.time_created}`)
               .pipe(Effect.orDie)
@@ -263,12 +263,12 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
               // (time-context.ts Math.round(len/4)) and the TUI title, so
               // both surfaces agree.
               const tokensSaved = Math.round((r.originalLen - params.summary.length) / 4)
-              return `Squashed ${r.tool} output (${r.originalLen} chars → ${params.summary.length} char summary) = ~${tokensSaved.toLocaleString()} tokens saved`
+              return `Shrank ${r.tool} output (${r.originalLen} chars → ${params.summary.length} char summary) = ~${tokensSaved.toLocaleString()} tokens saved`
             })
             .join("\n")
           const late =
             maxTurnsBack > 0 || maxIntervening > 0
-              ? " LATE SQUASH - issue shrink in the message right after the target output arrives."
+              ? " LATE SHRINK - issue shrink in the message right after the target output arrives."
               : ""
           const note = `\n\nDepth: ${maxTurnsBack} user turn(s) back of ${totalTurns}; target ${maxPartsBack} part(s) behind the live edge - the rewrite invalidates the cached prefix from the target forward.${late}`
           const boundaryNote = belowBoundary
@@ -276,10 +276,10 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
             : ""
 
           return {
-            title: results.length === 1 ? `Squashed ${results[0].tool} output` : `Squashed ${results.length} outputs`,
+            title: results.length === 1 ? `Shrank ${results[0].tool} output` : `Shrank ${results.length} outputs`,
             output: lines + note + boundaryNote,
             metadata: {
-              squashed: true,
+              shrunk: true,
               count: results.length,
               results,
               aggregateOriginal,
