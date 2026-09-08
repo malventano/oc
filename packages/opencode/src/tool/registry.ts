@@ -57,7 +57,7 @@ import { McpCatalog } from "@/mcp/catalog"
 import { SessionsBrowseTool } from "./sessions-browse"
 import { SessionsManageTool } from "./sessions-manage"
 import { SessionsQueryTool } from "./sessions-query"
-import { SquashOutputTool } from "./squash-output"
+import { ShrinkTool } from "./shrink"
 import { SkillMetadataTool } from "./skill-metadata"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
@@ -122,7 +122,7 @@ const layer = Layer.effect(
     const sessionsBrowseTool = yield* SessionsBrowseTool
     const sessionsManageTool = yield* SessionsManageTool
     const sessionsQueryTool = yield* SessionsQueryTool
-    const squashOutputTool = yield* SquashOutputTool
+    const shrinkTool = yield* ShrinkTool
     const skillMetadataTool = yield* SkillMetadataTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
@@ -236,7 +236,7 @@ const layer = Layer.effect(
           sessionsBrowse: Tool.init(sessionsBrowseTool),
           sessionsManage: Tool.init(sessionsManageTool),
           sessionsQuery: Tool.init(sessionsQueryTool),
-          squashOutput: Tool.init(squashOutputTool),
+          shrink: Tool.init(shrinkTool),
           skillMetadata: Tool.init(skillMetadataTool),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
         })
@@ -264,7 +264,7 @@ const layer = Layer.effect(
             tool.sessionsBrowse,
             tool.sessionsManage,
             tool.sessionsQuery,
-            tool.squashOutput,
+            tool.shrink,
             tool.skillMetadata,
           ],
           task: tool.task,

@@ -35,8 +35,8 @@ export function stampToolOutput(output: { output?: string; [key: string]: unknow
 export const SQUASH_HINT_MIN_CHARS = 25_600
 
 /**
-* Append a squash-output hint reminder to very large tool outputs that lack
-* one. The hint tag is dropped again by squash-output's extractOutput when
+* Append a shrink hint reminder to very large tool outputs that lack
+* one. The hint tag is dropped again by shrink's extractOutput when
 * the output is squashed, so it never outlives the output it describes.
 */
 export function stampSquashHint(output: { output?: string; [key: string]: unknown }): void {
@@ -48,7 +48,7 @@ export function stampSquashHint(output: { output?: string; [key: string]: unknow
   const len = output.output.length
   if (len < SQUASH_HINT_MIN_CHARS) return
   const tokens = Math.round(len / 4)
-  output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call squash-output NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it.</system-reminder>`
+  output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call shrink NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it.</system-reminder>`
 }
 
 export * as TimeContext from "./time-context"

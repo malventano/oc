@@ -6,7 +6,7 @@
 // /v1/responses instead of /v1/chat/completions. Sequential turns chain via
 // previous_response_id (the wire win); a content hash over the already-sent
 // messages decides delta vs full-send. Any change to already-sent context
-// (compaction, squash-output, epoch advance, external mutation) changes the
+// (compaction, shrink, epoch advance, external mutation) changes the
 // hash and breaks the chain -> full-send + re-seed. Appended drift does not
 // touch the prefix hash -> the chain survives.
 //
