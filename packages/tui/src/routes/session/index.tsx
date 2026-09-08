@@ -2585,7 +2585,15 @@ function useFixedStreamHeight(
       // trailing-newline blank row identically, so the box height and gutter
       // agree - no strip.
       c = viewed.measureForDimensions(w, 99999)?.lineCount ?? 0
-      setRows(Math.max(0, c))
+      // 0305-probe / TRIAL FIX (by-line reveal): the buffer's OWN wrapped row
+      // count (getVirtualLineCount) can exceed the measured lineCount by the
+      // still-streaming PARTIAL last row once the content is large enough (the
+      // measured lineCount lags - probe: reason.diffMax goes to 1 persistently
+      // from ~14K chars, and the box clipped that row, so the text only
+      // revealed per completed wrapped row = the by-line cadence). Grow the box
+      // to the buffer's real count so the partial row paints as it streams.
+      const vr = viewed.getVirtualLineCount?.() ?? 0
+      setRows(Math.max(0, c, vr))
     } catch {
       setRows(0)
     }
@@ -2651,7 +2659,11 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
       return
     }
     const c = el.textBufferView.measureForDimensions(layoutW(), 99999)?.lineCount ?? 0
-    setStreamRowsCount(c)
+    // 0305-probe / TRIAL FIX: same partial-row clip as useFixedStreamHeight -
+    // grow to the buffer's true wrapped count so the streaming partial row
+    // paints (no by-line reveal).
+    const vr = (el.textBufferView.getVirtualLineCount?.() as number) ?? 0
+    setStreamRowsCount(Math.max(c, vr))
   })
 
   return (
