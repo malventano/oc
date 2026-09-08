@@ -90,7 +90,7 @@ export const partTrace = {
   // display truncated - so this is a render-side height/wrap stall, not text
   // loss. Log once per part (avoid per-delta spam), including the measured
   // widths so a stale wrap width is visible.
-  onReasoningHeightStall(info: { partID: string; len: number; lineCount: number; virtual: number; width: number }) {
+  onReasoningHeightStall(info: { partID: string; len: number; bufLen?: number; lineCount: number; virtual: number; width: number }) {
     if (reasoningStallLogged.has(info.partID)) return
     reasoningStallLogged.add(info.partID)
     write({ kind: "reasoning-height-stall", ...info })
