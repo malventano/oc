@@ -126,6 +126,13 @@ export const LANGUAGE_EXTENSIONS: Record<string, string> = {
   ".nix": "nix",
   ".typ": "typst",
   ".typc": "typst",
+  // ".txt" is a first-class TYPE with NO tree-sitter grammar (2026-09-08):
+  // it must not resolve to "none" (unknown). Consumers distinguish the
+  // no-grammar types via isNoGrammar() - the write live view streams them
+  // unstyled-bright (dimming is only the pre-identification state), and the
+  // diff views render them unstyled instead of deferring to a highlight
+  // that never fires (permanent blank).
+  ".txt": "text",
 }
 
 // The JS/TS family renders with ONE grammar (the typescript grammar covers
@@ -137,6 +144,15 @@ export const LANGUAGE_EXTENSIONS: Record<string, string> = {
 export function coalesceFiletype(language: string | undefined) {
   if (["typescriptreact", "javascriptreact", "javascript"].includes(language!)) return "typescript"
   return language
+}
+
+// No-grammar types: no tree-sitter grammar exists for these, so a consumer
+// that defers to an async highlight would wait on a highlight that never
+// fires (permanent blank) - it must render unstyled instead. "none" = no
+// LANGUAGE_EXTENSIONS match (unknown/extensionless); "text" = the explicit
+// plain-text type (no grammar by design, 2026-09-08).
+export function isNoGrammar(language: string | undefined) {
+  return language === undefined || language === "none" || language === "text"
 }
 
 export function filetype(input?: string) {

@@ -69,7 +69,7 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
-import { coalesceFiletype, filetype } from "../../util/filetype"
+import { coalesceFiletype, filetype, isNoGrammar } from "../../util/filetype"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
 import { useToast } from "../../ui/toast"
@@ -4187,7 +4187,19 @@ function Write(props: ToolProps) {
           // first frame, no Show flip at completion.
           gutter={true}
           conceal={false}
-          fg={stream.streaming() || running() ? theme.textMuted : theme.text}
+          // Dimming is only the PRE-IDENTIFICATION state (0924): once the
+          // type resolves, a no-grammar type (text/none) streams in its
+          // final white - there is no highlight to protect, so the muted
+          // base serves nothing (the todowrite prose precedent). Grammar
+          // types stay muted while streaming because the muted base is
+          // what lets the per-flush highlight apply (08-16 bisect).
+          fg={
+            stream.streaming() || running()
+              ? isNoGrammar(liveFiletype())
+                ? theme.text
+                : theme.textMuted
+              : theme.text
+          }
           release={completed()}
         />
         <Show when={completed() && diagnostics() !== undefined}>
@@ -4730,7 +4742,7 @@ function Edit(props: ToolProps) {
                     // fires, so deferring renders a PERMANENT BLANK
                     // (conceal + no grammar => waiting forever). Render
                     // those unstyled (raw, visible).
-                    drawUnstyledText={filetype(file.filePath) === "none"}
+                    drawUnstyledText={isNoGrammar(filetype(file.filePath))}
                     fg={theme.text}
                     addedBg={theme.diffAddedBg}
                     removedBg={theme.diffRemovedBg}
@@ -4773,7 +4785,7 @@ function Edit(props: ToolProps) {
                 // "none" filetype (extensionless script) => no grammar =>
                 // the deferred highlight never fires => permanent blank;
                 // render unstyled.
-                drawUnstyledText={filetype(editPaths()[0] ?? "") === "none"}
+                drawUnstyledText={isNoGrammar(filetype(editPaths()[0] ?? ""))}
                 fg={theme.text}
                 addedBg={theme.diffAddedBg}
                 removedBg={theme.diffRemovedBg}
