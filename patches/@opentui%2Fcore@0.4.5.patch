@@ -1,0 +1,1217 @@
+diff --git a/.bun-tag-25a687ae5c8b9d02 b/.bun-tag-25a687ae5c8b9d02
+new file mode 100644
+index 0000000..e69de29
+diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
+index 701d70d..adea59c 100644
+--- a/chunk-bun-t2myhmwd.js
++++ b/chunk-bun-t2myhmwd.js
+@@ -8703,7 +8703,7 @@ class TreeSitterClient extends EventEmitter2 {
+         const callback = this.messageCallbacks.get(message.messageId);
+         if (callback) {
+           this.messageCallbacks.delete(message.messageId);
+-          callback.resolve({ highlights: message.highlights, warning: message.warning, error: message.error });
++          callback.resolve({ highlights: message.highlights, incremental: message.incremental, timings: message.timings, warning: message.warning, error: message.error });
+         }
+         return;
+       }
+diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
+index e5e5874..6d4c1e9 100644
+--- a/chunk-bun-tkm837n2.js
++++ b/chunk-bun-tkm837n2.js
+@@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
+   _position = {};
+   _opacity = 1;
+   _flexShrink = 1;
++  _flexShrinkExplicit = false;
+   _childrenInLayoutOrder = [];
+   _childrenInZIndexOrder = [];
+   needsZIndexSort = false;
+@@ -519,7 +520,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._width = value;
+     this.yogaNode.setWidth(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -534,7 +535,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._height = value;
+     this.yogaNode.setHeight(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -593,6 +594,7 @@ class Renderable extends BaseRenderable {
+       node.setFlexGrow(0);
+     }
+     if (options.flexShrink !== undefined) {
++      this._flexShrinkExplicit = true;
+       this._flexShrink = options.flexShrink;
+       node.setFlexShrink(options.flexShrink);
+     } else {
+@@ -750,6 +752,7 @@ class Renderable extends BaseRenderable {
+   }
+   set flexShrink(shrink) {
+     const value = shrink == null ? 1 : shrink;
++    this._flexShrinkExplicit = true;
+     this._flexShrink = value;
+     this.yogaNode.setFlexShrink(value);
+     this.requestRender();
+@@ -2986,6 +2989,7 @@ class TextBufferRenderable extends Renderable {
+       this.requestRender();
+     }
+   }
++
+   onResize(width, height) {
+     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
+     this.yogaNode.markDirty();
+@@ -3155,6 +3159,20 @@ class CodeRenderable extends TextBufferRenderable {
+       this._highlightsDirty = true;
+       this._highlightSnapshotId++;
+       if (this._streaming && this._filetype && !this._drawUnstyledText) {
++        // 0312: a streaming element that mounted before its first content
++        // (the heredoc body slot at the transition) can consume the initial-
++        // content window on an empty frame, so the raw-paint branch never
++        // fires for the real content and the body depends only on the async
++        // highlight - a superseded highlight leaves it blank while the props
++        // gutter grows. Paint the FIRST real content raw (never painted yet),
++        // then let the highlight color it - strictly better than blank.
++        if (!this._shouldRenderTextBuffer) {
++          this.textBuffer.setText(value);
++          this.setRenderedLineSources(undefined);
++          this._shouldRenderTextBuffer = true;
++          this.requestRender();
++          return;
++        }
+         this.requestRender();
+         return;
+       }
+@@ -3248,6 +3266,18 @@ class CodeRenderable extends TextBufferRenderable {
+       this._hadInitialContent = false;
+       this._lastHighlights = [];
+       this._highlightsDirty = true;
++      // 0311: at the streaming -> completed flip, guarantee the buffer is
++      // paint-visible. The content is usually ALREADY this._content, so
++      // set content is a no-op and the buffer only refreshes when the async
++      // completion highlight lands - if that highlight is superseded, the
++      // props-driven gutter counts all rows while the body stays unpainted
++      // (the intermittent blank bash body). ensureVisible... paints raw now
++      // if not already painted (and keeps the already-painting content
++      // otherwise - no 0167 white flash).
++      if (!value) {
++        this.ensureVisibleTextBeforeHighlight();
++        this.requestRender();
++      }
+     }
+   }
+   get treeSitterClient() {
+@@ -3310,7 +3340,10 @@ class CodeRenderable extends TextBufferRenderable {
+     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
+     if (this._streaming && !isInitialContent) {
+       this._shouldRenderTextBuffer = true;
+-    } else if (shouldDrawUnstyledNow) {
++    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
++      // streaming initial content: render the raw text immediately (no
++      // EMPTY first frame while the async highlight is in flight - the
++      // flicker's collapse half); the highlight colors it when it lands.
+       if (this._initialStyledText) {
+         this.textBuffer.setStyledText(this._initialStyledText);
+       } else {
+@@ -3318,8 +3351,30 @@ class CodeRenderable extends TextBufferRenderable {
+       }
+       this.setRenderedLineSources(undefined);
+       this._shouldRenderTextBuffer = true;
++    } else if (this._shouldRenderTextBuffer) {
++      // Already painting (an element carried across the streaming->running
++      // ->completed transitions, or a completed element whose content
++      // changed): the buffer already shows text (the last landed
++      // content/highlight). Keep it visible and defer to the incoming
++      // highlight - a raw re-paint here is the 0167 raw-WHITE flash, a
++      // defer-with-blank here is the pre-0167 one-frame no-text flicker.
+     } else {
+-      this._shouldRenderTextBuffer = false;
++      // Fresh non-streaming completed mount with drawUnstyledText=false
++      // (the write/bash completed elements, the edit diff): the buffer was
++      // set in the constructor but is not painted (_shouldRenderTextBuffer
++      // = false). Keep it unpainted and defer to the async highlight - a
++      // sub-frame blank for typical content, then the highlight colors it.
++      // 0167's raw paint replaced this with a WHITE first frame, which is
++      // the worse artifact (a full-brightness frame vs a brief blank).
++      // BUN VARIANT ALIGNED WITH NODE (2026-09-07): deferring left the
++      // buffer unpainted and the GUTTER full while the async highlight was
++      // in flight - the persistent "gutters but no text" blank (heredoc
++      // re-split fresh mounts at completion). The buffer ALREADY holds the
++      // content (constructor setText), so paint it raw now and let the
++      // highlight color it - never a persistent blank.
++      this.textBuffer.setText(content);
++      this.setRenderedLineSources(undefined);
++      this._shouldRenderTextBuffer = true;
+     }
+   }
+   async startHighlight() {
+@@ -3329,7 +3384,10 @@ class CodeRenderable extends TextBufferRenderable {
+     if (!filetype)
+       return;
+     const isInitialContent = this._streaming && !this._hadInitialContent;
+-    if (isInitialContent) {
++    // 0312: do not consume the initial-content raw-paint window on an empty
++    // frame (the heredoc body slot can highlight an empty content at the
++    // transition) - leave it open so the first real content paints raw.
++    if (isInitialContent && content.length > 0) {
+       this._hadInitialContent = true;
+     }
+     this._isHighlighting = true;
+@@ -3385,6 +3443,17 @@ class CodeRenderable extends TextBufferRenderable {
+           return;
+         const styledText = new StyledText(chunks);
+         this.textBuffer.setStyledText(styledText);
++        {
++          // 0322e: ALWAYS-ON apply-site probe (no env gate). cl = the content
++          // snapshot this highlight colored; sl = the chunk text length
++          // actually applied to the buffer. sl < cl = the applied styled text
++          // lost content (stale/missing chunks) - the live symptom path for
++          // the reasoning/answer mid-line cuts. Pushed to a global array; the
++          // TUI part-trace flushes + logs it (never stderr).
++          let __sl = 0;
++          for (const __ch of chunks || []) __sl += (__ch.text && __ch.text.length) || 0;
++          ((globalThis).__ocPartApplyEvents ??= []).push({ cl: content.length, sl: __sl, cc: content.slice(0, 32) });
++        }
+         this.setRenderedLineSources(renderedLineSources);
+       } else {
+         this.textBuffer.setText(content);
+@@ -3393,6 +3462,15 @@ class CodeRenderable extends TextBufferRenderable {
+       this._shouldRenderTextBuffer = true;
+       this._isHighlighting = false;
+       this._highlightsDirty = false;
++      // 0309-mfix: if the content advanced past the snapshot this highlight just
++      // colored (or the stream completed with a changed final state), re-run so
++      // the completed view colors the whole body - the bash streaming element
++      // carries through completion (0199) and its re-highlight otherwise stays
++      // on the truncated/stale path (the no-final-color-pass report).
++      if (!this.isDestroyed && this._content !== content) {
++        this._highlightsDirty = true;
++        this.requestRender();
++      }
+       this.updateTextInfo();
+       this.requestRender();
+     } catch (error) {
+diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
+index 4a2cb78..07da349 100644
+--- a/chunk-node-51kpf0mz.js
++++ b/chunk-node-51kpf0mz.js
+@@ -225,6 +225,7 @@ class Renderable extends BaseRenderable {
+   _position = {};
+   _opacity = 1;
+   _flexShrink = 1;
++  _flexShrinkExplicit = false;
+   _childrenInLayoutOrder = [];
+   _childrenInZIndexOrder = [];
+   needsZIndexSort = false;
+@@ -518,7 +519,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._width = value;
+     this.yogaNode.setWidth(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -533,7 +534,7 @@ class Renderable extends BaseRenderable {
+     }
+     this._height = value;
+     this.yogaNode.setHeight(value);
+-    if (typeof value === "number" && this._flexShrink === 1) {
++    if (typeof value === "number" && !this._flexShrinkExplicit && this._flexShrink === 1) {
+       this._flexShrink = 0;
+       this.yogaNode.setFlexShrink(0);
+     }
+@@ -592,6 +593,7 @@ class Renderable extends BaseRenderable {
+       node.setFlexGrow(0);
+     }
+     if (options.flexShrink !== undefined) {
++      this._flexShrinkExplicit = true;
+       this._flexShrink = options.flexShrink;
+       node.setFlexShrink(options.flexShrink);
+     } else {
+@@ -749,6 +751,7 @@ class Renderable extends BaseRenderable {
+   }
+   set flexShrink(shrink) {
+     const value = shrink == null ? 1 : shrink;
++    this._flexShrinkExplicit = true;
+     this._flexShrink = value;
+     this.yogaNode.setFlexShrink(value);
+     this.requestRender();
+@@ -2985,6 +2988,7 @@ class TextBufferRenderable extends Renderable {
+       this.requestRender();
+     }
+   }
++
+   onResize(width, height) {
+     this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
+     this.yogaNode.markDirty();
+@@ -3309,7 +3313,10 @@ class CodeRenderable extends TextBufferRenderable {
+     const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
+     if (this._streaming && !isInitialContent) {
+       this._shouldRenderTextBuffer = true;
+-    } else if (shouldDrawUnstyledNow) {
++    } else if (shouldDrawUnstyledNow || (this._streaming && isInitialContent)) {
++      // streaming initial content: render the raw text immediately (no
++      // EMPTY first frame while the async highlight is in flight - the
++      // flicker's collapse half); the highlight colors it when it lands.
+       if (this._initialStyledText) {
+         this.textBuffer.setStyledText(this._initialStyledText);
+       } else {
+@@ -3318,7 +3325,16 @@ class CodeRenderable extends TextBufferRenderable {
+       this.setRenderedLineSources(undefined);
+       this._shouldRenderTextBuffer = true;
+     } else {
+-      this._shouldRenderTextBuffer = false;
++      // Non-streaming completed views with drawUnstyledText=false (the
++      // write/bash completed elements): the buffer would stay BLANK until
++      // the async highlight lands - the one-frame no-text flicker at the
++      // streaming->completed transition. Render the raw text immediately
++      // (the completed first paint is raw-white for a frame, then the
++      // highlight colors it) - the same treatment as the streaming initial
++      // content above.
++      this.textBuffer.setText(content);
++      this.setRenderedLineSources(undefined);
++      this._shouldRenderTextBuffer = true;
+     }
+   }
+   async startHighlight() {
+diff --git a/index.bun.js b/index.bun.js
+index 815856b..94daebe 100644
+--- a/index.bun.js
++++ b/index.bun.js
+@@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
+     });
+     super.add(this.gutter);
+     super.add(this.target);
++    // 0196: mark the gutter dirty at attach so it paints its line numbers
++    // on the FIRST frame. The gutter is buffered with isDirty=false on a
++    // fresh mount, and it attaches AFTER the target's constructor already
++    // emitted its initial line-info-change - so without this the numbers
++    // stay empty until the async highlight lands and re-emits
++    // line-info-change. That is the "1 pops in at completion" flicker (the
++    // completed view mounts a fresh gutter while the streaming gutter
++    // unmounts - the numbers vanish for a frame then return).
++    this.gutter.requestRender();
+   }
+   add(child) {
+     if (!this.target && "lineInfo" in child && "lineCount" in child && "virtualLineCount" in child && "scrollY" in child) {
+@@ -5347,6 +5356,7 @@ class DiffRenderable extends Renderable {
+   _syntaxStyle;
+   _wrapMode;
+   _conceal;
++  _drawUnstyledText;
+   _selectionBg;
+   _selectionFg;
+   _treeSitterClient;
+@@ -5388,6 +5398,11 @@ class DiffRenderable extends Renderable {
+     this._syntaxStyle = options.syntaxStyle;
+     this._wrapMode = options.wrapMode;
+     this._conceal = options.conceal ?? false;
++    // 0196: undefined = unset (the per-view default applies: unified
++    // defaults to raw paint, split derives it from needsConsistentConcealing).
++    // The edit tool passes false so its completed diff defers to the async
++    // highlight instead of raw-painting white for a frame.
++    this._drawUnstyledText = options.drawUnstyledText;
+     this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined;
+     this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined;
+     this._treeSitterClient = options.treeSitterClient;
+@@ -5665,7 +5680,8 @@ class DiffRenderable extends Renderable {
+         lineNumberOffset: 0,
+         hideLineNumbers,
+         width,
+-        height: "100%"
++        height: "100%",
++        paddingRight: 2,
+       });
+       newSide.showLineNumbers = this._showLineNumbers;
+       super.add(newSide);
+@@ -5778,7 +5794,7 @@ class DiffRenderable extends Renderable {
+     }
+     const content = contentLines.join(`
+ `);
+-    const codeRenderable = this.createOrUpdateCodeRenderable("left", content, this._wrapMode);
++    const codeRenderable = this.createOrUpdateCodeRenderable("left", content, this._wrapMode, this._drawUnstyledText);
+     this.attachLineInfoListeners();
+     this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set, "100%");
+     if (this.rightSide && this.rightSideAdded) {
+@@ -5905,8 +5921,11 @@ class DiffRenderable extends Renderable {
+ `);
+     const needsConsistentConcealing = (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype;
+     const drawUnstyledText = !needsConsistentConcealing;
+-    const leftCodeRenderable = this.createOrUpdateCodeRenderable("left", preLeftContent, this._wrapMode, drawUnstyledText);
+-    const rightCodeRenderable = this.createOrUpdateCodeRenderable("right", preRightContent, this._wrapMode, drawUnstyledText);
++    // The explicit drawUnstyledText option (0196) wins over the split view's
++    // derived value (the edit tool passes false so the completed diff defers
++    // to its async highlight instead of raw-painting white).
++    const leftCodeRenderable = this.createOrUpdateCodeRenderable("left", preLeftContent, this._wrapMode, this._drawUnstyledText ?? drawUnstyledText);
++    const rightCodeRenderable = this.createOrUpdateCodeRenderable("right", preRightContent, this._wrapMode, this._drawUnstyledText ?? drawUnstyledText);
+     this.attachLineInfoListeners();
+     let finalLeftLines;
+     let finalRightLines;
+@@ -6054,8 +6073,8 @@ class DiffRenderable extends Renderable {
+ `);
+     leftCodeRenderable.content = leftContentFinal;
+     rightCodeRenderable.content = rightContentFinal;
+-    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, "50%");
+-    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, "50%");
++    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, this.width > 0 ? Math.floor(this.width / 2) : "50%");
++    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, this.width > 0 ? this.width - Math.floor(this.width / 2) : "50%");
+   }
+   get diff() {
+     return this._diff;
+@@ -6291,6 +6310,20 @@ class DiffRenderable extends Renderable {
+       this.rebuildView();
+     }
+   }
++  // 0196: the Solid adapter applies props AFTER construction (the element is
++  // created with {id} only), so this setter arrives after buildView and must
++  // rebuild to re-create the code renderables with the new value.
++  get drawUnstyledText() {
++    return this._drawUnstyledText;
++  }
++  set drawUnstyledText(value) {
++    if (this._drawUnstyledText !== value) {
++      this._drawUnstyledText = value;
++      if (this.leftCodeRenderable || this.rightCodeRenderable) {
++        this.rebuildView();
++      }
++    }
++  }
+   get fg() {
+     return this._fg;
+   }
+@@ -11436,6 +11469,39 @@ class ScrollBoxRenderable extends BoxRenderable {
+   _stickyStart;
+   _hasManualScroll = false;
+   _isApplyingStickyScroll = false;
++  // Manual-scroll anchor (0168): while the user is scrolled back, the
++  // viewport top is anchored to the first child overlapping it. When
++  // content ABOVE that child changes height (e.g. a large block above the
++  // viewport registers its real height as it comes into view), scrollTop
++  // is shifted by the child's y-delta so the visible content never jumps.
++  _manualAnchorChild = null;
++  _manualAnchorOffset = 0;
++  _manualAnchorHeight = 0;
++  // Fallback anchor (0186): the child immediately BELOW the anchor, plus the
++  // content's child count at capture. If the anchored block is DESTROYED
++  // while the user is scrolled back (the store pruned the oldest messages
++  // past its 100-cap window and the anchor was among them - the user is at
++  // the window's top edge), the block anchor has no child to reference, so
++  // the viewport re-anchors to the next sibling's CURRENT top: content
++  // ABOVE it was removed, so it slid up by exactly the pruned height. A new
++  // message APPENDED at the bottom in the same pass does not move the next
++  // sibling's top, so the top-prune/bottom-append case is exact. Gated on
++  // the child count FALLING (a prune removes blocks) so a pure remount
++  // (message.updated reconcile, same children) is untouched.
++  _manualAnchorNextChild = null;
++  _manualAnchorNextTop = null;
++  _manualAnchorChildCount = 0;
++  // Continuously-tracked distance from the viewport top to the content BOTTOM
++  // plus the content height at the previous recalc. The D-anchor: when the
++  // anchor is below the viewport or destroyed and the content SHRANK (the
++  // prune signature - appends and below-viewport registration only grow it),
++  // target = content.height - D moves the position up by exactly the removal,
++  // independent of which blocks remounted or grew in the gap.
++  _manualAnchorD = null;
++  _lastRecalcHeight = 0;
++  // 0317: debounced sticky-bottom re-anchor for shrink events (see
++  // recalculateBarProps).
++  _deferredReanchorTimer;
+   scrollAccel;
+   get stickyScroll() {
+     return this._stickyScroll;
+@@ -11624,6 +11690,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+       orientation: "vertical",
+       onChange: (position) => {
+         this.content.translateY = -position;
++        this._captureManualAnchor(position);
+         this.updateStickyState();
+       }
+     });
+@@ -11929,12 +11996,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+       return this.autoScrollSpeedSlow;
+     }
+   }
++  _captureManualAnchor(position) {
++    // Reads the yoga computed layout (settled positions) rather than the
++    // lazily-synced renderable .y, so a capture during a layout pass (the
++    // anchor re-capture after a shift) still lands on the current values.
++    const children = this.content.getChildrenSortedByPrimaryAxis();
++    for (let i = 0; i < children.length; i++) {
++      const child = children[i];
++      const layout = child.getLayoutNode().getComputedLayout();
++      if (layout.top + layout.height > position) {
++        this._manualAnchorChild = child;
++        this._manualAnchorOffset = position - layout.top;
++        this._manualAnchorHeight = layout.height;
++        this._manualAnchorNextChild = children[i + 1] ?? null;
++        this._manualAnchorNextTop =
++          this._manualAnchorNextChild ? this._manualAnchorNextChild.getLayoutNode().getComputedLayout().top : null;
++        this._manualAnchorChildCount = children.length;
++        this._manualAnchorD = this.content.height - position;
++        this._lastRecalcHeight = this.content.height;
++        return;
++      }
++    }
++    this._manualAnchorChild = null;
++    this._manualAnchorNextChild = null;
++    this._manualAnchorNextTop = null;
++    this._manualAnchorChildCount = 0;
++    this._manualAnchorD = null;
++    this._lastRecalcHeight = 0;
++  }
+   recalculateBarProps() {
+     const wasApplyingStickyScroll = this._isApplyingStickyScroll;
+     this._isApplyingStickyScroll = true;
+     try {
++      // Block-anchored manual scroll (0168/0170): remember where the
++      // anchored child sat BEFORE the layout that triggered this call, so
++      // the shift below can keep the visible content fixed.
++      const anchor = this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed
++        ? { child: this._manualAnchorChild, offset: this._manualAnchorOffset }
++        : null;
+       this.verticalScrollBar.scrollSize = this.content.height;
+       this.verticalScrollBar.viewportSize = this.viewport.height;
++      // Content shrank since the last recalc = a top-removal (the store
++      // pruning the oldest messages). Appends only grow it; blocks registering
++      // real heights in the gap BELOW the viewport grow it. So a shrink is the
++      // unambiguous prune signature, and the continuously-tracked distance to
++      // the content bottom gives the exact removal - the D-anchor below.
++      const heightShrunk = this.content.height < this._lastRecalcHeight;
++      if (anchor) {
++        // Shift scrollTop so the content BELOW the anchor stays fixed:
++        // (1) content ABOVE the anchor changing height moves the anchor's
++        // top (y-delta), and (2) the ANCHOR block itself changing height
++        // (a culled block registering its real height, 3 -> hundreds of
++        // rows, as it enters the viewport - the traced jump cause, 0170)
++        // extends downward without moving its top, so the height-delta
++        // must be added too. EXCEPT (0183): an anchor that is the LAST
++        // child is the actively-streaming block at the bottom of the
++        // session - its growth APPENDS new content instead of displacing
++        // content the user is reading, so following the height-delta makes
++        // the viewport chase the stream (visible text keeps scrolling up
++        // while scrolled back a little, reading the block's own content).
++        // Content below a last-child anchor does not exist: skip the
++        // height-delta and freeze. The scrollPosition setter re-fires
++        // onChange, which re-captures the anchor at the new spot.
++        const children = this.content.getChildrenSortedByPrimaryAxis();
++        const anchorIsLast = children.length > 0 && children[children.length - 1] === anchor.child;
++        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
++        // Height-delta (0170) applies only while the anchor's growth displaces
++        // VISIBLE content. Compare the anchor's extent BEFORE this growth
++        // (captured height) against the viewport bottom, not the NEW height:
++        // a culled block (3 rows) that registers its real height as it enters
++        // the viewport did NOT span the viewport before growing, so its
++        // growth pushes the content below it (what the user reads) downward
++        // and must be compensated. Only an anchor that ALREADY spanned the
++        // viewport (old bottom past the viewport bottom) grows out of sight
++        // and can skip the delta. (0186 compared the NEW bottom here, which
++        // zeroes the delta exactly when the culled block's growth crosses
++        // the viewport bottom - re-introducing the 0170 jump.)
++        const anchorBottomOld = anchorLayout.top + this._manualAnchorHeight;
++        const heightDelta =
++          anchorIsLast || anchorBottomOld >= this.verticalScrollBar.scrollPosition + this.viewport.height
++            ? 0
++            : anchorLayout.height - this._manualAnchorHeight;
++        // Y-delta (0168): track the content ABOVE THE VIEWPORT. When the
++        // anchor overlaps the viewport (offset >= 0) its top-delta does that.
++        // When the anchor sits below the viewport top (negative offset - the
++        // viewport in a gap), its top-delta includes blocks registering
++        // between the viewport and the anchor - INVISIBLE growth that dragged
++        // the viewport down a few rows per streamed message - so only a
++        // top-removal (heightShrunk) moves the position, via the D-anchor; a
++        // grow/hold leaves it put.
++        let target;
++        if (this._manualAnchorOffset < 0 && heightShrunk) {
++          target = this.content.height - this._manualAnchorD;
++        } else if (this._manualAnchorOffset < 0) {
++          target = this.verticalScrollBar.scrollPosition;
++        } else {
++          target = anchorLayout.top + this._manualAnchorOffset + heightDelta;
++        }
++        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++          this.verticalScrollBar.scrollPosition = target;
++        }
++      } else if (this._hasManualScroll && this._manualAnchorChild && this._manualAnchorChild.isDestroyed) {
++        // The anchored block was DESTROYED. If the content shrank, a top-
++        // removal happened (a prune) - the continuously-tracked distance to
++        // the content bottom gives the exact removal, so the same rows stay
++        // visible regardless of which blocks remounted around it. If the
++        // content only grew or held (a pure remount), nothing moved -
++        // re-capture so future changes are anchored again.
++        if (heightShrunk) {
++          const target = this.content.height - this._manualAnchorD;
++          if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++            this.verticalScrollBar.scrollPosition = target;
++          }
++        } else {
++          this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
++        }
++      }
+       this.horizontalScrollBar.scrollSize = this.content.width;
+       this.horizontalScrollBar.viewportSize = this.viewport.width;
+       if (this._stickyScroll) {
+@@ -11950,7 +12127,31 @@ class ScrollBoxRenderable extends BoxRenderable {
+           if (this._stickyScrollTop) {
+             this.scrollTop = 0;
+           } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
+-            this.scrollTop = newMaxScrollTop;
++            // 0317: a SHRINK at the live bottom (a block collapsing - undo,
++            // squash, compaction, a height drop) can register its height in
++            // intermediate steps, so an immediate re-anchor lands between
++            // them and the viewport shows a 1-frame up-then-down. Defer
++            // (debounced) the re-anchor one tick so it applies to the
++            // SETTLED height - one clean move. GROWTH keeps the immediate
++            // follow so the live stream stays glued to the bottom.
++            if (heightShrunk) {
++              if (!this._deferredReanchorTimer) {
++                this._deferredReanchorTimer = setTimeout(() => {
++                  this._deferredReanchorTimer = undefined;
++                  if (this.isDestroyed) return;
++                  const wasApplying = this._isApplyingStickyScroll;
++                  this._isApplyingStickyScroll = true;
++                  try {
++                    const settledMax = Math.max(0, this.scrollHeight - this.viewport.height);
++                    this.scrollTop = settledMax;
++                  } finally {
++                    this._isApplyingStickyScroll = wasApplying;
++                  }
++                }, 0);
++              }
++            } else {
++              this.scrollTop = newMaxScrollTop;
++            }
+           }
+           if (this._stickyScrollLeft) {
+             this.scrollLeft = 0;
+@@ -11959,6 +12160,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+           }
+         }
+       }
++      this._lastRecalcHeight = this.content.height;
++      this._manualAnchorD = this.content.height - this.verticalScrollBar.scrollPosition;
+     } finally {
+       this._isApplyingStickyScroll = wasApplyingStickyScroll;
+     }
+diff --git a/index.node.js b/index.node.js
+index 0ddf03b..54ba1ef 100644
+--- a/index.node.js
++++ b/index.node.js
+@@ -5664,7 +5664,8 @@ class DiffRenderable extends Renderable {
+         lineNumberOffset: 0,
+         hideLineNumbers,
+         width,
+-        height: "100%"
++        height: "100%",
++        paddingRight: 2,
+       });
+       newSide.showLineNumbers = this._showLineNumbers;
+       super.add(newSide);
+@@ -6053,8 +6054,8 @@ class DiffRenderable extends Renderable {
+ `);
+     leftCodeRenderable.content = leftContentFinal;
+     rightCodeRenderable.content = rightContentFinal;
+-    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, "50%");
+-    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, "50%");
++    this.createOrUpdateSide("left", leftCodeRenderable, leftLineColors, leftLineSigns, leftLineNumbers, leftHideLineNumbers, this.width > 0 ? Math.floor(this.width / 2) : "50%");
++    this.createOrUpdateSide("right", rightCodeRenderable, rightLineColors, rightLineSigns, rightLineNumbers, rightHideLineNumbers, this.width > 0 ? this.width - Math.floor(this.width / 2) : "50%");
+   }
+   get diff() {
+     return this._diff;
+@@ -11435,6 +11436,36 @@ class ScrollBoxRenderable extends BoxRenderable {
+   _stickyStart;
+   _hasManualScroll = false;
+   _isApplyingStickyScroll = false;
++  // Manual-scroll anchor (0168): while the user is scrolled back, the
++  // viewport top is anchored to the first child overlapping it. When
++  // content ABOVE that child changes height (e.g. a large block above the
++  // viewport registers its real height as it comes into view), scrollTop
++  // is shifted by the child's y-delta so the visible content never jumps.
++  _manualAnchorChild = null;
++  _manualAnchorOffset = 0;
++  _manualAnchorHeight = 0;
++  // Fallback anchor (0186): the child immediately BELOW the anchor, plus the
++  // content's child count at capture. If the anchored block is DESTROYED
++  // while the user is scrolled back (the store pruned the oldest messages
++  // past its 100-cap window and the anchor was among them - the user is at
++  // the window's top edge), the block anchor has no child to reference, so
++  // the viewport re-anchors to the next sibling's CURRENT top: content
++  // ABOVE it was removed, so it slid up by exactly the pruned height. A new
++  // message APPENDED at the bottom in the same pass does not move the next
++  // sibling's top, so the top-prune/bottom-append case is exact. Gated on
++  // the child count FALLING (a prune removes blocks) so a pure remount
++  // (message.updated reconcile, same children) is untouched.
++  _manualAnchorNextChild = null;
++  _manualAnchorNextTop = null;
++  _manualAnchorChildCount = 0;
++  // Continuously-tracked distance from the viewport top to the content BOTTOM
++  // plus the content height at the previous recalc. The D-anchor: when the
++  // anchor is below the viewport or destroyed and the content SHRANK (the
++  // prune signature - appends and below-viewport registration only grow it),
++  // target = content.height - D moves the position up by exactly the removal,
++  // independent of which blocks remounted or grew in the gap.
++  _manualAnchorD = null;
++  _lastRecalcHeight = 0;
+   scrollAccel;
+   get stickyScroll() {
+     return this._stickyScroll;
+@@ -11623,6 +11654,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+       orientation: "vertical",
+       onChange: (position) => {
+         this.content.translateY = -position;
++        this._captureManualAnchor(position);
+         this.updateStickyState();
+       }
+     });
+@@ -11928,12 +11960,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+       return this.autoScrollSpeedSlow;
+     }
+   }
++  _captureManualAnchor(position) {
++    // Reads the yoga computed layout (settled positions) rather than the
++    // lazily-synced renderable .y, so a capture during a layout pass (the
++    // anchor re-capture after a shift) still lands on the current values.
++    const children = this.content.getChildrenSortedByPrimaryAxis();
++    for (let i = 0; i < children.length; i++) {
++      const child = children[i];
++      const layout = child.getLayoutNode().getComputedLayout();
++      if (layout.top + layout.height > position) {
++        this._manualAnchorChild = child;
++        this._manualAnchorOffset = position - layout.top;
++        this._manualAnchorHeight = layout.height;
++        this._manualAnchorNextChild = children[i + 1] ?? null;
++        this._manualAnchorNextTop =
++          this._manualAnchorNextChild ? this._manualAnchorNextChild.getLayoutNode().getComputedLayout().top : null;
++        this._manualAnchorChildCount = children.length;
++        this._manualAnchorD = this.content.height - position;
++        this._lastRecalcHeight = this.content.height;
++        return;
++      }
++    }
++    this._manualAnchorChild = null;
++    this._manualAnchorNextChild = null;
++    this._manualAnchorNextTop = null;
++    this._manualAnchorChildCount = 0;
++    this._manualAnchorD = null;
++    this._lastRecalcHeight = 0;
++  }
+   recalculateBarProps() {
+     const wasApplyingStickyScroll = this._isApplyingStickyScroll;
+     this._isApplyingStickyScroll = true;
+     try {
++      // Block-anchored manual scroll (0168): remember where the anchored
++      // child sat BEFORE the layout that triggered this call, so the shift
++      // below can keep the visible content fixed.
++      const anchor = this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed
++        ? { child: this._manualAnchorChild, offset: this._manualAnchorOffset }
++        : null;
+       this.verticalScrollBar.scrollSize = this.content.height;
+       this.verticalScrollBar.viewportSize = this.viewport.height;
++      // Content shrank since the last recalc = a top-removal (the store
++      // pruning the oldest messages). Appends only grow it; blocks registering
++      // real heights in the gap BELOW the viewport grow it. So a shrink is the
++      // unambiguous prune signature, and the continuously-tracked distance to
++      // the content bottom gives the exact removal - the D-anchor below.
++      const heightShrunk = this.content.height < this._lastRecalcHeight;
++      if (anchor) {
++        // Shift scrollTop so the content BELOW the anchor stays fixed:
++        // (1) content ABOVE the anchor changing height moves the anchor's
++        // top (y-delta), and (2) the ANCHOR block itself changing height
++        // (a culled block registering its real height, 3 -> hundreds of
++        // rows, as it enters the viewport - the traced jump cause, 0170)
++        // extends downward without moving its top, so the height-delta
++        // must be added too. EXCEPT (0183): an anchor that is the LAST
++        // child is the actively-streaming block at the bottom of the
++        // session - its growth APPENDS new content instead of displacing
++        // content the user is reading, so following the height-delta makes
++        // the viewport chase the stream (visible text keeps scrolling up
++        // while scrolled back a little, reading the block's own content).
++        // Content below a last-child anchor does not exist: skip the
++        // height-delta and freeze. The scrollPosition setter re-fires
++        // onChange, which re-captures the anchor at the new spot.
++        const children = this.content.getChildrenSortedByPrimaryAxis();
++        const anchorIsLast = children.length > 0 && children[children.length - 1] === anchor.child;
++        const anchorLayout = anchor.child.getLayoutNode().getComputedLayout();
++        // Height-delta (0170) applies only while the anchor's growth displaces
++        // VISIBLE content. Compare the anchor's extent BEFORE this growth
++        // (captured height) against the viewport bottom, not the NEW height:
++        // a culled block (3 rows) that registers its real height as it enters
++        // the viewport did NOT span the viewport before growing, so its
++        // growth pushes the content below it (what the user reads) downward
++        // and must be compensated. Only an anchor that ALREADY spanned the
++        // viewport (old bottom past the viewport bottom) grows out of sight
++        // and can skip the delta. (0186 compared the NEW bottom here, which
++        // zeroes the delta exactly when the culled block's growth crosses
++        // the viewport bottom - re-introducing the 0170 jump.)
++        const anchorBottomOld = anchorLayout.top + this._manualAnchorHeight;
++        const heightDelta =
++          anchorIsLast || anchorBottomOld >= this.verticalScrollBar.scrollPosition + this.viewport.height
++            ? 0
++            : anchorLayout.height - this._manualAnchorHeight;
++        // Y-delta (0168): track the content ABOVE THE VIEWPORT. When the
++        // anchor overlaps the viewport (offset >= 0) its top-delta does that.
++        // When the anchor sits below the viewport top (negative offset - the
++        // viewport in a gap), its top-delta includes blocks registering
++        // between the viewport and the anchor - INVISIBLE growth that dragged
++        // the viewport down a few rows per streamed message - so only a
++        // top-removal (heightShrunk) moves the position, via the D-anchor; a
++        // grow/hold leaves it put.
++        let target;
++        if (this._manualAnchorOffset < 0 && heightShrunk) {
++          target = this.content.height - this._manualAnchorD;
++        } else if (this._manualAnchorOffset < 0) {
++          target = this.verticalScrollBar.scrollPosition;
++        } else {
++          target = anchorLayout.top + this._manualAnchorOffset + heightDelta;
++        }
++        if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++          this.verticalScrollBar.scrollPosition = target;
++        }
++      } else if (this._hasManualScroll && this._manualAnchorChild && this._manualAnchorChild.isDestroyed) {
++        // The anchored block was DESTROYED. If the content shrank, a top-
++        // removal happened (a prune) - the continuously-tracked distance to
++        // the content bottom gives the exact removal, so the same rows stay
++        // visible regardless of which blocks remounted around it. If the
++        // content only grew or held (a pure remount), nothing moved -
++        // re-capture so future changes are anchored again.
++        if (heightShrunk) {
++          const target = this.content.height - this._manualAnchorD;
++          if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
++            this.verticalScrollBar.scrollPosition = target;
++          }
++        } else {
++          this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
++        }
++      }
+       this.horizontalScrollBar.scrollSize = this.content.width;
+       this.horizontalScrollBar.viewportSize = this.viewport.width;
+       if (this._stickyScroll) {
+@@ -11958,6 +12100,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+           }
+         }
+       }
++      this._lastRecalcHeight = this.content.height;
++      this._manualAnchorD = this.content.height - this.verticalScrollBar.scrollPosition;
+     } finally {
+       this._isApplyingStickyScroll = wasApplyingStickyScroll;
+     }
+diff --git a/parser.worker.js b/parser.worker.js
+index 1b7549e..c115508 100644
+--- a/parser.worker.js
++++ b/parser.worker.js
+@@ -3957,6 +3957,32 @@ class ParserWorker {
+     };
+     return reusableState;
+   }
++  // 0326 (0322s): per-ELEMENT parser. 0322n's Mode A was concurrent use of the
++  // ONE shared per-filetype parser (not reentrant - _ts_tree_delete crash +
++  // poison). Giving each streaming element its OWN parser removes the sharing
++  // entirely - different elements highlight CONCURRENTLY on distinct parsers
++  // (no queue-storm - the global chain's 70-85ms worst case on many elements)
++  // while same-element highlights stay ordered on the element's own chain.
++  // Free the parser when the element's one-shot cache entry is evicted/dropped.
++  async getElementParser(filetype, cacheKey) {
++    const canonicalFiletype = this.resolveCanonicalFiletype(filetype);
++    if (this.elementParsers?.has(cacheKey)) {
++      return this.elementParsers.get(cacheKey);
++    }
++    const state = await this.createReusableParser(canonicalFiletype);
++    if (state) {
++      if (!this.elementParsers) this.elementParsers = new Map();
++      this.elementParsers.set(cacheKey, state);
++    }
++    return state;
++  }
++  dropElementParser(cacheKey) {
++    if (this.elementParsers?.has(cacheKey)) {
++      const state = this.elementParsers.get(cacheKey);
++      if (state?.parser) state.parser.delete();
++      this.elementParsers.delete(cacheKey);
++    }
++  }
+   async handleInitializeParser(bufferId, version, content, filetype, messageId) {
+     const filetypeParser = await this.resolveFiletypeParser(filetype);
+     if (!filetypeParser) {
+@@ -4019,7 +4045,7 @@ class ParserWorker {
+   getNodeText(node, content) {
+     return content.substring(node.startIndex, node.endIndex);
+   }
+-  async processInjections(parserState) {
++  async processInjections(parserState, range) {
+     const injectionMatches = [];
+     const injectionRanges = new Map;
+     if (!parserState.queries.injections) {
+@@ -4030,6 +4056,14 @@ class ParserWorker {
+     const languageGroups = new Map;
+     const injectionMapping = parserState.injectionMapping;
+     for (const capture of injectionCaptures) {
++      // Optional byte range (the changed region of an incremental update): only
++      // fences intersecting it are re-processed, so unchanged ones are left to
++      // the cached captures instead of being re-sent + re-merged every update
++      // (which duplicated them and inflated the payload - the 0308-inclight
++      // regression).
++      if (range && (capture.node.endIndex < range.start || capture.node.startIndex > range.end)) {
++        continue;
++      }
+       const captureName = capture.name;
+       if (captureName === "injection.content" || captureName.includes("injection")) {
+         const nodeType = capture.node.type;
+@@ -4317,8 +4351,21 @@ class ParserWorker {
+     parserState.parser.delete();
+     this.bufferParsers.delete(bufferId);
+   }
+-  async handleOneShotHighlight(content, filetype, messageId) {
+-    const reusableState = await this.getReusableParser(filetype);
++  hlDbg(cacheKey, phase, extra) {
++    try {
++      postWorkerMessage({
++        type: "HL_DEBUG",
++        cacheKey: cacheKey ?? null,
++        phase,
++        extra: extra ?? undefined,
++        t: Date.now()
++      });
++    } catch {}
++  }
++  async handleOneShotHighlight(content, filetype, messageId, cacheKey) {
++    const total0 = performance.now();
++    const reusableState = cacheKey ? await this.getElementParser(filetype, cacheKey) : await this.getReusableParser(filetype);
++    this.hlDbg(cacheKey, "parser", { len: (content || "").length });
+     if (!reusableState) {
+       postWorkerMessage({
+         type: "ONESHOT_HIGHLIGHT_RESPONSE",
+@@ -4330,7 +4377,75 @@ class ParserWorker {
+     }
+     const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
+ ` : content;
+-    const tree = reusableState.parser.parse(parseContent);
++    // 0326 (0322r): the one-shot cache is keyed PER ELEMENT (cacheKey). 0322o's
++    // Mode B came from the single-slot filetype key handing one element's tree
++    // to a different element sharing a prefix - per-element keys make
++    // append-only incremental reuse SAFE again (O(delta) parse + scoped
++    // injections = the 0308 flat refresh). Elements without a cacheKey get no
++    // incremental (fresh parse, correct - the 0322o behavior for those).
++    let cached;
++    let cacheRes = { key: !!cacheKey, found: false, mode: "nocache" };
++    if (cacheKey && this.oneShotParseCache) {
++      const entry = this.oneShotParseCache.get(cacheKey);
++      if (entry) {
++        if (entry.filetype === filetype) {
++          cached = entry;
++          cacheRes = { key: true, found: true, mode: "same" };
++        } else {
++          if (entry.tree) entry.tree.delete();
++          this.oneShotParseCache.delete(cacheKey);
++          this.dropElementParser(cacheKey);
++          cacheRes = { key: true, found: false, mode: "filetype" };
++        }
++      } else {
++        cacheRes = { key: true, found: false, mode: "miss" };
++      }
++    }
++    let tree;
++    let incremental = false;
++    let queryStart = 0;
++    let queryEnd = 0;
++    const timings = {};
++    if (cached && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
++      // Append-only streaming: the appended text is the only changed region
++      // (the incremental parse alters just the tail), so the query is scoped to
++      // it directly - no getChangedRanges walk, which is O(n) in tree-sitter.
++      const endPos = cached.tree.rootNode.endPosition;
++      const insert = parseContent.substring(cached.content.length);
++      const newlines = (insert.match(/\n/g) || []).length;
++      cached.tree.edit({
++        startIndex: cached.content.length,
++        oldEndIndex: cached.content.length,
++        newEndIndex: parseContent.length,
++        startPosition: endPos,
++        oldEndPosition: endPos,
++        newEndPosition: {
++          row: endPos.row + newlines,
++          column: newlines === 0 ? endPos.column + insert.length : insert.length - insert.lastIndexOf("\n") - 1
++        }
++      });
++      this.hlDbg(cacheKey, "parse-inc", { len: parseContent.length });
++      const t0 = performance.now();
++      tree = reusableState.parser.parse(parseContent, cached.tree);
++      timings.parse = performance.now() - t0;
++      incremental = true;
++      // Margin covers constructs spanning the append boundary (open code fence,
++      // table row, etc.) so their full span is re-queried, not just the delta.
++      queryStart = Math.max(0, cached.content.length - 600);
++      queryEnd = parseContent.length;
++    } else {
++      // Non-append update (or a new filetype): the cached tree is standalone
++      // owned, so free it before the full reparse; the fresh tree is cached
++      // again so subsequent appends get the incremental path.
++      if (cached) {
++        cached.tree.delete();
++        if (cacheKey) this.oneShotParseCache?.delete(cacheKey);
++      }
++      this.hlDbg(cacheKey, "parse-full", { len: parseContent.length });
++      const t0 = performance.now();
++      tree = reusableState.parser.parse(parseContent);
++      timings.parse = performance.now() - t0;
++    }
+     if (!tree) {
+       postWorkerMessage({
+         type: "ONESHOT_HIGHLIGHT_RESPONSE",
+@@ -4341,30 +4456,135 @@ class ParserWorker {
+       return;
+     }
+     try {
+-      const matches = reusableState.filetypeParser.queries.highlights.captures(tree.rootNode);
++      const queries = reusableState.filetypeParser.queries;
++      let matches;
++      this.hlDbg(cacheKey, "query", { len: parseContent.length });
++      let t0 = performance.now();
++      // 0309: the binding's RANGED captures({startIndex, endIndex}) truncates
++      // at ~50% of the tree (probed: matchedEnd 100/191 vs fullEnd 191 on the
++      // SAME tree) - so the incremental path's per-type queries only reached
++      // the front of the streamed body and the tail stayed unstyled (the
++      // bash-heredoc tool-body white rows). Query UNBOUNDED: the incremental
++      // PARSE is where the cheap win is (measured ~1.6ms parse + ~0.02ms query
++      // at 14K); the range was a faulty optimization.
++      matches = queries.highlights.captures(tree.rootNode);
++      timings.query = performance.now() - t0;
+       let injectionRanges = new Map;
+-      if (reusableState.filetypeParser.queries.injections) {
++      let injectionMatches = [];
++      if (queries.injections) {
++        t0 = performance.now();
+         const parserState = {
+           parser: reusableState.parser,
+           tree,
+-          queries: reusableState.filetypeParser.queries,
++          queries,
+           filetype,
+           content,
+           injectionMapping: reusableState.filetypeParser.injectionMapping
+         };
+-        const injectionResult = await this.processInjections(parserState);
+-        matches.push(...injectionResult.captures);
++        this.hlDbg(cacheKey, "inject", { len: parseContent.length });
++        const injectionResult = await this.processInjections(
++          parserState,
++          incremental ? { start: queryStart, end: queryEnd } : undefined,
++        );
++        timings.inject = performance.now() - t0;
++        injectionMatches = injectionResult.captures;
+         injectionRanges = injectionResult.injectionRanges;
+       }
+-      const highlights = this.getSimpleHighlights(matches, injectionRanges);
++      this.hlDbg(cacheKey, "simple", { len: parseContent.length });
++      t0 = performance.now();
++      const fresh = this.getSimpleHighlights([...matches, ...injectionMatches], injectionRanges);
++      // 0322t REVERTED (2026-09-08): the delta protocol regressed restored-
++      // content rendering (short/empty buffers on rehydrated reasoning parts)
++      // and re-triggered the 0322g-class worker stall on undo+submit (no JS
++      // error - the hang class; needs the hang root-caused first). Back to the
++      // full-list 0309 key-dedupe merge (O(n) - the known residual slope).
++      let highlights;
++      if (incremental && cached && cached.highlights) {
++        // 0326 (0322w): corrected 3-way merge. The key-dedupe union (0309) held
++        // BOTH the cached and fresh versions of the same region's spans - their
++        // boundaries shift slightly between incremental steps, so the paint
++        // toggled (the streaming color jitter). Take the PREFIX from the cached
++        // list verbatim (stable - the applied version, never re-derived from the
++        // incremental tree) and the CHANGE REGION from the fresh parse (the only
++        // part the append changed - newly parsed = correct). Key-dedupe ONLY the
++        // region so overlapping stale/new spans collapse to one version. Also
++        // O(delta) instead of O(n) - the 0309 merge was the climb.
++        const prefix = [];
++        const region = [];
++        for (const h of cached.highlights) {
++          if (h[1] < queryStart) prefix.push(h);
++          else region.push(h);
++        }
++        const merged = new Map;
++        for (const h of region) {
++          merged.set(`${h[0]}:${h[1]}:${h[2]}:${JSON.stringify(h[3])}`, h);
++        }
++        for (const h of fresh) {
++          merged.set(`${h[0]}:${h[1]}:${h[2]}:${JSON.stringify(h[3])}`, h);
++        }
++        highlights = prefix.concat([...merged.values()].sort((a, b) => a[0] - b[0]));
++        // 0326 (0322x): merge-stats diagnostic - prefix/region/fresh sizes + span
++        // extent, so the streaming color-drop trace shows what the merge retained.
++        try {
++          let mn = 0, mx = 0;
++          for (const h of highlights) { if (h[1] > mx) mx = h[1]; }
++          this.hlDbg(cacheKey, "merge", { cl: parseContent.length, n: highlights.length, prefix: prefix.length, region: region.length, fresh: fresh.length, mn: highlights.length ? Math.min(...highlights.map((h) => h[0])) : 0, mx });
++        } catch {}
++      } else {
++        highlights = fresh;
++      }
++      timings.merge = performance.now() - t0;
++      timings.total = performance.now() - total0;
++      timings.count = highlights.length;
++      // 0326 (0322t DELTA - the 2nd-round 8ms, element-side): the incremental
++      // append sends ONLY the change-region captures (end >= queryStart) as
++      // `delta` + `deltaMode` + `changedStart`; the CodeRenderable merges them
++      // into its _lastHighlights (key-dedupe). Cold/full responses send the
++      // authoritative full `highlights`. (The 0322t revert was for the RESTORED-
++      // content regression + the delta-triggered stall - the client merge stays
++      // element-side where the baseline is element-scoped.)
++      let delta = null;
++      let sendHighlights = highlights;
++      let deltaMode = false;
++      let changedStart = 0;
++      if (incremental && cached?.highlights?.length) {
++        deltaMode = true;
++        changedStart = queryStart;
++        delta = [];
++        for (const h of highlights) {
++          if (h[1] >= queryStart) delta.push(h);
++        }
++        sendHighlights = [];
++      }
+       postWorkerMessage({
+         type: "ONESHOT_HIGHLIGHT_RESPONSE",
+         messageId,
+         hasParser: true,
+-        highlights
++        highlights: sendHighlights,
++        incremental,
++        timings,
++        deltaMode,
++        delta,
++        changedStart,
++        d: { ...cacheRes, len: parseContent.length, cachedLen: cached?.content.length ?? 0, pfx: cached ? parseContent.startsWith(cached.content) : undefined }
+       });
++      // Both paths cache the tree + captures for the next append. On the
++      // incremental path the parse hands subtree ownership to the new tree, so
++      // the previous reference is dropped (never deleted - that would
++      // double-free shared subtrees); on the full path the old tree was freed.
++      if (cacheKey) {
++        if (!this.oneShotParseCache) this.oneShotParseCache = new Map();
++        this.oneShotParseCache.set(cacheKey, { filetype, content: parseContent, tree, highlights: fresh });
++        while (this.oneShotParseCache.size > 12) {
++          const oldestKey = this.oneShotParseCache.keys().next().value;
++          const oldest = this.oneShotParseCache.get(oldestKey);
++          if (oldest?.tree) oldest.tree.delete();
++          this.oneShotParseCache.delete(oldestKey);
++          this.dropElementParser(oldestKey);
++        }
++      }
+     } finally {
+-      tree.delete();
++      // The tree is always retained in the cache - never delete it here.
+     }
+   }
+   async updateDataPath(dataPath) {
+@@ -4391,6 +4611,19 @@ class ParserWorker {
+       this.filetypeParserPromises.clear();
+       this.reusableParsers.clear();
+       this.reusableParserPromises.clear();
++      if (this.elementParsers) {
++        for (const state of this.elementParsers.values()) {
++          if (state?.parser) state.parser.delete();
++        }
++        this.elementParsers = undefined;
++      }
++      this._elemChains = undefined;
++      if (this.oneShotParseCache) {
++        for (const entry of this.oneShotParseCache.values()) {
++          if (entry?.tree) entry.tree.delete();
++        }
++        this.oneShotParseCache = undefined;
++      }
+     } catch (error) {
+       throw new Error(`Failed to clear cache: ${error}`);
+     }
+@@ -4509,7 +4742,56 @@ if (isWorkerRuntime) {
+           });
+           break;
+         case "ONESHOT_HIGHLIGHT":
+-          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId);
++          // 0322n: the shared tree-sitter Parser + oneShotParseCache are NOT
++          // reentrant-safe: multiple async highlight handlers overlap (the
++          // reasoning + answer + tool-stream code elements all highlight on the
++          // ONE reusable parser), concurrent parse()/delete() corrupted the
++          // tree ownership and crashed with `RuntimeError: Out of bounds
++          // memory access` in _ts_tree_delete (the LIVE root-cause error,
++          // 2026-09-08), poisoning the parser for the rest of the session
++          // (the cumulative freeze - needs enough overlapping highlights to
++          // collide; undo/redo + consecutive prompts collide instantly).
++          // Serialize every highlight so the parser is used by exactly one
++          // handler at a time.
++          // 0326 (0322s): PER-ELEMENT chain + parser. Same-element highlights
++          // wait on the element's own chain (one parser is not reentrant - the
++          // element fires a highlight per render). DIFFERENT elements run on
++          // their own parsers CONCURRENTLY - no global queue-storm (the
++          // _hlChain's 70-85ms worst case with ~20 elements re-highlighting,
++          // live 2026-09-08). CacheKey-less callers keep the shared per-
++          // filetype parser + the global chain (0322n behavior, safe).
++          // Poison-proof: a rejecting handler must not skip every later .then
++          // (the 0322g-class "stops answering" - seen live when the incremental
++          // reintroduced error sources). The error is reported (the client
++          // falls back to raw text) and the chain lives on.
++          const run = (handler) =>
++            Promise.resolve()
++              .then(handler)
++              .catch((error) => {
++                try {
++                  postWorkerMessage({
++                    type: "ONESHOT_HIGHLIGHT_ERROR",
++                    messageId: message.messageId,
++                    error: error instanceof Error ? (error.stack || error.message) : String(error)
++                  });
++                } catch {}
++              });
++          if (message.cacheKey) {
++            if (!worker._elemChains) worker._elemChains = new Map();
++            const prev = worker._elemChains.get(message.cacheKey) ?? Promise.resolve();
++            const next = prev.then(() => run(() => worker.handleOneShotHighlight(message.content, message.filetype, message.messageId, message.cacheKey)));
++            worker._elemChains.set(message.cacheKey, next);
++            try {
++              await next;
++            } finally {
++              if (worker._elemChains.get(message.cacheKey) === next) worker._elemChains.delete(message.cacheKey);
++            }
++          } else {
++            worker._hlChain = (worker._hlChain ?? Promise.resolve())
++              .then(() => run(() => worker.handleOneShotHighlight(message.content, message.filetype, message.messageId, undefined)))
++              .catch(() => {});
++            await worker._hlChain;
++          }
+           break;
+         case "UPDATE_DATA_PATH":
+           try {
+diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
+index 62ce331..1e922c8 100644
+--- a/renderables/Diff.d.ts
++++ b/renderables/Diff.d.ts
+@@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
+     syntaxStyle?: SyntaxStyle;
+     wrapMode?: "word" | "char" | "none";
+     conceal?: boolean;
++    drawUnstyledText?: boolean;
+     selectionBg?: string | RGBA;
+     selectionFg?: string | RGBA;
+     treeSitterClient?: TreeSitterClient;
+@@ -44,6 +45,7 @@ export declare class DiffRenderable extends Renderable {
+     private _syntaxStyle?;
+     private _wrapMode?;
+     private _conceal;
++    private _drawUnstyledText?;
+     private _selectionBg?;
+     private _selectionFg?;
+     private _treeSitterClient?;
+@@ -134,6 +136,8 @@ export declare class DiffRenderable extends Renderable {
+     set selectionFg(value: string | RGBA | undefined);
+     get conceal(): boolean;
+     set conceal(value: boolean);
++    get drawUnstyledText(): boolean | undefined;
++    set drawUnstyledText(value: boolean | undefined);
+     get fg(): RGBA | undefined;
+     set fg(value: string | RGBA | undefined);
+     setLineColor(line: number, color: string | RGBA | LineColorConfig): void;

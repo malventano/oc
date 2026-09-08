@@ -1,0 +1,36 @@
+diff --git a/index.js b/index.js
+--- a/index.js
++++ b/index.js
+@@ -636,6 +636,14 @@
+     textNode.replace(value, 0);
+   },
+   setProperty(node, name, value, prev) {
++    // oc fork (0304): a node removed from the tree defers destroyRecursively
++    // to process.nextTick, so a Solid render effect can still apply props to
++    // a destroyed element afterwards - the Box fg/bg setters then hit the
++    // TextBuffer guard and throw "TextBuffer is destroyed", killing the TUI
++    // (BUG_TUI_DESTROYED_BUFFER_WRITE). Never write props to a dead node.
++    if (node && node.isDestroyed) {
++      return;
++    }
+     if (name.startsWith("on:")) {
+       const eventName = name.slice(3);
+       if (value) {
+diff --git a/index.bun.js b/index.bun.js
+--- a/index.bun.js
++++ b/index.bun.js
+@@ -658,6 +658,14 @@
+     textNode.replace(value, 0);
+   },
+   setProperty(node, name, value, prev) {
++    // oc fork (0304): a node removed from the tree defers destroyRecursively
++    // to process.nextTick, so a Solid render effect can still apply props to
++    // a destroyed element afterwards - the Box fg/bg setters then hit the
++    // TextBuffer guard and throw "TextBuffer is destroyed", killing the TUI
++    // (BUG_TUI_DESTROYED_BUFFER_WRITE). Never write props to a dead node.
++    if (node && node.isDestroyed) {
++      return;
++    }
+     if (name.startsWith("on:")) {
+       const eventName = name.slice(3);
+       if (value) {
