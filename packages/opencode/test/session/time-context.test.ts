@@ -86,7 +86,7 @@ describe("TimeContext.stampSquashHint", () => {
     const output = { output: "x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS + 1) }
     TimeContext.stampSquashHint(output)
     expect(output.output).toMatch(
-      /^x+\n\n<system-reminder>Very large tool output \(\d+ chars, ~\d+ tokens\)\. If you won't reference it again, call squash-output NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it\.<\/system-reminder>$/,
+      /^x+\n\n<system-reminder>Very large tool output \(\d+ chars, ~\d+ tokens\)\. If you won't reference it again, call shrink NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it\.<\/system-reminder>$/,
     )
   })
 
@@ -107,7 +107,7 @@ describe("TimeContext.stampSquashHint", () => {
 
   test("skips outputs that already contain a squash hint", () => {
     const output = {
-      output: `${"x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS)}\n\n<system-reminder>Very large tool output (10000 chars, ~2500 tokens). If you won't reference it again, call squash-output to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>`,
+      output: `${"x".repeat(TimeContext.SQUASH_HINT_MIN_CHARS)}\n\n<system-reminder>Very large tool output (10000 chars, ~2500 tokens). If you won't reference it again, call shrink to replace it with a short summary; every future prompt in this session re-reads it.</system-reminder>`,
     }
     TimeContext.stampSquashHint(output)
     expect(output.output.match(/<system-reminder>/g)).toHaveLength(1)
