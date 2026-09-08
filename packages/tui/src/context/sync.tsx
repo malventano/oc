@@ -369,12 +369,18 @@ export const {
             // 0322: when the assistant message completes, dump the UI-accumulated
             // per-part lengths so they can be diffed against the persisted part
             // lengths (the "UI short vs DB full" divergence, live-caught).
-            if ((event.properties.info as { time?: { end?: number }; role?: string }).time?.end && (event.properties.info as { role?: string }).role === "assistant") {
-              const msgParts = store.part[event.properties.info.id] as Array<{ id: string; text?: string }> | undefined
-              partTrace.onMessageDone({
-                messageID: event.properties.info.id,
-                parts: (msgParts ?? []).map((p) => ({ partID: p.id, len: typeof p.text === "string" ? p.text.length : -1 })),
-              })
+            // 0322b: the payload's completion stamp is time.completed (NOT
+            // time.end - verified against the message.updated.1 event rows), so
+            // the hook never matched on the first ship - fix the field.
+            {
+              const info = event.properties.info as { time?: { end?: number; completed?: number }; role?: string }
+              if ((info.time?.completed !== undefined || info.time?.end !== undefined) && info.role === "assistant") {
+                const msgParts = store.part[event.properties.info.id] as Array<{ id: string; text?: string }> | undefined
+                partTrace.onMessageDone({
+                  messageID: event.properties.info.id,
+                  parts: (msgParts ?? []).map((p) => ({ partID: p.id, len: typeof p.text === "string" ? p.text.length : -1 })),
+                })
+              }
             }
             break
           }
