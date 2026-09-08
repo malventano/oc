@@ -671,7 +671,20 @@ export function Session() {
   function toBottom() {
     setTimeout(() => {
       if (!scroll || scroll.isDestroyed) return
-      scroll.scrollTo(scroll.scrollHeight)
+      // 0313: re-engage the sticky-bottom path instead of a one-shot
+      // scrollTo(scrollHeight). The undo/redo revert lands LATE
+      // asynchronously (server-side snapshot + diff work), so scrollHeight
+      // can be stale for a frame at submit - a one-shot scrollTo(scrollHeight)
+      // lands on the OLD (lower) bottom and the box snaps up once the real
+      // height settles (the 1-frame undo-then-submit scroll jump).
+      // applyStickyStart resets to the true bottom AND clears any spurious
+      // manual-scroll flag, so every subsequent recalculateBarProps follows
+      // the real bottom - no wrong-position frame.
+      if (scroll.stickyScroll && scroll.stickyStart === "bottom") {
+        ;(scroll as any).applyStickyStart?.("bottom")
+      } else {
+        scroll.scrollTo(scroll.scrollHeight)
+      }
     }, 50)
   }
 
