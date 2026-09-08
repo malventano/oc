@@ -666,6 +666,34 @@ describe("tool.edit", () => {
         expect(result.output).not.toContain("indentation re-based")
       }),
     )
+
+    it.instance("surfaces an explicit no-net-change when a whitespace-only edit is kept at the file's indent (0321)", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "wsonly.txt")
+        yield* put(filepath, "alpha = 1\nbeta = 2\ngamma = 3\n")
+        // OLD is byte-exact; NEW adjusts only the middle line's indent - the
+        // non-uniform whitespace deviation is adopted from the file (0301),
+        // so the edit lands as a no-op - which must be surfaced explicitly,
+        // not reported as bare success with an empty diff.
+        const result = yield* run({
+          input: fence([
+            {
+              path: filepath,
+              ops: [
+                {
+                  old: ["alpha = 1", "beta = 2", "gamma = 3"],
+                  new: ["alpha = 1", "  beta = 2", "gamma = 3"],
+                },
+              ],
+            },
+          ]),
+        })
+        expect(yield* load(filepath)).toBe("alpha = 1\nbeta = 2\ngamma = 3\n")
+        expect(result.output).toContain("Edit applied successfully")
+        expect(result.output).toContain("No net change for")
+      }),
+    )
   })
 
   describe("path resolution (oc 0259): filePath-first + not-found hint", () => {
