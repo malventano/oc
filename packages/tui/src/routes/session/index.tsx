@@ -2742,9 +2742,14 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     // the render/height layer, not text loss). Fires the FIRST time a part
     // shows this pattern (part-trace de-dupes per partID).
     if (summary().body.length > 1000 && Math.max(c, vr) < 3) {
+      // bufLen = the buffer's ACTUAL rendered content - the discriminator: a
+      // stale-applied highlight leaves bufLen << len (mid-line cuts), while a
+      // full buffer with a wrong wrap leaves bufLen ≈ len but a bad lineCount.
+      const bufLen = (el.textBufferView.getPlainText?.() ?? "").length
       partTrace.onReasoningHeightStall({
         partID: props.part.id,
         len: summary().body.length,
+        bufLen,
         lineCount: c,
         virtual: vr,
         width: liveW(),
