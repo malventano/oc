@@ -83,4 +83,20 @@ export const partTrace = {
       if (k.startsWith(prefix)) lens.delete(k)
     }
   },
+
+  // 0322c: reasoning block height/measure stall - the box renders ~1 line
+  // while the content is large (the 0314-family wrap/height bug). Live-caught
+  // 2026-09-08: message-done lens == DB for all parts (text is FULL) while the
+  // display truncated - so this is a render-side height/wrap stall, not text
+  // loss. Log once per part (avoid per-delta spam), including the measured
+  // widths so a stale wrap width is visible.
+  onReasoningHeightStall(info: { partID: string; len: number; lineCount: number; virtual: number; width: number }) {
+    if (reasoningStallLogged.has(info.partID)) return
+    reasoningStallLogged.add(info.partID)
+    write({ kind: "reasoning-height-stall", ...info })
+  },
 }
+
+// Per-part de-dupe for the height-stall anomaly (fires on every delta while
+// stalled - log the first occurrence only).
+const reasoningStallLogged = new Set<string>()
