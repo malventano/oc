@@ -2577,28 +2577,40 @@ function useFixedStreamHeight(
     // elements made this easy to hit - a slot's code element can be torn down
     // while its StreamSegment measure hook still lives, crashing the whole TUI
     // with "TextBufferView is destroyed"). Guard the measurement.
-    const w = width()
-    let c = 0
-    try {
-      // Measure at the element's real width (the 0286 root cause: the memo
-      // pinned 140, undersizing the box and phantom-numbering the gutter).
-      // Both `measure.lineCount` and `virtualLineCount` count the
-      // trailing-newline blank row identically, so the box height and gutter
-      // agree - no strip.
-      c = viewed.measureForDimensions(w, 99999)?.lineCount ?? 0
-      // 0305-probe / TRIAL FIX (by-line reveal): the buffer's OWN wrapped row
-      // count (getVirtualLineCount) can exceed the measured lineCount by the
-      // still-streaming PARTIAL last row once the content is large enough (the
-      // measured lineCount lags - probe: reason.diffMax goes to 1 persistently
-      // from ~14K chars, and the box clipped that row, so the text only
-      // revealed per completed wrapped row = the by-line cadence). Grow the box
-      // to the buffer's real count so the partial row paints as it streams.
-      const vr = viewed.getVirtualLineCount?.() ?? 0
-      setRows(Math.max(0, c, vr))
-    } catch {
-      setRows(0)
-    }
-  })
+      const w = width()
+      let c = 0
+      try {
+        // Measure at the element's real width (the 0286 root cause: the memo
+        // pinned 140, undersizing the box and phantom-numbering the gutter).
+        // Both `measure.lineCount` and `virtualLineCount` count the
+        // trailing-newline blank row identically, so the box height and gutter
+        // agree - no strip.
+        c = viewed.measureForDimensions(w, 99999)?.lineCount ?? 0
+        // 0305-probe / TRIAL FIX (by-line reveal): the buffer's OWN wrapped row
+        // count (getVirtualLineCount) can exceed the measured lineCount by the
+        // still-streaming PARTIAL last row once the content is large enough (the
+        // measured lineCount lags - probe: reason.diffMax goes to 1 persistently
+        // from ~14K chars, and the box clipped that row, so the text only
+        // revealed per completed wrapped row = the by-line cadence). Grow the box
+        // to the buffer's real count so the partial row paints as it streams.
+        const vr = viewed.getVirtualLineCount?.() ?? 0
+        setRows(Math.max(0, c, vr))
+        // PROBE (0308-height instrumentation - working-tree only): the box can
+        // trail the streamed content if the buffer (deferred set content while
+        // streaming, Code.ts:103) lags the props content - log measured vs
+        // virtual vs the props line count to see which falls behind.
+        {
+          const ev = (globalThis as any).__ocStreamHtEvents
+          if (Array.isArray(ev)) {
+            const raw = content()
+            ev.push({ t: performance.now(), c, vr, rawLines: raw.length ? raw.split("\n").length : 0, w })
+            if (ev.length > 50000) ev.splice(0, ev.length - 50000)
+          }
+        }
+      } catch {
+        setRows(0)
+      }
+    })
   const ref = (node: any) => {
     el = node
   }
@@ -3602,7 +3614,7 @@ function heredocSegments(text: string): StreamSegmentData[] | undefined {
   // interpreter names are lowercase. `opener` = the full opening line, used
   // for the `> file` redirect target and a bare interpreter (`python3 - <<`).
   const segLang = (op: { delim: string; quote?: string }, body: string, opener?: string) => {
-    const target = opener && /(?:^|[\s;&|(])(?:cat|tee|dd|cp)\s+[>\-]?\s*([A-Za-z0-9_./+\-]+)\s*(?:<<|<<<)/.exec(opener)
+    const target = opener && /(?:^|[\s;&|(])(?:cat|tee|dd|cp)\s+(?:>>|[>\-])?\s*([A-Za-z0-9_./+\-]+)\s*(?:<<|<<<)/.exec(opener)
     const targetFt = target ? coalesceFiletype(filetype(target[1]!)) : undefined
     // Bare interpreter feeding stdin (python3 - << 'EOF', sqlite3 << 'END',
     // node <<< 'code'): the word before `- <<`/`<<` names the runtime. `cat`
