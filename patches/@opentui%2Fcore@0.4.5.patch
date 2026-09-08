@@ -1,5 +1,18 @@
+diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
+index 701d70d..adea59c 100644
+--- a/chunk-bun-t2myhmwd.js
++++ b/chunk-bun-t2myhmwd.js
+@@ -8703,7 +8703,7 @@ class TreeSitterClient extends EventEmitter2 {
+         const callback = this.messageCallbacks.get(message.messageId);
+         if (callback) {
+           this.messageCallbacks.delete(message.messageId);
+-          callback.resolve({ highlights: message.highlights, warning: message.warning, error: message.error });
++          callback.resolve({ highlights: message.highlights, incremental: message.incremental, timings: message.timings, warning: message.warning, error: message.error });
+         }
+         return;
+       }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..bab6156 100644
+index e5e5874..9c596a3 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -96,6 +109,22 @@ index e5e5874..bab6156 100644
      }
    }
    async startHighlight() {
+@@ -3393,6 +3422,15 @@ class CodeRenderable extends TextBufferRenderable {
+       this._shouldRenderTextBuffer = true;
+       this._isHighlighting = false;
+       this._highlightsDirty = false;
++      // 0309-mfix: if the content advanced past the snapshot this highlight just
++      // colored (or the stream completed with a changed final state), re-run so
++      // the completed view colors the whole body - the bash streaming element
++      // carries through completion (0199) and its re-highlight otherwise stays
++      // on the truncated/stale path (the no-final-color-pass report).
++      if (!this.isDestroyed && this._content !== content) {
++        this._highlightsDirty = true;
++        this.requestRender();
++      }
+       this.updateTextInfo();
+       this.requestRender();
+     } catch (error) {
 diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
 index 4a2cb78..07da349 100644
 --- a/chunk-node-51kpf0mz.js
@@ -664,39 +693,11 @@ index 0ddf03b..54ba1ef 100644
      } finally {
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
-diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
-index 62ce331..1e922c8 100644
---- a/renderables/Diff.d.ts
-+++ b/renderables/Diff.d.ts
-@@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
-     syntaxStyle?: SyntaxStyle;
-     wrapMode?: "word" | "char" | "none";
-     conceal?: boolean;
-+    drawUnstyledText?: boolean;
-     selectionBg?: string | RGBA;
-     selectionFg?: string | RGBA;
-     treeSitterClient?: TreeSitterClient;
-@@ -44,6 +45,7 @@ export declare class DiffRenderable extends Renderable {
-     private _syntaxStyle?;
-     private _wrapMode?;
-     private _conceal;
-+    private _drawUnstyledText?;
-     private _selectionBg?;
-     private _selectionFg?;
-     private _treeSitterClient?;
-@@ -134,6 +136,8 @@ export declare class DiffRenderable extends Renderable {
-     set selectionFg(value: string | RGBA | undefined);
-     get conceal(): boolean;
-     set conceal(value: boolean);
-+    get drawUnstyledText(): boolean | undefined;
-+    set drawUnstyledText(value: boolean | undefined);
-     get fg(): RGBA | undefined;
-     set fg(value: string | RGBA | undefined);
-     setLineColor(line: number, color: string | RGBA | LineColorConfig): void;
 diff --git a/parser.worker.js b/parser.worker.js
+index 1b7549e..2074aff 100644
 --- a/parser.worker.js
 +++ b/parser.worker.js
-@@ -4019,7 +4019,7 @@
+@@ -4019,7 +4019,7 @@ class ParserWorker {
    getNodeText(node, content) {
      return content.substring(node.startIndex, node.endIndex);
    }
@@ -705,7 +706,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      const injectionMatches = [];
      const injectionRanges = new Map;
      if (!parserState.queries.injections) {
-@@ -4030,6 +4030,14 @@
+@@ -4030,6 +4030,14 @@ class ParserWorker {
      const languageGroups = new Map;
      const injectionMapping = parserState.injectionMapping;
      for (const capture of injectionCaptures) {
@@ -720,7 +721,7 @@ diff --git a/parser.worker.js b/parser.worker.js
        const captureName = capture.name;
        if (captureName === "injection.content" || captureName.includes("injection")) {
          const nodeType = capture.node.type;
-@@ -4318,6 +4326,7 @@
+@@ -4318,6 +4326,7 @@ class ParserWorker {
      this.bufferParsers.delete(bufferId);
    }
    async handleOneShotHighlight(content, filetype, messageId) {
@@ -728,7 +729,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      const reusableState = await this.getReusableParser(filetype);
      if (!reusableState) {
        postWorkerMessage({
-@@ -4330,7 +4339,49 @@
+@@ -4330,7 +4339,49 @@ class ParserWorker {
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
@@ -779,7 +780,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      if (!tree) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4341,30 +4392,94 @@
+@@ -4341,30 +4392,80 @@ class ParserWorker {
        return;
      }
      try {
@@ -787,11 +788,14 @@ diff --git a/parser.worker.js b/parser.worker.js
 +      const queries = reusableState.filetypeParser.queries;
 +      let matches;
 +      let t0 = performance.now();
-+      if (incremental) {
-+        matches = queries.highlights.captures(tree.rootNode, { startIndex: queryStart, endIndex: queryEnd });
-+      } else {
-+        matches = queries.highlights.captures(tree.rootNode);
-+      }
++      // 0309: the binding's RANGED captures({startIndex, endIndex}) truncates
++      // at ~50% of the tree (probed: matchedEnd 100/191 vs fullEnd 191 on the
++      // SAME tree) - so the incremental path's per-type queries only reached
++      // the front of the streamed body and the tail stayed unstyled (the
++      // bash-heredoc tool-body white rows). Query UNBOUNDED: the incremental
++      // PARSE is where the cheap win is (measured ~1.6ms parse + ~0.02ms query
++      // at 14K); the range was a faulty optimization.
++      matches = queries.highlights.captures(tree.rootNode);
 +      timings.query = performance.now() - t0;
        let injectionRanges = new Map;
 -      if (reusableState.filetypeParser.queries.injections) {
@@ -822,40 +826,23 @@ diff --git a/parser.worker.js b/parser.worker.js
 +      const fresh = this.getSimpleHighlights([...matches, ...injectionMatches], injectionRanges);
 +      let highlights;
 +      if (incremental && cached && cached.highlights) {
-+        // Three-way merge of (prefix | fresh | suffix): the cached list is
-+        // sorted by startIndex, so binary-search the region boundaries and
-+        // merge the three sorted runs - O(log n + highlights), no whole-list
-+        // sort and no Map rebuild.
-+        const hl = cached.highlights;
-+        let lo = 0, hi = hl.length;
-+        while (lo < hi) {
-+          const mid = (lo + hi) >> 1;
-+          if (hl[mid][1] <= queryStart) lo = mid + 1;
-+          else hi = mid;
++        // Key-dedupe merge: fresh captures overwrite cached ones by exact
++        // [start, end, name, meta] key. The three-way slice was WRONG - the
++        // cached list is sorted by START, and a binary search on the END
++        // index over it is invalid, so growing single-span captures (bash
++        // heredoc_body @string etc.) intermittently left the STALE shorter
++        // span in and dropped the tail - the applied StyledText came out
++        // short (apply.pct 36-58%), leaving the bottom rows white
++        // (2026-09-08, caught live via the apply/paint probes). O(n log n)
++        // is fine - measured ~0.1-0.3ms at 14-32K.
++        const merged = new Map;
++        for (const h of cached.highlights) {
++          merged.set(`${h[0]}:${h[1]}:${h[2]}:${JSON.stringify(h[3])}`, h);
 +        }
-+        const prefixCut = lo;
-+        lo = prefixCut;
-+        hi = hl.length;
-+        while (lo < hi) {
-+          const mid = (lo + hi) >> 1;
-+          if (hl[mid][0] <= queryEnd) lo = mid + 1;
-+          else hi = mid;
++        for (const h of fresh) {
++          merged.set(`${h[0]}:${h[1]}:${h[2]}:${JSON.stringify(h[3])}`, h);
 +        }
-+        const suffixCut = lo;
-+        const a = hl.slice(0, prefixCut);
-+        const b = fresh;
-+        const c = hl.slice(suffixCut);
-+        highlights = new Array(a.length + b.length + c.length);
-+        let i = 0, j = 0, k = 0, p = 0;
-+        while (i < a.length || j < b.length || k < c.length) {
-+          if (j < b.length && (i >= a.length || b[j][0] <= a[i][0]) && (k >= c.length || b[j][0] <= c[k][0])) {
-+            highlights[p++] = b[j++];
-+          } else if (i < a.length && (k >= c.length || a[i][0] <= c[k][0])) {
-+            highlights[p++] = a[i++];
-+          } else {
-+            highlights[p++] = c[k++];
-+          }
-+        }
++        highlights = Array.from(merged.values()).sort((a, b) => a[0] - b[0]);
 +      } else {
 +        highlights = fresh;
 +      }
@@ -882,7 +869,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      }
    }
    async updateDataPath(dataPath) {
-@@ -4391,6 +4506,10 @@
+@@ -4391,6 +4492,10 @@ class ParserWorker {
        this.filetypeParserPromises.clear();
        this.reusableParsers.clear();
        this.reusableParserPromises.clear();
@@ -893,15 +880,32 @@ diff --git a/parser.worker.js b/parser.worker.js
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
-diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
---- a/chunk-bun-t2myhmwd.js
-+++ b/chunk-bun-t2myhmwd.js
-@@ -8703,7 +8703,7 @@
-         const callback = this.messageCallbacks.get(message.messageId);
-         if (callback) {
-           this.messageCallbacks.delete(message.messageId);
--          callback.resolve({ highlights: message.highlights, warning: message.warning, error: message.error });
-+          callback.resolve({ highlights: message.highlights, incremental: message.incremental, timings: message.timings, warning: message.warning, error: message.error });
-         }
-         return;
-       }
+diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
+index 62ce331..1e922c8 100644
+--- a/renderables/Diff.d.ts
++++ b/renderables/Diff.d.ts
+@@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
+     syntaxStyle?: SyntaxStyle;
+     wrapMode?: "word" | "char" | "none";
+     conceal?: boolean;
++    drawUnstyledText?: boolean;
+     selectionBg?: string | RGBA;
+     selectionFg?: string | RGBA;
+     treeSitterClient?: TreeSitterClient;
+@@ -44,6 +45,7 @@ export declare class DiffRenderable extends Renderable {
+     private _syntaxStyle?;
+     private _wrapMode?;
+     private _conceal;
++    private _drawUnstyledText?;
+     private _selectionBg?;
+     private _selectionFg?;
+     private _treeSitterClient?;
+@@ -134,6 +136,8 @@ export declare class DiffRenderable extends Renderable {
+     set selectionFg(value: string | RGBA | undefined);
+     get conceal(): boolean;
+     set conceal(value: boolean);
++    get drawUnstyledText(): boolean | undefined;
++    set drawUnstyledText(value: boolean | undefined);
+     get fg(): RGBA | undefined;
+     set fg(value: string | RGBA | undefined);
+     setLineColor(line: number, color: string | RGBA | LineColorConfig): void;
