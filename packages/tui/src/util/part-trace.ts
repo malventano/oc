@@ -82,6 +82,11 @@ export const partTrace = {
     for (const k of lens.keys()) {
       if (k.startsWith(prefix)) lens.delete(k)
     }
+    // 0322i: reset the global highlight trackers per message - they were
+    // maxima that never reset, so a big healthy message poisoned the rows for
+    // the next (broken) one (all smaller cl values filtered out of the
+    // drop-ahead/pulse logs). Per-message reset gives clean capture.
+    resetApplyTrackers()
   },
 
   // 0322c: reasoning block height/measure stall - the box renders ~1 line
@@ -126,6 +131,14 @@ let pulseStart = 0
 let pulseEnd = 0
 let prevPulseStart = 0
 let prevPulseEnd = 0
+function resetApplyTrackers() {
+  maxLanded = 0
+  pulseStart = 0
+  pulseEnd = 0
+  prevPulseStart = 0
+  prevPulseEnd = 0
+}
+
 function startApplyFlush() {
   if (applyFlushStarted) return
   applyFlushStarted = true
