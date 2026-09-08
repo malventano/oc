@@ -2597,24 +2597,6 @@ function useFixedStreamHeight(
         // to the buffer's real count so the partial row paints as it streams.
         const vr = viewed.getVirtualLineCount?.() ?? 0
         setRows(Math.max(0, c, vr))
-        // PROBE (0308-height instrumentation - working-tree only): the box can
-        // trail the streamed content if the buffer (deferred set content while
-        // streaming, Code.ts:103) lags the props content - log measured vs
-        // virtual vs the props line count to see which falls behind.
-          {
-            const ev = (globalThis as any).__ocStreamHtEvents
-            if (Array.isArray(ev)) {
-              const raw = content()
-              let bl = -1, painted = -1
-              try {
-                const tb = el?.textBuffer
-                bl = typeof tb?.getContent === "function" ? tb.getContent().length : -1
-                painted = el?._shouldRenderTextBuffer === true ? 1 : 0
-              } catch {}
-              ev.push({ t: performance.now(), c, vr, rawLines: raw.length ? raw.split("\n").length : 0, w, rows: rows(), bl, painted })
-              if (ev.length > 50000) ev.splice(0, ev.length - 50000)
-            }
-          }
       } catch {
         setRows(0)
       }
