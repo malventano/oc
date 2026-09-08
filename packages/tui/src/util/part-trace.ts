@@ -121,6 +121,7 @@ const reasoningDoneLogged = new Set<string>()
 let applyFlushStarted = false
 let applyBeat = 0
 let shortBeat = 0
+let maxLanded = 0
 function startApplyFlush() {
   if (applyFlushStarted) return
   applyFlushStarted = true
@@ -131,10 +132,21 @@ function startApplyFlush() {
     let short = 0
     for (const ev of evs) {
       n++
+      // 0322g: drop events (the snapshotId guard superseded a highlight
+      // result). If the dropped content is beyond the largest landed apply,
+      // the final full-content highlight never landed - the mid-stream
+      // snapshot stays on screen (the 'reasoning-done' bufLen << len case).
+      if ((ev as { kind?: string }).kind === "drop") {
+        if (ev.cl > maxLanded) {
+          write({ kind: "code-apply-drop-ahead", cl: ev.cl, maxLanded })
+        }
+        continue
+      }
       if (ev.sl < ev.cl) {
         short++
         write({ kind: "code-apply-short", cl: ev.cl, sl: ev.sl, head: ev.cc })
       }
+      if (ev.cl > maxLanded) maxLanded = ev.cl
     }
     evs.length = 0
     applyBeat += n
