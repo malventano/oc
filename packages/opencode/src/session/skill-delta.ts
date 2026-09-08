@@ -83,7 +83,7 @@ export function integrateSkillBodies(msgs: SessionV1.WithParts[]): Map<string, R
         const name = typeof input?.name === "string" ? input.name : extractSkillName(part.state.output)
         if (!name) continue
         // A genuine load carries the full output with both structure markers.
-        // A squashed load (shrink rewrote state.output to a summary)
+        // A shrunk load (shrink rewrote state.output to a summary)
         // has neither - do NOT let it reset the baseline (oc 0256: the
         // summary became the "old" side of a bogus drift). Skipping it keeps
         // an earlier genuine baseline (and the applied state) in force.
