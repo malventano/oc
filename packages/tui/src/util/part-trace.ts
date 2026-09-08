@@ -100,3 +100,39 @@ export const partTrace = {
 // Per-part de-dupe for the height-stall anomaly (fires on every delta while
 // stalled - log the first occurrence only).
 const reasoningStallLogged = new Set<string>()
+
+// 0322e: flush loop for the core bundle's always-on apply-site events
+// (globalThis.__ocPartApplyEvents - pushed at the Code setStyledText apply).
+// sl < cl = the applied styled text LOST content (stale/missing chunks) - the
+// live symptom for the reasoning/answer mid-line cuts. Log every anomaly +
+// a 10s beat while applies are happening (liveness), never stderr.
+let applyFlushStarted = false
+let applyBeat = 0
+let shortBeat = 0
+function startApplyFlush() {
+  if (applyFlushStarted) return
+  applyFlushStarted = true
+  setInterval(() => {
+    const evs = (globalThis as { __ocPartApplyEvents?: Array<{ cl: number; sl: number; cc: string }> }).__ocPartApplyEvents
+    if (!evs || evs.length === 0) return
+    let n = 0
+    let short = 0
+    for (const ev of evs) {
+      n++
+      if (ev.sl < ev.cl) {
+        short++
+        write({ kind: "code-apply-short", cl: ev.cl, sl: ev.sl, head: ev.cc })
+      }
+    }
+    evs.length = 0
+    applyBeat += n
+    shortBeat += short
+  }, 100)
+  setInterval(() => {
+    if (applyBeat === 0 && shortBeat === 0) return
+    write({ kind: "code-apply-beat", applies: applyBeat, short: shortBeat })
+    applyBeat = 0
+    shortBeat = 0
+  }, 10000)
+}
+startApplyFlush()
