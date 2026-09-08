@@ -55,6 +55,7 @@ import { webSearchProviderLabel } from "../../util/tool-display"
 import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK, setStreamBatchWindow, STREAM_BATCH_MIN_MS } from "../../context/sdk"
 import { getStreamProbe } from "../../util/stream-probe"
+import { partTrace } from "../../util/part-trace"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
@@ -2736,6 +2737,19 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
       }, 0)
     }
     getStreamProbe().onReasoning({ len: summary().body.length, lineCount: c, virtual: vr })
+    // 0322c: always-on height-stall anomaly - big content, tiny measured box
+    // (the "truncated after 1 line" symptom; lens == DB elsewhere, so this is
+    // the render/height layer, not text loss). Fires the FIRST time a part
+    // shows this pattern (part-trace de-dupes per partID).
+    if (summary().body.length > 1000 && Math.max(c, vr) < 3) {
+      partTrace.onReasoningHeightStall({
+        partID: props.part.id,
+        len: summary().body.length,
+        lineCount: c,
+        virtual: vr,
+        width: liveW(),
+      })
+    }
   })
 
   return (
