@@ -4941,43 +4941,37 @@ function SquashOutput(props: ToolProps) {
 
   const completed = () => !stream.streaming()
 
+  // 0320: ONE stable-height block for the WHOLE life - the previous
+  // Switch fell back to a bare single-line InlineTool ("Squashing
+  // output...") whenever stream.streaming() was false but the metadata
+  // (count()) had not landed yet - one frame between the 'squashing' and
+  // 'squashed' states, the block collapsed to a single line (no tool box)
+  // and the whole viewport jumped (the squash jump). The LiveToolStream
+  // box (0199 carry-over) is now the ONLY branch: streaming -> running ->
+  // completed, never a bare line.
   return (
-    <Switch>
-      <Match when={stream.streaming() || count() > 0}>
-        {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
-            completed - the summary's code element persists, so nothing
-            remounts at completion. The "summary" label sits ABOVE the text
-            (via the `above` slot) instead of inline, so it never shifts
-            the content's left margin. */}
-        <LiveToolStream
-          part={props.part}
-          title={title()}
-          streaming={stream.streaming()}
-          content={stream.display()}
-          // Prose, not code: stream in its final color (white) - no
-          // textMuted -> text flip at completion. filetype="" is required:
-          // the segs default is "bash" (below), and a truthy filetype routes
-          // the text through the tree-sitter tokenizer, which colors the
-          // summary despite the fg below. Empty string = the unstyled text
-          // buffer (opentui code.tsx: _shouldRenderTextBuffer = drawUnstyledText
-          // || !filetype), rendered in fg as intended.
-          filetype=""
-          fg={theme.text}
-          release={completed()}
-          gutter={false}
-          above={<text fg={theme.textMuted}>summary</text>}
-        >
-          <Show when={completed() && belowBoundary}>
-            <text fg={theme.warning}>below compaction boundary (applies if it re-enters the live chain)</text>
-          </Show>
-        </LiveToolStream>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="♻" pending="Squashing output..." failure="Squash failed" complete={false} part={props.part}>
-          Squashing output
-        </InlineTool>
-      </Match>
-    </Switch>
+    <LiveToolStream
+      part={props.part}
+      title={title()}
+      streaming={stream.streaming()}
+      content={stream.display()}
+      // Prose, not code: stream in its final color (white) - no
+      // textMuted -> text flip at completion. filetype="" is required:
+      // the segs default is "bash" (below), and a truthy filetype routes
+      // the text through the tree-sitter tokenizer, which colors the
+      // summary despite the fg below. Empty string = the unstyled text
+      // buffer (opentui code.tsx: _shouldRenderTextBuffer = drawUnstyledText
+      // || !filetype), rendered in fg as intended.
+      filetype=""
+      fg={theme.text}
+      release={completed()}
+      gutter={false}
+      above={<text fg={theme.textMuted}>summary</text>}
+    >
+      <Show when={completed() && belowBoundary}>
+        <text fg={theme.warning}>below compaction boundary (applies if it re-enters the live chain)</text>
+      </Show>
+    </LiveToolStream>
   )
 }
 
