@@ -223,7 +223,7 @@ describe("skill-delta.integrateSkillBodies", () => {
   })
 
   test("a squashed load does not reset the baseline (oc 0256)", () => {
-    // The skill load's output was rewritten by squash-output to a summary:
+    // The skill load's output was rewritten by shrink to a summary:
     // no "# Skill:" header, no base-dir marker. It must not clobber the
     // prior genuine baseline - the summary would become the "old" side of a
     // bogus drift reminder.

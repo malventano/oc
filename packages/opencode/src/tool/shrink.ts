@@ -16,11 +16,15 @@ HOW: call it in the message right after the big output arrives, before other wor
 
 Your summary permanently replaces the original - include anything you might need later; non-hint reminders survive. The TUI record stays; only future prompts see the summary. Cannot squash this tool's own output.
 
-Target: omit for the most recent completed output, { part_id } for precision, or { tool, input_contains } for a pattern (match: "all" for every match). Depth (default 3): last 3 user turns; -1 reaches deeper incl. below the compaction boundary.`
+Target: omit for the most recent completed output, { part_id } for precision, { tool, input_contains } for a pattern, or "one"/"all" as a shorthand for match (match: "all" requires a pattern). minLength matches only outputs at least that many chars - use it to isolate one big output when input_contains also matches smaller ones. Depth (default 3): last 3 user turns; -1 reaches deeper incl. below the compaction boundary.`
 
-// SELF_LEGACY: plugin-era tool id ("squash_output"). Old sessions' parts
-// carry it, so both names must be excluded from squashing.
-const SELF_ID = "squash-output"
+// SELF ids over time (2026-09-08 rename squash-output -> shrink): the
+// plugin-era id was "squash_output", the built-in was "squash-output", now
+// "shrink". Old sessions' parts carry the PRIOR strings verbatim, so ALL of
+// them must be excluded from squashing (the where-clause NOT IN) and past
+// parts must still render (the TUI switch matches old + new names).
+const SELF_ID = "shrink"
+const SELF_PRIOR = "squash-output"
 const SELF_LEGACY = "squash_output"
 
 export const Parameters = Schema.Struct({
@@ -28,17 +32,23 @@ export const Parameters = Schema.Struct({
     description: "Short summary replacing the original output (e.g., '35K tokens of vLLM logs, 0 errors found'). Required, non-empty, must be shorter than the original output.",
   }),
   target: Schema.optional(
-    Schema.Struct({
-      part_id: Schema.optional(Schema.String).annotate({
-        description: "Exact part id to squash (ids appear in sessions-browse/search output). Cannot be combined with tool/input_contains.",
+    Schema.Union([
+      Schema.Literals(["one", "all"]),
+      Schema.Struct({
+        part_id: Schema.optional(Schema.String).annotate({
+          description: "Exact part id to squash (ids appear in sessions-browse/search output). Cannot be combined with tool/input_contains.",
+        }),
+        tool: Schema.optional(Schema.String).annotate({ description: "Tool name to match (e.g., 'bash', 'read')." }),
+        input_contains: Schema.optional(Schema.String).annotate({
+          description: "Substring matched against the tool's input JSON (e.g., 'serial-debug' matches a read whose filePath contains it). Backslashes are auto-doubled to match the JSON-escaped stored form.",
+        }),
       }),
-      tool: Schema.optional(Schema.String).annotate({ description: "Tool name to match (e.g., 'bash', 'read')." }),
-      input_contains: Schema.optional(Schema.String).annotate({
-        description: "Substring matched against the tool's input JSON (e.g., 'serial-debug' matches a read whose filePath contains it). Backslashes are auto-doubled to match the JSON-escaped stored form.",
-      }),
-    }),
+    ]),
   ).annotate({
-    description: "What to squash: omit for the most recent completed tool output, { part_id } for precision, or { tool, input_contains } for a pattern.",
+    description: "What to squash: omit for the most recent completed tool output, { part_id } for precision, { tool, input_contains } for a pattern, or 'one'/'all' as a shorthand for match.",
+  }),
+  minLength: Schema.optional(Schema.Number).annotate({
+    description: "Only match tool outputs whose raw output is at least this many chars - excludes smaller outputs that also match the pattern (e.g. isolate a 49K dump from a 266-char check).",
   }),
   match: Schema.optional(Schema.Literals(["one", "all"])).annotate({
     description: "'one' (default) squashes the single most recent match; 'all' squashes every match (requires a pattern target; aggregate length check).",
@@ -58,17 +68,25 @@ export function extractOutput(data: any) {
     // Preserve every trailing reminder except squash hints: the hint must
     // die with the squash, the timestamp (and any other reminder) stays.
     const tags: string[] = stampRun[0].match(/<system-reminder>[\s\S]*?<\/system-reminder>/g) ?? []
-    const kept = tags.filter((t) => !t.includes("squash-output"))
+    // Drop the shrink hint tag (the "call shrink NOW" reminder must die with
+    // the squash - 0325 rename: the hint now says shrink, and old parts carry
+    // the squash-output wording - drop both).
+    const kept = tags.filter((t) => !t.includes("squash-output") && !t.includes("shrink NOW"))
     stamp = kept.length > 0 ? `\n\n${kept.join("\n\n")}` : ""
   }
   const stripped = stampRun ? rawOutput.slice(0, stampRun.index) : rawOutput
   return { stripped, stamp, originalLen: stripped.length }
 }
 
-export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Database.Service>(
+export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Service | EventV2Bridge.Service>(
   SELF_ID,
   Effect.gen(function* () {
+    // Services are captured in INIT (not execute): Def.execute has R=never
+    // (tool.ts:63), so any service yielded inside execute is a typecheck
+    // error (the 0316 events yield sat in execute and shipped as a baseline
+    // failure - fixed 0325, matching write.ts's init-capture pattern).
     const { db } = yield* Database.Service
+    const events = yield* EventV2Bridge.Service
 
     return {
       description: DESCRIPTION,
@@ -76,8 +94,21 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
           const sessionID = ctx.sessionID
-          const target = params.target ?? {}
-          const match = params.match ?? "one"
+          // target accepts "one"/"all" as a shorthand for match (2026-09-08
+          // 0325): shortens the common string-literal form to one field
+          // (target: "one" was the shape confusion - "one" is a match value,
+          // not a target object).
+          const rawTarget = params.target
+          let match = params.match ?? "one"
+          let target: { part_id?: string; tool?: string; input_contains?: string } = {}
+          if (typeof rawTarget === "string") {
+            if (params.match !== undefined && params.match !== rawTarget) {
+              throw new Error(`target shorthand '${rawTarget}' conflicts with the explicit match '${params.match}' - pick one.`)
+            }
+            match = rawTarget
+          } else {
+            target = rawTarget ?? {}
+          }
           const depth = params.depth ?? 3
           const hasId = Boolean(target.part_id)
           const hasPattern = Boolean(target.tool || target.input_contains)
@@ -113,7 +144,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           let whereSql = sql`p.session_id = ${sessionID}
             AND json_extract(p.data, '$.type') = 'tool'
             AND json_extract(p.data, '$.state.status') = 'completed'
-            AND json_extract(p.data, '$.tool') NOT IN (${SELF_ID}, ${SELF_LEGACY}, 'skill')`
+            AND json_extract(p.data, '$.tool') NOT IN (${SELF_ID}, ${SELF_PRIOR}, ${SELF_LEGACY}, 'skill')`
           if (hasId) {
             whereSql = sql`${whereSql} AND p.id = ${target.part_id}`
           }
@@ -123,6 +154,14 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           if (target.input_contains) {
             const escaped = target.input_contains.replace(/\\/g, "\\\\")
             whereSql = sql`${whereSql} AND json_extract(p.data, '$.state.input') LIKE ${`%${escaped}%`}`
+          }
+          if (params.minLength !== undefined) {
+            // Target filter: isolate a big output when the pattern also
+            // matches smaller ones (the 0325 failure - the newest match was a
+            // 266-char check, not the 49K dump). Raw output length (the
+            // stripped length is computed in JS after the query - close enough
+            // for a targeting threshold).
+            whereSql = sql`${whereSql} AND length(json_extract(p.data, '$.state.output')) >= ${params.minLength}`
           }
           if (turnCutoff > 0) {
             whereSql = sql`${whereSql} AND p.time_created >= ${turnCutoff}`
@@ -140,7 +179,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
                 ? `for tool '${target.tool ?? "(any)"}'${target.input_contains ? ` with input containing '${target.input_contains}'` : ""}`
                 : "for the most recent completed tool output"
             throw new Error(
-              `No completed tool output found ${where} to squash${depth >= 0 ? ` within the last ${depth} user turn(s)` : ""}.`
+              `No completed tool output found ${where} to squash${params.minLength !== undefined ? ` with minLength >= ${params.minLength}` : ""}${depth >= 0 ? ` within the last ${depth} user turn(s)` : ""}.`
             )
           }
 
@@ -157,11 +196,14 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           // alone bypassed it and the TUI's later re-sync reconciled more
           // coarsely (remount/cull -> the 1-frame viewport dip after a squash,
           // the "scrollback heights reset then re-lock" report).
-          const events = yield* EventV2Bridge.Service
 
+          // 0325: the guard now says WHICH parts it matched, so a
+          // mis-targeted match (a small output caught by a broad pattern
+          // instead of the big one) is diagnosable instead of cryptic.
+          const matchedDesc = updates.map((u) => `${u.data.tool}(${u.originalLen})`).join(", ")
           if (params.summary.length * updates.length >= aggregateOriginal) {
             throw new Error(
-              `Summary (${params.summary.length} chars) × ${updates.length} part(s) (${params.summary.length * updates.length} total) is not smaller than the original output (${aggregateOriginal} chars across ${updates.length} part(s), excluding timestamps). Squashing would make the prompt larger, not smaller. Extract only the essential findings, or don't squash.`
+              `Summary (${params.summary.length} chars) × ${updates.length} part(s) (${params.summary.length * updates.length} total) is not smaller than the original output (${aggregateOriginal} chars across ${updates.length} part(s), excluding timestamps). Matched: ${matchedDesc}. Squashing would make the prompt larger, not smaller. Extract only the essential findings, or don't squash. If the matched list shows the wrong (smaller) output, add target.minLength or use target.part_id.`
             )
           }
 
@@ -216,11 +258,17 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           const totalTurns = (totalRow as { c: number }).c
 
           const lines = results
-            .map((r) => `Squashed ${r.tool} output (${r.originalLen} chars → ${params.summary.length} char summary)`)
+            .map((r) => {
+              // ~4 chars/token - the same divisor as the time-context hint
+              // (time-context.ts Math.round(len/4)) and the TUI title, so
+              // both surfaces agree.
+              const tokensSaved = Math.round((r.originalLen - params.summary.length) / 4)
+              return `Squashed ${r.tool} output (${r.originalLen} chars → ${params.summary.length} char summary) = ~${tokensSaved.toLocaleString()} tokens saved`
+            })
             .join("\n")
           const late =
             maxTurnsBack > 0 || maxIntervening > 0
-              ? " LATE SQUASH - issue squash-output in the message right after the target output arrives."
+              ? " LATE SQUASH - issue shrink in the message right after the target output arrives."
               : ""
           const note = `\n\nDepth: ${maxTurnsBack} user turn(s) back of ${totalTurns}; target ${maxPartsBack} part(s) behind the live edge - the rewrite invalidates the cached prefix from the target forward.${late}`
           const boundaryNote = belowBoundary

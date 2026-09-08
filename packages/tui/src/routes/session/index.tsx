@@ -2972,7 +2972,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={display() === "skill"}>
           <Skill {...toolprops} />
         </Match>
-        <Match when={display() === "squash-output"}>
+        {/* 0325 rename squash-output -> shrink: old parts carry the prior
+            id, so BOTH names render through the same component. */}
+        <Match when={display() === "squash-output" || display() === "shrink"}>
           <SquashOutput {...toolprops} />
         </Match>
         <Match when={true}>
@@ -3872,7 +3874,7 @@ function StreamSegment(props: {
   // appear even for single-line opener/closer lines, so a lone "1" next to
   // the body block is legitimate.
   segmented: () => boolean
-  // Caller gutter override. false = NEVER gutter (the squash-output summary
+  // Caller gutter override. false = NEVER gutter (the shrink summary
   // - prose, not code; a substantive trailing newline on the streamed text
   // would otherwise flip the heuristic below on and give a single wrapping
   // line a phantom 1/2 gutter). true/undefined = the heuristic (the
@@ -3950,7 +3952,7 @@ function StreamSegment(props: {
   // code element never re-mounts (the solid adapter disposes the gutter node
   // only, and `el` persists across the flip).
   const gutterOn = createMemo(() => {
-    // Hard override: the squash-output summary is prose (gutter={false}) -
+    // Hard override: the shrink summary is prose (gutter={false}) -
     // never number it, even when the streamed text trails a newline (the
     // includes("\n") heuristic below would otherwise flip it on and print
     // a phantom 1/2 gutter against a single wrapping line).
@@ -4003,7 +4005,7 @@ function LiveToolStream(props: {
   spinner?: boolean
   onClick?: () => void
   // Content rendered between the BlockTool title and the streamed code
-  // (squash-output's label line) - distinct from `children`, which renders
+  // (shrink's label line) - distinct from `children`, which renders
   // AFTER the code in the same box.
   above?: JSX.Element
   children?: JSX.Element
@@ -4085,7 +4087,7 @@ function LiveToolStream(props: {
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.spinner ?? props.streaming} onClick={props.onClick}>
       {/* above: label/content between the title and the streamed code
-          (squash-output's "summary" line) - never shifts the code's margin. */}
+          (shrink's "summary" line) - never shifts the code's margin. */}
       {props.above}
       <Show when={props.content.length > 0}>{code}</Show>
       {/* 0199: caller content after the code (bash's output + expand
@@ -4972,6 +4974,9 @@ function SquashOutput(props: ToolProps) {
           ? `${results().map((r) => r.originalLen.toLocaleString()).join("+")}=${aggregateOriginal()!.toLocaleString()} → ${summaryLen().toLocaleString()}×${count()}=${total.toLocaleString()}`
           : `${aggregateOriginal()!.toLocaleString()} → ${summaryLen().toLocaleString()}`
       parts.push(`${sizes} chars`)
+      // ~4 chars/token - same divisor as the tool's output line and the
+      // time-context hint, so the two agree.
+      parts.push(`~${Math.round((aggregateOriginal()! - summaryLen()) / 4).toLocaleString()} tokens saved`)
     }
     return `# ${parts.join(" · ")}`
   })
@@ -5095,6 +5100,7 @@ const toolDisplays = new Set([
   "execute",
 
   "squash-output",
+  "shrink",
 ])
 
 export function toolDisplay(tool: string) {
