@@ -70,7 +70,6 @@ import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { coalesceFiletype, filetype } from "../../util/filetype"
-import { parseStreamingPatch } from "../../util/streaming-patch"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
 import { useToast } from "../../ui/toast"
@@ -4491,26 +4490,22 @@ function LiveEditDiff(props: {
   part: ToolPart
   title?: string
   streaming: boolean
-  content: string
+  // The two streamed JSON halves: oldString -> removed column, newString ->
+  // added column (0323 JSON switch - no fence grammar to parse).
+  left: string
+  right: string
   filetype?: string
 }) {
   const { theme, syntax } = useTheme()
   const [left, setLeft] = createSignal("")
   const [right, setRight] = createSignal("")
-  // Re-parse per flush and push the freshly parsed column text into the
-  // signals (monotonic growth). Signals are written in an effect so the
-  // two code element descriptors stay STABLE - only the content props
-  // re-evaluate, patching the buffers in place.
+  // Push the freshly streamed halves into the signals (monotonic growth).
+  // Signals are written in an effect so the two code element descriptors
+  // stay STABLE - only the content props re-evaluate, patching the buffers
+  // in place.
   createEffect(() => {
-    const p = parseStreamingPatch(props.content)
-    const l: string[] = []
-    const r: string[] = []
-    for (const sec of p.sections) {
-      l.push(...sec.left)
-      r.push(...sec.right)
-    }
-    setLeft(l.join("\n"))
-    setRight(r.join("\n"))
+    setLeft(props.left)
+    setRight(props.right)
   })
   const lang = () => props.filetype
   // 0277: GrowOnly/measuredGrowRows REMOVED - each column wraps at its own
@@ -4555,7 +4550,7 @@ function LiveEditDiff(props: {
   })
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
-      <Show when={props.content.length > 0}>
+      <Show when={props.left.length > 0 || props.right.length > 0}>
         <box flexDirection="row">
           <box width="50%" paddingRight={1}>
             {/* Block-relative line numbers (1..N per column; the step-2
@@ -4676,29 +4671,27 @@ function Edit(props: ToolProps) {
     return ctx.width > 120 ? "split" : "unified"
   })
 
-  const stream = useToolStream(props, {
-    bodyKey: "input",
-    // The edit tool has NO filePath argument - the target path lives inside
-    // the patch text as a [path] section header (liveEditPath below), so
-    // useToolStream's pathKey extraction (a "filePath" JSON key that never
-    // exists) would never resolve. The streaming title is computed locally.
-    title: () => undefined,
-  })
-  // Live target path: the FIRST [path] section header inside the streamed
-  // patch. The write tool's # Writing <path> updates the instant the
-  // filePath arg streams in; the edit tool's ← Patching does the same when
-  // the [path] header line lands (0186). No end anchor - the streaming
-  // header line is unterminated; the closing bracket IS the signal.
-  const liveEditPath = createMemo(() => {
-    const match = /^\[([^#\r\n]+?)(?:#[0-9A-Za-z]{1,16})?\]/m.exec(stream.display())
-    return match ? match[1] : undefined
-  })
-  // The target file's language for the streaming columns from the same live
-  // path; falls back to nothing (grey columns) until the header lands.
+  // 0323: the JSON edit streams its args as first-class JSON keys, so the
+  // live body IS the two diff columns (oldString/newString) and the target
+  // path is the streamed filePath - no fence grammar, no [path] parsing, no
+  // content-guess filetype. Dual streamedJsonValue extraction on the same
+  // raw (the 0162 terminate-at-quote extractor handles mid-stream escapes).
+  const raw = createMemo(() => ("raw" in props.part.state ? props.part.state.raw : ""))
+  const streaming = createMemo(() => props.part.state.status === "pending" && raw().length > 0)
+  const inputStr = (k: string) => stringValue(props.input[k]) ?? ""
+  const oldBody = createMemo(() => (streaming() ? streamedJsonValue(raw(), "oldString") ?? "" : inputStr("oldString")))
+  const newBody = createMemo(() => (streaming() ? streamedJsonValue(raw(), "newString") ?? "" : inputStr("newString")))
+  // Live target path: the streamed filePath arg (filepath-first - the
+  // authoritative path, no first-[path]-header heuristic). Updates the
+  // instant the filePath arg streams in, so # Patching <path> + the file's
+  // grammar land immediately; falls back to the landed input path.
+  const liveEditPath = createMemo(() => streamedJsonValue(raw(), "filePath") ?? undefined)
+  // The target file's language from the STREAMED filePath (filepath-first
+  // coloring); the fence fallback (content sniffing) is gone - the path is
+  // a first-class streamed arg now.
   const liveFiletype = createMemo(() => (liveEditPath() ? filetype(liveEditPath()!) : undefined))
-  // Streaming title: "← Patching <path>" as soon as the [path] header
-  // streams in, falling back to the landed input paths once the call lands
-  // (the write tool's live ?? path() parity). "← Patching..." until then.
+  // Streaming title: "← Patching <path>" as soon as the filePath arg
+  // streams in, falling back to the landed input path. "← Patching..." until.
   const streamingTitle = createMemo(() => {
     const target = liveEditPath() ?? editPaths()[0]
     return target ? `← Patching ${pathFormatter.format(target)}` : "← Patching..."
@@ -4801,12 +4794,13 @@ function Edit(props: ToolProps) {
           NEW lines in an added column (two fixed columns keyed on block
           type - see LiveEditDiff). Swaps to the parsed per-file diff once
           the edit completes and metadata lands. */}
-      <Match when={stream.streaming() || stream.status() === "running"}>
+      <Match when={streaming() || props.part.state.status === "running"}>
         <LiveEditDiff
           part={props.part}
           title={streamingTitle()}
-          streaming={stream.streaming()}
-          content={stream.display()}
+          streaming={streaming()}
+          left={oldBody()}
+          right={newBody()}
           filetype={liveFiletype()}
         />
       </Match>
