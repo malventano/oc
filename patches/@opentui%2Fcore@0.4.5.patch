@@ -693,3 +693,215 @@ index 62ce331..1e922c8 100644
      get fg(): RGBA | undefined;
      set fg(value: string | RGBA | undefined);
      setLineColor(line: number, color: string | RGBA | LineColorConfig): void;
+diff --git a/parser.worker.js b/parser.worker.js
+--- a/parser.worker.js
++++ b/parser.worker.js
+@@ -4019,7 +4019,7 @@
+   getNodeText(node, content) {
+     return content.substring(node.startIndex, node.endIndex);
+   }
+-  async processInjections(parserState) {
++  async processInjections(parserState, range) {
+     const injectionMatches = [];
+     const injectionRanges = new Map;
+     if (!parserState.queries.injections) {
+@@ -4030,6 +4030,14 @@
+     const languageGroups = new Map;
+     const injectionMapping = parserState.injectionMapping;
+     for (const capture of injectionCaptures) {
++      // Optional byte range (the changed region of an incremental update): only
++      // fences intersecting it are re-processed, so unchanged ones are left to
++      // the cached captures instead of being re-sent + re-merged every update
++      // (which duplicated them and inflated the payload - the 0308-inclight
++      // regression).
++      if (range && (capture.node.endIndex < range.start || capture.node.startIndex > range.end)) {
++        continue;
++      }
+       const captureName = capture.name;
+       if (captureName === "injection.content" || captureName.includes("injection")) {
+         const nodeType = capture.node.type;
+@@ -4318,6 +4326,7 @@
+     this.bufferParsers.delete(bufferId);
+   }
+   async handleOneShotHighlight(content, filetype, messageId) {
++    const total0 = performance.now();
+     const reusableState = await this.getReusableParser(filetype);
+     if (!reusableState) {
+       postWorkerMessage({
+@@ -4330,7 +4339,49 @@
+     }
+     const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
+ ` : content;
+-    const tree = reusableState.parser.parse(parseContent);
++    const cached = this.oneShotParseCache && this.oneShotParseCache.filetype === filetype ? this.oneShotParseCache : undefined;
++    let tree;
++    let incremental = false;
++    let queryStart = 0;
++    let queryEnd = 0;
++    const timings = {};
++    if (cached && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
++      // Append-only streaming: the appended text is the only changed region
++      // (the incremental parse alters just the tail), so the query is scoped to
++      // it directly - no getChangedRanges walk, which is O(n) in tree-sitter.
++      const endPos = cached.tree.rootNode.endPosition;
++      const insert = parseContent.substring(cached.content.length);
++      const newlines = (insert.match(/\n/g) || []).length;
++      cached.tree.edit({
++        startIndex: cached.content.length,
++        oldEndIndex: cached.content.length,
++        newEndIndex: parseContent.length,
++        startPosition: endPos,
++        oldEndPosition: endPos,
++        newEndPosition: {
++          row: endPos.row + newlines,
++          column: newlines === 0 ? endPos.column + insert.length : insert.length - insert.lastIndexOf("\n") - 1
++        }
++      });
++      const t0 = performance.now();
++      tree = reusableState.parser.parse(parseContent, cached.tree);
++      timings.parse = performance.now() - t0;
++      incremental = true;
++      // Margin covers constructs spanning the append boundary (open code fence,
++      // table row, etc.) so their full span is re-queried, not just the delta.
++      queryStart = Math.max(0, cached.content.length - 600);
++      queryEnd = parseContent.length;
++    } else {
++      // Non-append update (or a new filetype): the cached tree is standalone
++      // owned, so free it before the full reparse; the fresh tree is cached
++      // again so subsequent appends get the incremental path.
++      if (cached) {
++        cached.tree.delete();
++      }
++      const t0 = performance.now();
++      tree = reusableState.parser.parse(parseContent);
++      timings.parse = performance.now() - t0;
++    }
+     if (!tree) {
+       postWorkerMessage({
+         type: "ONESHOT_HIGHLIGHT_RESPONSE",
+@@ -4341,30 +4392,94 @@
+       return;
+     }
+     try {
+-      const matches = reusableState.filetypeParser.queries.highlights.captures(tree.rootNode);
++      const queries = reusableState.filetypeParser.queries;
++      let matches;
++      let t0 = performance.now();
++      if (incremental) {
++        matches = queries.highlights.captures(tree.rootNode, { startIndex: queryStart, endIndex: queryEnd });
++      } else {
++        matches = queries.highlights.captures(tree.rootNode);
++      }
++      timings.query = performance.now() - t0;
+       let injectionRanges = new Map;
+-      if (reusableState.filetypeParser.queries.injections) {
++      let injectionMatches = [];
++      if (queries.injections) {
++        t0 = performance.now();
+         const parserState = {
+           parser: reusableState.parser,
+           tree,
+-          queries: reusableState.filetypeParser.queries,
++          queries,
+           filetype,
+           content,
+           injectionMapping: reusableState.filetypeParser.injectionMapping
+         };
+-        const injectionResult = await this.processInjections(parserState);
+-        matches.push(...injectionResult.captures);
++        const injectionResult = await this.processInjections(
++          parserState,
++          incremental ? { start: queryStart, end: queryEnd } : undefined,
++        );
++        timings.inject = performance.now() - t0;
++        injectionMatches = injectionResult.captures;
+         injectionRanges = injectionResult.injectionRanges;
+       }
+-      const highlights = this.getSimpleHighlights(matches, injectionRanges);
++      t0 = performance.now();
++      const fresh = this.getSimpleHighlights([...matches, ...injectionMatches], injectionRanges);
++      let highlights;
++      if (incremental && cached && cached.highlights) {
++        // Three-way merge of (prefix | fresh | suffix): the cached list is
++        // sorted by startIndex, so binary-search the region boundaries and
++        // merge the three sorted runs - O(log n + highlights), no whole-list
++        // sort and no Map rebuild.
++        const hl = cached.highlights;
++        let lo = 0, hi = hl.length;
++        while (lo < hi) {
++          const mid = (lo + hi) >> 1;
++          if (hl[mid][1] <= queryStart) lo = mid + 1;
++          else hi = mid;
++        }
++        const prefixCut = lo;
++        lo = prefixCut;
++        hi = hl.length;
++        while (lo < hi) {
++          const mid = (lo + hi) >> 1;
++          if (hl[mid][0] <= queryEnd) lo = mid + 1;
++          else hi = mid;
++        }
++        const suffixCut = lo;
++        const a = hl.slice(0, prefixCut);
++        const b = fresh;
++        const c = hl.slice(suffixCut);
++        highlights = new Array(a.length + b.length + c.length);
++        let i = 0, j = 0, k = 0, p = 0;
++        while (i < a.length || j < b.length || k < c.length) {
++          if (j < b.length && (i >= a.length || b[j][0] <= a[i][0]) && (k >= c.length || b[j][0] <= c[k][0])) {
++            highlights[p++] = b[j++];
++          } else if (i < a.length && (k >= c.length || a[i][0] <= c[k][0])) {
++            highlights[p++] = a[i++];
++          } else {
++            highlights[p++] = c[k++];
++          }
++        }
++      } else {
++        highlights = fresh;
++      }
++      timings.merge = performance.now() - t0;
++      timings.total = performance.now() - total0;
++      timings.count = highlights.length;
+       postWorkerMessage({
+         type: "ONESHOT_HIGHLIGHT_RESPONSE",
+         messageId,
+         hasParser: true,
+-        highlights
++        highlights,
++        incremental,
++        timings
+       });
++      // Both paths cache the tree + captures for the next append. On the
++      // incremental path the parse hands subtree ownership to the new tree, so
++      // the previous reference is dropped (never deleted - that would
++      // double-free shared subtrees); on the full path the old tree was freed.
++      this.oneShotParseCache = { filetype, content: parseContent, tree, highlights };
+     } finally {
+-      tree.delete();
++      // The tree is always retained in the cache - never delete it here.
+     }
+   }
+   async updateDataPath(dataPath) {
+@@ -4391,6 +4506,10 @@
+       this.filetypeParserPromises.clear();
+       this.reusableParsers.clear();
+       this.reusableParserPromises.clear();
++      if (this.oneShotParseCache) {
++        this.oneShotParseCache.tree.delete();
++        this.oneShotParseCache = undefined;
++      }
+     } catch (error) {
+       throw new Error(`Failed to clear cache: ${error}`);
+     }
+diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
+--- a/chunk-bun-t2myhmwd.js
++++ b/chunk-bun-t2myhmwd.js
+@@ -8703,7 +8703,7 @@
+         const callback = this.messageCallbacks.get(message.messageId);
+         if (callback) {
+           this.messageCallbacks.delete(message.messageId);
+-          callback.resolve({ highlights: message.highlights, warning: message.warning, error: message.error });
++          callback.resolve({ highlights: message.highlights, incremental: message.incremental, timings: message.timings, warning: message.warning, error: message.error });
+         }
+         return;
+       }
