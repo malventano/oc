@@ -130,17 +130,21 @@ let maxLanded = 0
 let pulseStart = 0
 let pulseEnd = 0
 let pulseStage = 0
+let pulseRecv = 0
 let prevPulseStart = 0
 let prevPulseEnd = 0
 let prevPulseStage = 0
+let prevPulseRecv = 0
 function resetApplyTrackers() {
   maxLanded = 0
   pulseStart = 0
   pulseEnd = 0
   pulseStage = 0
+  pulseRecv = 0
   prevPulseStart = 0
   prevPulseEnd = 0
   prevPulseStage = 0
+  prevPulseRecv = 0
 }
 
 function startApplyFlush() {
@@ -169,6 +173,14 @@ function startApplyFlush() {
         if (rank > pulseStage) pulseStage = rank
         continue
       }
+      if ((ev as { kind?: string }).kind === "hl-received") {
+        if ((ev as { hl?: number }).hl ?? 0 > pulseRecv) pulseRecv = (ev as { hl?: number }).hl ?? 0
+        continue
+      }
+      if ((ev as { kind?: string }).kind === "worker-error") {
+        write({ kind: "worker-error", error: (ev as { error?: string }).error ?? "" })
+        continue
+      }
       if ((ev as { kind?: string }).kind === "worker-restart") {
         write({ kind: "worker-restart", at: ev.t })
         continue
@@ -190,11 +202,12 @@ function startApplyFlush() {
       if (ev.cl > maxLanded) maxLanded = ev.cl
     }
     evs.length = 0
-    if (pulseStart !== prevPulseStart || pulseEnd !== prevPulseEnd || pulseStage !== prevPulseStage) {
-      write({ kind: "hl-pulse", startCl: pulseStart, endCl: pulseEnd, stage: pulseStage })
+    if (pulseStart !== prevPulseStart || pulseEnd !== prevPulseEnd || pulseStage !== prevPulseStage || pulseRecv !== prevPulseRecv) {
+      write({ kind: "hl-pulse", startCl: pulseStart, endCl: pulseEnd, stage: pulseStage, recv: pulseRecv })
       prevPulseStart = pulseStart
       prevPulseEnd = pulseEnd
       prevPulseStage = pulseStage
+      prevPulseRecv = pulseRecv
     }
     applyBeat += n
     shortBeat += short
