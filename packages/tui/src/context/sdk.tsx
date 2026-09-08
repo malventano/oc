@@ -2,6 +2,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { createSimpleContext } from "./helper"
+import { initStreamProbe, type StreamProbe } from "../util/stream-probe"
 import { batch, createSignal, onCleanup, onMount } from "solid-js"
 
 export type EventSource = {
@@ -80,6 +81,18 @@ export function getStreamFlushMs(now: number): number {
   return Math.min(STREAM_BATCH_MAX_MS, Math.max(...flushDurations))
 }
 
+// Time since the last SSE output delta (ms). Gates the batch-window controller:
+// with no actual output changes the window must not ratchet on highlight/frame
+// noise (the pre-stream bump) - it is held, and reset toward baseline once the
+// stream has been truly idle for a while.
+let lastDeltaAt = 0
+export function markContentDelta() {
+  lastDeltaAt = performance.now()
+}
+export function getStreamDeltaMs(now: number): number {
+  return lastDeltaAt === 0 ? Number.POSITIVE_INFINITY : now - lastDeltaAt
+}
+
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
@@ -91,6 +104,11 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   }) => {
     const abort = new AbortController()
     let sse: AbortController | undefined
+    const probe: StreamProbe = initStreamProbe({
+      getWindow: getStreamBatchWindow,
+      getFlush: () => getStreamFlushMs(performance.now()),
+      getHighlight: () => getStreamHighlightMs(performance.now()),
+    })
 
     function createSDK() {
       return createOpencodeClient({
@@ -138,6 +156,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     }
 
     const handleEvent = (event: GlobalEvent) => {
+      probe.onDelta()
       queue.push(event)
       const elapsed = Date.now() - last
 
@@ -208,6 +227,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       sse?.abort()
       if (timer) clearTimeout(timer)
       handlers.clear()
+      probe.stop()
     })
 
     return {
