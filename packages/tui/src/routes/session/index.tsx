@@ -2506,11 +2506,12 @@ const INLINE_TOOL_ICON_WIDTH = 2
 // content ends in a newline so the box matches the visible buffered rows.
 function useFixedStreamHeight(
   content: () => string,
-  opts?: { released?: () => boolean },
+  opts?: { released?: () => boolean; remeasure?: () => unknown },
 ) {
   let el: any = undefined
   const [rows, setRows] = createSignal(0)
   const released = opts?.released ?? (() => false)
+  const remeasure = opts?.remeasure ?? (() => {})
   // opts.released(): re-measure when the "released" (streaming->completed /
   // grow-only release) flag flips true. ROOT CAUSE of the "gutters but no
   // text" family (heredoc body, write tool, completed patch diff): while
@@ -2562,6 +2563,7 @@ function useFixedStreamHeight(
     // catches up synchronously at completion, fixing the stale-height member.
     void content()
     void released()
+    void remeasure()
     const viewed = el?.textBufferView
     if (!viewed?.measureForDimensions) {
       setRows(0)
@@ -2599,14 +2601,20 @@ function useFixedStreamHeight(
         // trail the streamed content if the buffer (deferred set content while
         // streaming, Code.ts:103) lags the props content - log measured vs
         // virtual vs the props line count to see which falls behind.
-        {
-          const ev = (globalThis as any).__ocStreamHtEvents
-          if (Array.isArray(ev)) {
-            const raw = content()
-            ev.push({ t: performance.now(), c, vr, rawLines: raw.length ? raw.split("\n").length : 0, w })
-            if (ev.length > 50000) ev.splice(0, ev.length - 50000)
+          {
+            const ev = (globalThis as any).__ocStreamHtEvents
+            if (Array.isArray(ev)) {
+              const raw = content()
+              let bl = -1, painted = -1
+              try {
+                const tb = el?.textBuffer
+                bl = typeof tb?.getContent === "function" ? tb.getContent().length : -1
+                painted = el?._shouldRenderTextBuffer === true ? 1 : 0
+              } catch {}
+              ev.push({ t: performance.now(), c, vr, rawLines: raw.length ? raw.split("\n").length : 0, w, rows: rows(), bl, painted })
+              if (ev.length > 50000) ev.splice(0, ev.length - 50000)
+            }
           }
-        }
       } catch {
         setRows(0)
       }
@@ -3822,6 +3830,12 @@ function StreamSegment(props: {
     // Re-measure at the streaming -> completed transition: the buffer catches
     // up synchronously then, fixing the "gutters but no text" stale height.
     released: () => !props.streaming(),
+    // 0311: re-measure at the gutter Show flip (bare el <-> line_number wrap):
+    // the flip changes the code element's layout width (flexShrink vs the
+    // gutter column), so a height measured at the pre-flip wrap is stale for
+    // the post-flip wrap - the box can show the wrong wrap's rows (blank body
+    // with full props gutter while streaming). Remeasure once the flip lands.
+    remeasure: () => gutterOn(),
   })
   const ref = (el: any) => {
     streamHeight.ref(el)
