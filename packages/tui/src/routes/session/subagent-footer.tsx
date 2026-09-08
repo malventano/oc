@@ -103,7 +103,7 @@ export function SubagentFooter() {
             <Show when={usage()}>
               {(item) => (
                 <text fg={theme.textMuted} wrapMode="none">
-                  {[`${getStreamBatchWindow()}ms`, item().context, item().cost].filter(Boolean).join(" · ")}
+                  {[`${Math.round(getStreamBatchWindow())}ms`, item().context, item().cost].filter(Boolean).join(" · ")}
                 </text>
               )}
             </Show>
