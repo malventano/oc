@@ -95,11 +95,23 @@ export const partTrace = {
     reasoningStallLogged.add(info.partID)
     write({ kind: "reasoning-height-stall", ...info })
   },
+
+  // 0322f: buffer length at the exact moment the reasoning completes - the
+  // decisive check for "applied full (sl==cl per code-apply-short) but the
+  // painted buffer is short". bufLen << len at DONE = a late short re-set of
+  // the buffer after the full styled text was applied; bufLen ~= len at DONE
+  // = the truncation is a transient/paint-only artifact.
+  onReasoningDone(info: { partID: string; len: number; bufLen: number; lineCount: number; virtual: number; width: number }) {
+    if (reasoningDoneLogged.has(info.partID)) return
+    reasoningDoneLogged.add(info.partID)
+    write({ kind: "reasoning-done", ...info })
+  },
 }
 
 // Per-part de-dupe for the height-stall anomaly (fires on every delta while
 // stalled - log the first occurrence only).
 const reasoningStallLogged = new Set<string>()
+const reasoningDoneLogged = new Set<string>()
 
 // 0322e: flush loop for the core bundle's always-on apply-site events
 // (globalThis.__ocPartApplyEvents - pushed at the Code setStyledText apply).

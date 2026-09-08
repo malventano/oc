@@ -2755,6 +2755,18 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         width: liveW(),
       })
     }
+    // 0322f: buffer length at the moment the reasoning completes (de-duped in
+    // part-trace) - applied-full-but-painted-short discriminator.
+    if (isDone()) {
+      partTrace.onReasoningDone({
+        partID: props.part.id,
+        len: summary().body.length,
+        bufLen: (el.textBufferView.getPlainText?.() ?? "").length,
+        lineCount: c,
+        virtual: vr,
+        width: liveW(),
+      })
+    }
   })
 
   return (
