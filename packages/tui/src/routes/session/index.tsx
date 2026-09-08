@@ -2525,6 +2525,11 @@ function useFixedStreamHeight(
   const [rows, setRows] = createSignal(0)
   const released = opts?.released ?? (() => false)
   const remeasure = opts?.remeasure ?? (() => {})
+  // 0314: re-measure on a terminal resize too - the numeric height was locked
+  // at the width it was first measured (the diff/stream slots kept their old
+  // wrapped row count, so widening left a gap and narrowing clipped the text).
+  const resizeTrigger = useTerminalDimensions()
+  let lastResizeW = 0
   // opts.released(): re-measure when the "released" (streaming->completed /
   // grow-only release) flag flips true. ROOT CAUSE of the "gutters but no
   // text" family (heredoc body, write tool, completed patch diff): while
@@ -2577,7 +2582,25 @@ function useFixedStreamHeight(
     void content()
     void released()
     void remeasure()
+    const trz = resizeTrigger()
     const viewed = el?.textBufferView
+    // 0314b: the resize signal fires BEFORE the layout applies the new width,
+    // so a same-tick measure reads the stale width and locks one resize
+    // behind (the heredoc gap / missing wrapped line until a +/-1 nudge).
+    // Do a deferred re-measure on the next tick, when the buffer has
+    // re-wrapped at the real width.
+    if (trz.width !== lastResizeW) {
+      lastResizeW = trz.width
+      setTimeout(() => {
+        if (!el || el.isDestroyed || !el.textBufferView?.measureForDimensions) return
+        const w = width()
+        try {
+          const c = el.textBufferView.measureForDimensions(w, 99999)?.lineCount ?? 0
+          const vr = el.textBufferView.getVirtualLineCount?.() ?? 0
+          setRows(Math.max(0, c, vr))
+        } catch {}
+      }, 0)
+    }
     if (!viewed?.measureForDimensions) {
       setRows(0)
       return
@@ -2663,16 +2686,27 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   // (the diff columns + tool stream) had the wrong-width bug.
   let traceCodeEl: any = undefined
   const [streamRowsCount, setStreamRowsCount] = createSignal(0)
-  const layoutW = createMemo(() => {
+  // 0314: the width is read LIVE each effect run, not via a memo - the old
+  // layoutW createMemo had no reactive deps so it evaluated once and PINNED
+  // the width; on a terminal resize the box kept its old height (widen ->
+  // blank space, narrow -> wrapped text clipped). dims() re-runs the measure
+  // on resize; the width is taken from the layout at that moment.
+  const dims = useTerminalDimensions()
+  let lastReasoningW = 0
+  let lastDimsW = 0
+  const liveW = () => {
     try {
-      return traceCodeEl?.getLayoutNode?.().getComputedLayout?.().width ?? 140
-    } catch {
-      return 140
-    }
-  })
+      const w = traceCodeEl?.getLayoutNode?.().getComputedLayout?.().width ?? 0
+      if (w > 0) {
+        lastReasoningW = w
+        return w
+      }
+    } catch {}
+    return lastReasoningW || 140
+  }
   createEffect(() => {
     const t0 = performance.now()
-    void layoutW()
+    void dims()
     void summary()
     void isDone()
     const el = traceCodeEl as any
@@ -2680,13 +2714,27 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
       setStreamRowsCount(0)
       return
     }
-    const c = el.textBufferView.measureForDimensions(layoutW(), 99999)?.lineCount ?? 0
+    const c = el.textBufferView.measureForDimensions(liveW(), 99999)?.lineCount ?? 0
     getStreamProbe().onFn("measure", performance.now() - t0)
     // 0305-probe / TRIAL FIX: same partial-row clip as useFixedStreamHeight -
     // grow to the buffer's true wrapped count so the streaming partial row
     // paints (no by-line reveal).
     const vr = (el.textBufferView.getVirtualLineCount?.() as number) ?? 0
     setStreamRowsCount(Math.max(c, vr))
+    // 0314b: the resize signal fires before the layout applies the new width -
+    // the synchronous measure above reads the STALE width (one resize
+    // behind). Defer one re-measure so the box tracks the re-wrapped text.
+    if (dims().width !== lastDimsW) {
+      lastDimsW = dims().width
+      setTimeout(() => {
+        if (!traceCodeEl || traceCodeEl.isDestroyed || !traceCodeEl?.textBufferView?.measureForDimensions) return
+        try {
+          const c2 = traceCodeEl.textBufferView.measureForDimensions(liveW(), 99999)?.lineCount ?? 0
+          const vr2 = (traceCodeEl.textBufferView.getVirtualLineCount?.() as number) ?? 0
+          setStreamRowsCount(Math.max(c2, vr2))
+        } catch {}
+      }, 0)
+    }
     getStreamProbe().onReasoning({ len: summary().body.length, lineCount: c, virtual: vr })
   })
 
