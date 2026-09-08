@@ -262,7 +262,7 @@ index 4a2cb78..07da349 100644
    }
    async startHighlight() {
 diff --git a/index.bun.js b/index.bun.js
-index 815856b..657f8a0 100644
+index 815856b..94daebe 100644
 --- a/index.bun.js
 +++ b/index.bun.js
 @@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
@@ -366,7 +366,7 @@ index 815856b..657f8a0 100644
    get fg() {
      return this._fg;
    }
-@@ -11436,6 +11469,36 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11436,6 +11469,39 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -400,10 +400,13 @@ index 815856b..657f8a0 100644
 +  // independent of which blocks remounted or grew in the gap.
 +  _manualAnchorD = null;
 +  _lastRecalcHeight = 0;
++  // 0317: debounced sticky-bottom re-anchor for shrink events (see
++  // recalculateBarProps).
++  _deferredReanchorTimer;
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11687,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11624,6 +11690,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -411,7 +414,7 @@ index 815856b..657f8a0 100644
          this.updateStickyState();
        }
      });
-@@ -11929,12 +11993,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11929,12 +11996,122 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -534,7 +537,40 @@ index 815856b..657f8a0 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11959,6 +12133,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11950,7 +12127,31 @@ class ScrollBoxRenderable extends BoxRenderable {
+           if (this._stickyScrollTop) {
+             this.scrollTop = 0;
+           } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
+-            this.scrollTop = newMaxScrollTop;
++            // 0317: a SHRINK at the live bottom (a block collapsing - undo,
++            // squash, compaction, a height drop) can register its height in
++            // intermediate steps, so an immediate re-anchor lands between
++            // them and the viewport shows a 1-frame up-then-down. Defer
++            // (debounced) the re-anchor one tick so it applies to the
++            // SETTLED height - one clean move. GROWTH keeps the immediate
++            // follow so the live stream stays glued to the bottom.
++            if (heightShrunk) {
++              if (!this._deferredReanchorTimer) {
++                this._deferredReanchorTimer = setTimeout(() => {
++                  this._deferredReanchorTimer = undefined;
++                  if (this.isDestroyed) return;
++                  const wasApplying = this._isApplyingStickyScroll;
++                  this._isApplyingStickyScroll = true;
++                  try {
++                    const settledMax = Math.max(0, this.scrollHeight - this.viewport.height);
++                    this.scrollTop = settledMax;
++                  } finally {
++                    this._isApplyingStickyScroll = wasApplying;
++                  }
++                }, 0);
++              }
++            } else {
++              this.scrollTop = newMaxScrollTop;
++            }
+           }
+           if (this._stickyScrollLeft) {
+             this.scrollLeft = 0;
+@@ -11959,6 +12160,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
