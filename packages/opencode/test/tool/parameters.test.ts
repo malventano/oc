@@ -120,16 +120,20 @@ describe("tool parameters", () => {
   })
 
   describe("edit", () => {
-    test("accepts input", () => {
-      expect(parse(Edit, { input: "*** Begin Patch\n*** End Patch" })).toEqual({
-        input: "*** Begin Patch\n*** End Patch",
-      })
+    test("accepts the JSON args", () => {
+      expect(
+        parse(Edit, { filePath: "/a.ts", oldString: "a", newString: "b" }),
+      ).toEqual({ filePath: "/a.ts", oldString: "a", newString: "b" })
     })
-    test("rejects missing input", () => {
+    test("accepts replaceAll", () => {
+      expect(parse(Edit, { filePath: "/a.ts", oldString: "a", newString: "b", replaceAll: true }).replaceAll).toBe(true)
+    })
+    test("rejects missing keys", () => {
       expect(accepts(Edit, {})).toBe(false)
+      expect(accepts(Edit, { filePath: "/a.ts" })).toBe(false)
     })
-    test("rejects legacy JSON payloads", () => {
-      expect(accepts(Edit, { filePath: "/a", edits: [{ type: "append", text: "y" }] })).toBe(false)
+    test("rejects the fence input form", () => {
+      expect(accepts(Edit, { input: "*** Begin Patch\n*** End Patch" })).toBe(false)
     })
   })
 

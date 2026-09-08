@@ -20,7 +20,6 @@ import type * as Tool from "@/tool/tool"
 import type { ApplyPatchTool } from "@/tool/apply_patch"
 import type { ShellTool as BashTool } from "@/tool/shell"
 import type { EditTool } from "@/tool/edit"
-import { patchSectionPath, patchSectionPaths } from "@/tool/grammar-fence"
 import type { GlobTool } from "@/tool/glob"
 import type { GrepTool } from "@/tool/grep"
 import type { InvalidTool } from "@/tool/invalid"
@@ -348,10 +347,9 @@ function runWebfetch(p: ToolProps<typeof WebFetchTool>): ToolInline {
 }
 
 function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
-  // Dedupe: same-path multi-section patches report the path once per
-  // section (mirrors the TUI's editPaths).
+  // Dedupe: repeated paths report once (mirrors the TUI's editPaths).
   const paths = [...new Set(list<string>(p.metadata.paths))].map((f) => toolPath(f))
-  const title = paths.length > 0 ? paths.join(" → ") : toolPath(patchSectionPath(p.input.input ?? "") ?? "")
+  const title = paths.length > 0 ? paths.join(" → ") : toolPath(p.input.filePath ?? "")
   return {
     icon: "←",
     title: `Edit ${title}`,
@@ -520,11 +518,7 @@ function snapWrite(p: ToolProps<typeof WriteTool>): ToolSnapshot | undefined {
 function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
   const paths = list<string>(p.metadata.paths)
   const files =
-    paths.length > 0
-      ? paths
-      : p.input.filePath
-        ? [p.input.filePath]
-        : patchSectionPaths(p.input.input)
+    paths.length > 0 ? paths : p.input.filePath ? [p.input.filePath] : []
   const diff = p.metadata.diff || ""
   if (files.length === 0 || !diff.trim()) {
     return undefined
