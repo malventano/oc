@@ -268,7 +268,21 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           }
         }
         const start = performance.now()
-        const result = await originalHighlightOnce(content, filetype)
+        // 0326 (final-flush guard): the worker round trip can HANG on the
+        // reasoning's final flush (0322g-class - tree-sitter worker stuck, the
+        // response never returns, the element stays cropped until restart).
+        // Bound the wait: on timeout return EMPTY highlights so the element
+        // paints the FULL content (plain fallback) and its re-fire (0309-mfix)
+        // re-asks for the latest - no hang, no crop.
+        let result: any
+        try {
+          result = await Promise.race([
+            originalHighlightOnce(content, filetype),
+            new Promise((resolve) => setTimeout(() => resolve({ highlights: [], incremental: false, timedOut: true }), 1500)),
+          ])
+        } catch {
+          result = { highlights: [], incremental: false, timedOut: true }
+        }
         const workerMs = performance.now() - start
         onStreamHighlight(performance.now(), workerMs)
         getStreamProbe().onHighlight(filetype, content.length, workerMs, !!(result as any)?.incremental, (result as any)?.timings)
