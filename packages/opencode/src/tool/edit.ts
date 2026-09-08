@@ -751,6 +751,13 @@ export const EditTool = Tool.define(
 
             // Re-diff after formatting so the rendered diff matches disk.
             plan.diff = diffPatch(plan.targetPath, plan.before, plan.after)
+            // 0321: net-zero detection - the rebase/indentation adoption can
+            // swallow the ONLY intended change (a whitespace-only edit on a
+            // multi-line block), and the write then lands identical bytes.
+            // plan.noop was declared (0287) but never set; it backs the
+            // metadata.noop + file-delta 'changed' flags and the explicit
+            // no-net-change echo below.
+            plan.noop = plan.before === plan.after
             for (const change of diffLines(plan.before, plan.after)) {
               if (change.added) plan.additions += change.count || 0
               if (change.removed) plan.deletions += change.count || 0
@@ -859,7 +866,7 @@ export const EditTool = Tool.define(
             const label = ranges.length > 0 ? `${ranges.join(", ")} ${counts}` : counts
             return `${rel}: ${label}`
           }
-          const changedPlansOut = plans.filter((p) => !p.deleted && p.diff.length > 0)
+          const changedPlansOut = plans.filter((p) => !p.deleted && !p.noop && p.diff.length > 0)
           if (changedPlansOut.length > 0) {
             // Single-file edits omit the path (the title carries it)
             const summaries = changedPlansOut.map(lineSummary)
@@ -868,11 +875,39 @@ export const EditTool = Tool.define(
           // Ladder-fire echo: when any fallback tier matched (not byte-exact),
           // the agent must also see the tier + the applied change - so a
           // tolerated match on the wrong span is immediately visible and
-          // correctable.
+          // correctable. The exact-path indentation note is NOT a tier match
+          // and must not ride under the "Matched with tolerance" headline
+          // (0321: that mislabel is what made a normal indentation adoption
+          // read as a tolerance/failure event) - split the two.
           const fallbacks = plans.flatMap((p) => p.fallbackNotes)
-          if (fallbacks.length > 0) {
-            output += `\nMatched with tolerance (not byte-exact): ${fallbacks.join("; ")}.\nApplied change:\n${diffs.join("\n")}`
+          const tierNotes = fallbacks.filter((f) => !f.includes("indentation re-based"))
+          const rebaseNotes = fallbacks.filter((f) => f.includes("indentation re-based"))
+          if (tierNotes.length > 0) {
+            output += `\nMatched with tolerance (not byte-exact): ${tierNotes.join("; ")}`
           }
+          if (fallbacks.length > 0) {
+            output += `\nApplied change:\n${diffs.join("\n")}`
+          }
+          if (rebaseNotes.length > 0) {
+            output += `\nIndentation note: ${rebaseNotes.join("; ")}`
+          }
+          // 0321: explicit no-net-change echo. A plan whose applied result
+          // equals its original (the indentation note kept a whitespace-only
+          // change at the file's indent, or the edit was a content no-op)
+          // would otherwise report bare success with a header-only diff - a
+          // silent phantom that reads as "the edit didn't happen". State it
+          // as an informational note (NOT an error): the edit applied, but
+          // produced no difference on disk. diffPatch emits a header-only
+          // string for identical content, so net-zero is `plan.noop`
+          // (before === after), never `diff.length === 0`.
+          const noops = plans.filter((p) => !p.deleted && !p.renamed && p.noop)
+          if (noops.length > 0) {
+            const names = noops
+              .map((p) => path.relative(instance.worktree, p.targetPath))
+              .join("; ")
+            output += `\nNo net change for ${names}: the edit applied but produced no difference on disk (typically a whitespace-only intent that the indentation note adopted at the file's indent). To change indentation deliberately, use a single-line OLD/NEW block, or change content too.`
+          }
+
           const touched = plans.filter((p) => !p.deleted)
           for (const plan of touched) {
             yield* lsp.touchFile(plan.targetPath, "document")
