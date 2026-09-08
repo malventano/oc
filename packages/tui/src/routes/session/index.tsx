@@ -3854,7 +3854,12 @@ function heredocSegments(text: string): StreamSegmentData[] | undefined {
 // bash runs a continuous counter across segments, the body RESTARTS AT 1 the
 // moment it appears, and the body's gutter is one column wider (minWidth 4 vs
 // 3) purely from the gutter - the indent is not text.
-const MAX_SLOTS = 5
+// 0326.2: the slot cap was 5 and the LAST slot absorbed every overflow segment
+// into one string - a multi-heredoc command (9+ segments) merged the body +
+// its closer + the next opener/body/closer onto one line (the "second block
+// did not close" report). 24 covers any realistic command; the absorb stays as
+// the text-preserving fallback only for the truly absurd (>23 segments).
+const MAX_SLOTS = 24
 function StreamSegment(props: {
   // Accessors into the parent's live segments - tracked through the adapter's
   // render effect, so the elements update without ever re-mounting.
@@ -3884,20 +3889,6 @@ function StreamSegment(props: {
   gutter: () => boolean | undefined
 }) {
   const { theme, syntax } = useTheme()
-  // Bash slots pass a small continuation map so the closer/tail keep
-  // counting the opener's bash lines (opener 1, closer 2, tail 3). The BODY
-  // slot gets NO map - its gutter numbers by DEFAULT continuous 1..N (starts
-  // at 1, the one-way numbering), and no setter sits in its streaming path
-  // (the 0288 shared-gutter map went BLANK mid-stream: the linenums probe
-  // shows setLineNumbers fired once with an empty map at mount and never
-  // again while the text raced ahead).
-  const lineNumbers = createMemo(() => {
-    const n = props.text().split("\n").length
-    const base = props.lineStart()
-    const map = new Map<number, number>()
-    for (let i = 0; i < n; i++) map.set(i, base + i + 1)
-    return map
-  })
   // Guarded height driver only - the 100ms trace ticker was dropped (a slot's
   // element could be torn down mid-tick; the per-slot probes multiplied the
   // destroyed-buffer reads that crashed the TUI).
@@ -3974,7 +3965,14 @@ function StreamSegment(props: {
             fg={theme.textMuted}
             minWidth={3}
             paddingRight={1}
-            {...(props.restart() ? {} : { lineNumbers: lineNumbers() })}
+            // 0326.2: the bash counter across heredoc segments via the reactive
+            // lineNumberOffset (baseline = the last bash row before this slot)
+            // instead of the custom lineNumbers Map - that map is the 0288
+            // one-shot (set once at mount with an empty map, never re-applied),
+            // so every bash segment restarted at 1 despite the computed starts.
+            // lineNumberOffset is 0 for body slots (restart at 1) and the
+            // running bash count for shell slots - the rows are logicalLine+1+off.
+            lineNumberOffset={props.lineStart()}
           >
             {el}
           </line_number>
@@ -4048,6 +4046,7 @@ function LiveToolStream(props: {
       starts[i] = isShell ? acc : 0
       if (isShell) acc += Math.max(1, s[i]!.text.split("\n").length)
     }
+
     return starts
   })
   // The fixed slot junctions - created ONCE, mounted once (the box children
