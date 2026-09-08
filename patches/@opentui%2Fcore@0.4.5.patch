@@ -12,7 +12,7 @@ index 701d70d..adea59c 100644
          return;
        }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..9c596a3 100644
+index e5e5874..9854db1 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -65,7 +65,26 @@ index e5e5874..9c596a3 100644
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3310,7 +3314,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3248,6 +3252,18 @@ class CodeRenderable extends TextBufferRenderable {
+       this._hadInitialContent = false;
+       this._lastHighlights = [];
+       this._highlightsDirty = true;
++      // 0311: at the streaming -> completed flip, guarantee the buffer is
++      // paint-visible. The content is usually ALREADY this._content, so
++      // set content is a no-op and the buffer only refreshes when the async
++      // completion highlight lands - if that highlight is superseded, the
++      // props-driven gutter counts all rows while the body stays unpainted
++      // (the intermittent blank bash body). ensureVisible... paints raw now
++      // if not already painted (and keeps the already-painting content
++      // otherwise - no 0167 white flash).
++      if (!value) {
++        this.ensureVisibleTextBeforeHighlight();
++        this.requestRender();
++      }
+     }
+   }
+   get treeSitterClient() {
+@@ -3310,7 +3326,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -77,7 +96,7 @@ index e5e5874..9c596a3 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3325,30 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,8 +3337,30 @@ class CodeRenderable extends TextBufferRenderable {
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -109,7 +128,7 @@ index e5e5874..9c596a3 100644
      }
    }
    async startHighlight() {
-@@ -3393,6 +3422,15 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3393,6 +3434,15 @@ class CodeRenderable extends TextBufferRenderable {
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
