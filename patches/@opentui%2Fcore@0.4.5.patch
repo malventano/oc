@@ -983,6 +983,25 @@ index 1b7549e..2074aff 100644
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
+@@ -4511,3 +4618,17 @@
+         case "ONESHOT_HIGHLIGHT":
++          // 0322n: the shared tree-sitter Parser + oneShotParseCache are NOT
++          // reentrant-safe: multiple async highlight handlers overlap (the
++          // reasoning + answer + tool-stream code elements all highlight on the
++          // ONE reusable parser), concurrent parse()/delete() corrupted the
++          // tree ownership and crashed with `RuntimeError: Out of bounds
++          // memory access` in _ts_tree_delete (the LIVE root-cause error,
++          // 2026-09-08), poisoning the parser for the rest of the session
++          // (the cumulative freeze - needs enough overlapping highlights to
++          // collide; undo/redo + consecutive prompts collide instantly).
++          // Serialize every highlight so the parser is used by exactly one
++          // handler at a time.
++          worker._hlChain = (worker._hlChain ?? Promise.resolve()).then(() =>
++            worker.handleOneShotHighlight(message.content, message.filetype, message.messageId),
++          );
+-          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId);
++          await worker._hlChain;
+           break;
 diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
 index 62ce331..1e922c8 100644
 --- a/renderables/Diff.d.ts
