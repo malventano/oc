@@ -1,7 +1,9 @@
-import { Effect, Schema } from "effect"
+ import { Effect, Schema } from "effect"
 import { sql } from "drizzle-orm"
 import { unlink } from "node:fs/promises"
 import { Database } from "@opencode-ai/core/database/database"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import * as Tool from "./tool"
 
 const DESCRIPTION = `Replace a past tool output in this session with a short summary, so future prompts see the small version instead of the full output.
@@ -128,7 +130,7 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
           const limitSql = match === "one" ? sql`LIMIT 1` : sql``
 
           const rows = yield* db
-            .all(sql`SELECT p.id, p.data, p.time_created FROM part p WHERE ${whereSql} ORDER BY p.time_created DESC ${limitSql}`)
+            .all(sql`SELECT p.id, p.data, p.time_created, p.message_id FROM part p WHERE ${whereSql} ORDER BY p.time_created DESC ${limitSql}`)
             .pipe(Effect.orDie)
 
           if (rows.length === 0) {
@@ -144,12 +146,18 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
 
           let aggregateOriginal = 0
           const updates = []
-          for (const row of rows as { id: string; data: string; time_created: number }[]) {
+          for (const row of rows as { id: string; data: string; time_created: number; message_id: string }[]) {
             const data = JSON.parse(row.data)
             const { stripped, stamp, originalLen } = extractOutput(data)
             aggregateOriginal += originalLen
             updates.push({ row, data, stamp, originalLen, outputPath: data.state?.metadata?.outputPath ?? null })
           }
+          // 0316: publish the canonical PartUpdated event after each write so
+          // the TUI reconciles the squashed part IN PLACE - the raw DB UPDATE
+          // alone bypassed it and the TUI's later re-sync reconciled more
+          // coarsely (remount/cull -> the 1-frame viewport dip after a squash,
+          // the "scrollback heights reset then re-lock" report).
+          const events = yield* EventV2Bridge.Service
 
           if (params.summary.length * updates.length >= aggregateOriginal) {
             throw new Error(
@@ -189,6 +197,13 @@ export const SquashOutputTool = Tool.define<typeof Parameters, Metadata, Databas
             yield* db
               .run(sql`UPDATE part SET data = ${JSON.stringify(u.data)}, time_updated = ${Date.now()} WHERE id = ${u.row.id}`)
               .pipe(Effect.orDie)
+            // 0316: the in-place reconcile event (same payload shape as the
+            // session service's updatePart, session.ts:638-646).
+            yield* events.publish(SessionV1.Event.PartUpdated, {
+              sessionID,
+              part: structuredClone({ ...u.data, id: u.row.id, sessionID, messageID: u.row.message_id }),
+              time: Date.now(),
+            })
             if (u.outputPath) {
               yield* Effect.tryPromise(() => unlink(u.outputPath)).pipe(Effect.ignore)
             }
