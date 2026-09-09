@@ -2599,6 +2599,30 @@ function useFixedStreamHeight(
         } catch {}
       }, 0)
     }
+    // 0328: the released (streaming -> completed) re-measure must run AFTER
+    // the adapter's prop-apply effect that flips the element's streaming
+    // prop - at that flip the core's streaming setter syncs the DEFERRED
+    // buffer to the current content (set content's sync branch never fires
+    // because the content stopped changing), and this effect is created
+    // BEFORE the code element mounts, so it runs first and would measure
+    // the pre-sync buffer: the box keeps the stale height while the gutter
+    // counts every row ("gutters but blank text", the 2026-09-09 multi-line
+    // bash block painting only its first line). Defer the released
+    // measurement one tick; while streaming the inline measure is read-only
+    // on the live buffer and stays (the box tracks the painted buffer then).
+    if (released()) {
+      setTimeout(() => {
+        if (!el || el.isDestroyed || !el.textBufferView?.measureForDimensions) return
+        try {
+          const w = width()
+          const v = el.textBufferView
+          const c = v.measureForDimensions(w, 99999)?.lineCount ?? 0
+          const vr = v.getVirtualLineCount?.() ?? 0
+          setRows(Math.max(0, c, vr))
+        } catch {}
+      }, 0)
+      return
+    }
     if (!viewed?.measureForDimensions) {
       setRows(0)
       return
@@ -2706,6 +2730,24 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     void summary()
     void isDone()
     const el = traceCodeEl as any
+    // 0328: the isDone re-measure races the async highlight's final apply -
+    // the reasoning element streams forever (streaming stays true), so the
+    // buffer only advances via the worker. Defer the done-time measurement
+    // one tick so a final apply landing with the done flip is counted (the
+    // inline measure stays for the streaming case, where box and buffer
+    // lag together).
+    if (isDone()) {
+      setTimeout(() => {
+        if (!traceCodeEl || traceCodeEl.isDestroyed || !traceCodeEl?.textBufferView?.measureForDimensions) return
+        try {
+          const el2 = traceCodeEl as any
+          const c = el2.textBufferView.measureForDimensions(liveW(), 99999)?.lineCount ?? 0
+          const vr = (el2.textBufferView.getVirtualLineCount?.() as number) ?? 0
+          setStreamRowsCount(Math.max(c, vr))
+        } catch {}
+      }, 0)
+      return
+    }
     if (!el?.textBufferView?.measureForDimensions) {
       setStreamRowsCount(0)
       return
