@@ -12,7 +12,7 @@ index 701d70d..adea59c 100644
          return;
        }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..5bee047 100644
+index e5e5874..9be2b20 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -86,7 +86,7 @@ index e5e5874..5bee047 100644
          this.requestRender();
          return;
        }
-@@ -3248,6 +3266,36 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3248,6 +3266,44 @@ class CodeRenderable extends TextBufferRenderable {
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -105,15 +105,23 @@ index e5e5874..5bee047 100644
 +        // the whole command lands before it runs), so the sync setText
 +        // branch never fires and the buffer can keep only a PREFIX of the
 +        // content (the last sync chunk, or a superseded highlight that
-+        // never re-applied). Paint the FULL current content here - the
-+        // empty/partial completed frame was the "gutters but blank text"
-+        // blank (2026-09-09 multi-line bash block painting only its first
-+        // line). Prefix-only guard: a non-prefix difference (e.g. the
-+        // markdown title/conceal strip) is a LEGIT buffer transform -
-+        // leave it for the async highlight.
++        // never re-applied). 0338 GATE: only raw-sync when the buffer is
++        // VOID. A non-empty painted value = the last landed highlight
++        // already colors a prefix of the final content (streaming colored
++        // up to snapshot K; the final N arrived but its highlight had not
++        // applied yet at the flip). Raw-painting the full N here turns the
++        // whole body WHITE for the completion highlight's duration - the
++        // intermittent white flash on longer writes (the 0330 !_isHighlighting
++        // skip covered only the highlight-in-flight gap, not this
++        // apply-done/start-pending gap). Keep the colored prefix and let
++        // the flip's guaranteed re-highlight (dirty-on-flip + renderSelf
++        // startHighlight + 0309-mfix) finish it - the tail pops in colored
++        // instead; the TUI re-measures until the buffer catches up (0338).
++        // The void case (nothing visible) still raw-paints - always better
++        // than blank.
 +        try {
 +          const painted = this.textBuffer.getPlainText();
-+          if (painted !== this._content && this._content.startsWith(painted) && !this.isDestroyed && !this._isHighlighting) {
++          if (painted.length === 0 && !this.isDestroyed && !this._isHighlighting) {
 +            this.textBuffer.setText(this._content);
 +            this.setRenderedLineSources(undefined);
 +          }
@@ -123,7 +131,7 @@ index e5e5874..5bee047 100644
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3358,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3310,7 +3366,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -135,7 +143,7 @@ index e5e5874..5bee047 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3369,30 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,8 +3377,30 @@ class CodeRenderable extends TextBufferRenderable {
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -167,7 +175,7 @@ index e5e5874..5bee047 100644
      }
    }
    async startHighlight() {
-@@ -3329,7 +3402,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3329,7 +3410,10 @@ class CodeRenderable extends TextBufferRenderable {
      if (!filetype)
        return;
      const isInitialContent = this._streaming && !this._hadInitialContent;
@@ -179,7 +187,7 @@ index e5e5874..5bee047 100644
        this._hadInitialContent = true;
      }
      this._isHighlighting = true;
-@@ -3385,6 +3461,17 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3385,6 +3469,17 @@ class CodeRenderable extends TextBufferRenderable {
            return;
          const styledText = new StyledText(chunks);
          this.textBuffer.setStyledText(styledText);
@@ -197,7 +205,7 @@ index e5e5874..5bee047 100644
          this.setRenderedLineSources(renderedLineSources);
        } else {
          this.textBuffer.setText(content);
-@@ -3393,6 +3480,15 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3393,6 +3488,15 @@ class CodeRenderable extends TextBufferRenderable {
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;

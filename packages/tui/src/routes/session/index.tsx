@@ -2612,8 +2612,27 @@ function useFixedStreamHeight(
     // measurement one tick; while streaming the inline measure is read-only
     // on the live buffer and stays (the box tracks the painted buffer then).
     if (released()) {
-      setTimeout(() => {
+      // 0338: the released (streaming -> completed) re-measure used to run
+      // once after a one-tick defer, relying on the core's completion flip to
+      // sync the buffer SYNCHRONOUSLY (0328). That sync raw-painted the whole
+      // body white - the intermittent white flash on longer writes. After the
+      // 0338 core gate (void-buffer-only sync) the completed buffer is caught
+      // up by the ASYNC completion highlight instead, which lands a few ticks
+      // later. Retry the measure until the buffer holds the full content (or
+      // a bounded cap) so the box reaches the completed row count when the
+      // highlight applies - no stuck-short box, no white frame. For the
+      // legitimate shorter-buffer transforms (markdown title/conceal strip)
+      // the cap bounds the retry; the last measure stands.
+      let tries = 0
+      const retry = () => {
         if (!el || el.isDestroyed || !el.textBufferView?.measureForDimensions) return
+        const settled = () => {
+          try {
+            return el.textBufferView.getPlainText().length >= content().length
+          } catch {
+            return true
+          }
+        }
         try {
           const w = width()
           const v = el.textBufferView
@@ -2621,7 +2640,11 @@ function useFixedStreamHeight(
           const vr = v.getVirtualLineCount?.() ?? 0
           setRows(Math.max(0, c, vr))
         } catch {}
-      }, 0)
+        if (!settled() && ++tries < 10) {
+          setTimeout(retry, 0)
+        }
+      }
+      setTimeout(retry, 0)
       return
     }
     if (!viewed?.measureForDimensions) {
