@@ -12,7 +12,7 @@ index 701d70d..adea59c 100644
          return;
        }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..6d4c1e9 100644
+index e5e5874..005dd00 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -161,8 +161,7 @@ index e5e5874..6d4c1e9 100644
        this._hadInitialContent = true;
      }
      this._isHighlighting = true;
-@@ -3385,6 +3443,17 @@ class CodeRenderable extends TextBufferRenderable {
-           return;
+@@ -3386,3 +3444,14 @@ class CodeRenderable extends TextBufferRenderable {
          const styledText = new StyledText(chunks);
          this.textBuffer.setStyledText(styledText);
 +        {
@@ -177,8 +176,6 @@ index e5e5874..6d4c1e9 100644
 +          ((globalThis).__ocPartApplyEvents ??= []).push({ cl: content.length, sl: __sl, cc: content.slice(0, 32) });
 +        }
          this.setRenderedLineSources(renderedLineSources);
-       } else {
-         this.textBuffer.setText(content);
 @@ -3393,6 +3462,15 @@ class CodeRenderable extends TextBufferRenderable {
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
@@ -800,7 +797,7 @@ index 0ddf03b..54ba1ef 100644
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/parser.worker.js b/parser.worker.js
-index 1b7549e..4e6c983 100644
+index 1b7549e..2074aff 100644
 --- a/parser.worker.js
 +++ b/parser.worker.js
 @@ -4019,7 +4019,7 @@ class ParserWorker {
@@ -827,42 +824,15 @@ index 1b7549e..4e6c983 100644
        const captureName = capture.name;
        if (captureName === "injection.content" || captureName.includes("injection")) {
          const nodeType = capture.node.type;
-@@ -4317,7 +4325,34 @@ class ParserWorker {
-     parserState.parser.delete();
+@@ -4318,6 +4326,7 @@ class ParserWorker {
      this.bufferParsers.delete(bufferId);
    }
-+  // 0326.4 (streaming repair): tree-sitter-python builds NO string node until
-+  // the closing '''/""" arrives, so a python body streaming an UNTERMINATED
-+  // triple-quoted string mis-parses the content as code (identifier/operator
-+  // captures - the block-by-block orange/blue/white flashes) and only snaps
-+  // to one green string at the closer. While the string is still open, force
-+  // its span to @string so python bodies stream stable like markdown does.
-+  // Best-effort single open-string tracker: the SAME kind closes, the OTHER
-+  // kind nests (overridden by the innermost open). Returns the open string's
-+  // start index, or -1 when no triple-quoted string is left open. Only
-+  // triples are handled - a single quote is never a multi-line region.
-+  firstOpenTripleStringIndex(content) {
-+    const re = /(?<!\\)('''|""")/g;
-+    let openKind = "";
-+    let openIndex = -1;
-+    let m;
-+    while ((m = re.exec(content))) {
-+      if (openKind && m[1] === openKind) {
-+        openKind = "";
-+        openIndex = -1;
-+      } else {
-+        openKind = m[1];
-+        openIndex = m.index;
-+      }
-+    }
-+    return openIndex;
-+  }
    async handleOneShotHighlight(content, filetype, messageId) {
 +    const total0 = performance.now();
      const reusableState = await this.getReusableParser(filetype);
      if (!reusableState) {
        postWorkerMessage({
-@@ -4330,7 +4365,56 @@ class ParserWorker {
+@@ -4330,7 +4339,56 @@ class ParserWorker {
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
@@ -920,7 +890,7 @@ index 1b7549e..4e6c983 100644
      if (!tree) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4341,30 +4425,89 @@ class ParserWorker {
+@@ -4341,30 +4392,80 @@ class ParserWorker {
        return;
      }
      try {
@@ -986,15 +956,6 @@ index 1b7549e..4e6c983 100644
 +      } else {
 +        highlights = fresh;
 +      }
-+      // 0326.4: force an open triple-quoted string span to @string (the
-+      // unterminated produce call below) - drops the mis-parsed identifier
-+      // captures inside it and adds one clean string span to EOF.
-+      const openTriple = this.firstOpenTripleStringIndex(parseContent);
-+      if (openTriple !== -1) {
-+        highlights = highlights.filter((h) => h[1] <= openTriple);
-+        highlights.push([openTriple, parseContent.length, "@string"]);
-+        highlights.sort((a, b) => a[0] - b[0]);
-+      }
 +      timings.merge = performance.now() - t0;
 +      timings.total = performance.now() - total0;
 +      timings.count = highlights.length;
@@ -1018,7 +979,7 @@ index 1b7549e..4e6c983 100644
      }
    }
    async updateDataPath(dataPath) {
-@@ -4391,6 +4534,10 @@ class ParserWorker {
+@@ -4391,6 +4492,10 @@ class ParserWorker {
        this.filetypeParserPromises.clear();
        this.reusableParsers.clear();
        this.reusableParserPromises.clear();
@@ -1029,11 +990,8 @@ index 1b7549e..4e6c983 100644
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
-@@ -4509,7 +4656,21 @@ if (isWorkerRuntime) {
-           });
-           break;
+@@ -4511,3 +4618,17 @@
          case "ONESHOT_HIGHLIGHT":
--          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId);
 +          // 0322n: the shared tree-sitter Parser + oneShotParseCache are NOT
 +          // reentrant-safe: multiple async highlight handlers overlap (the
 +          // reasoning + answer + tool-stream code elements all highlight on the
@@ -1048,10 +1006,9 @@ index 1b7549e..4e6c983 100644
 +          worker._hlChain = (worker._hlChain ?? Promise.resolve()).then(() =>
 +            worker.handleOneShotHighlight(message.content, message.filetype, message.messageId),
 +          );
+-          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId);
 +          await worker._hlChain;
            break;
-         case "UPDATE_DATA_PATH":
-           try {
 diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
 index 62ce331..1e922c8 100644
 --- a/renderables/Diff.d.ts
