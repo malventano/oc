@@ -15,7 +15,7 @@ index 701d70d..adea59c 100644
          return;
        }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..6d4c1e9 100644
+index e5e5874..2a02c23 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -89,7 +89,7 @@ index e5e5874..6d4c1e9 100644
          this.requestRender();
          return;
        }
-@@ -3248,6 +3266,18 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3248,6 +3266,36 @@ class CodeRenderable extends TextBufferRenderable {
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -103,12 +103,30 @@ index e5e5874..6d4c1e9 100644
 +      // otherwise - no 0167 white flash).
 +      if (!value) {
 +        this.ensureVisibleTextBeforeHighlight();
++        // 0328: the completion flip never re-runs set content when the
++        // streamed text ALREADY equals the final text (the common case -
++        // the whole command lands before it runs), so the sync setText
++        // branch never fires and the buffer can keep only a PREFIX of the
++        // content (the last sync chunk, or a superseded highlight that
++        // never re-applied). Paint the FULL current content here - the
++        // empty/partial completed frame was the "gutters but blank text"
++        // blank (2026-09-09 multi-line bash block painting only its first
++        // line). Prefix-only guard: a non-prefix difference (e.g. the
++        // markdown title/conceal strip) is a LEGIT buffer transform -
++        // leave it for the async highlight.
++        try {
++          const painted = this.textBuffer.getPlainText();
++          if (painted !== this._content && this._content.startsWith(painted) && !this.isDestroyed) {
++            this.textBuffer.setText(this._content);
++            this.setRenderedLineSources(undefined);
++          }
++        } catch {}
 +        this.requestRender();
 +      }
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3340,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3310,7 +3358,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -120,7 +138,7 @@ index e5e5874..6d4c1e9 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3351,30 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,8 +3369,30 @@ class CodeRenderable extends TextBufferRenderable {
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -152,7 +170,7 @@ index e5e5874..6d4c1e9 100644
      }
    }
    async startHighlight() {
-@@ -3329,7 +3384,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3329,7 +3402,10 @@ class CodeRenderable extends TextBufferRenderable {
      if (!filetype)
        return;
      const isInitialContent = this._streaming && !this._hadInitialContent;
@@ -164,7 +182,7 @@ index e5e5874..6d4c1e9 100644
        this._hadInitialContent = true;
      }
      this._isHighlighting = true;
-@@ -3385,6 +3443,17 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3385,6 +3461,17 @@ class CodeRenderable extends TextBufferRenderable {
            return;
          const styledText = new StyledText(chunks);
          this.textBuffer.setStyledText(styledText);
@@ -182,7 +200,7 @@ index e5e5874..6d4c1e9 100644
          this.setRenderedLineSources(renderedLineSources);
        } else {
          this.textBuffer.setText(content);
-@@ -3393,6 +3462,15 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3393,6 +3480,15 @@ class CodeRenderable extends TextBufferRenderable {
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
