@@ -227,8 +227,22 @@ const lowerMessage = (msg: V3Message): Record<string, unknown>[] => {
     const items = content.flatMap((p): unknown[] => {
       if (p.type === "text") return [{ type: "input_text", text: p.text ?? "" }]
       if (p.type === "file") {
+        // The LLM-level file part carries `data` as RAW base64 (no scheme) -
+        // message-v2 strips the `data:<media>;base64,` prefix at conversion.
+        // Some paths leave `url` (a full data/url) instead, so prefer it;
+        // otherwise rebuild the data URL from mediaType + data.
+        const mediaType =
+          typeof p.mediaType === "string" ? p.mediaType : typeof p.mime === "string" ? p.mime : ""
+        if (!mediaType.startsWith("image/")) return []
+        const rawUrl = typeof p.url === "string" ? p.url : ""
         const data = typeof p.data === "string" ? p.data : ""
-        return [{ type: "input_image", image_url: data }]
+        const url = /^(https?:|data:|file:)/.test(rawUrl)
+          ? rawUrl
+          : data
+            ? `data:${mediaType};base64,${data}`
+            : rawUrl
+        if (!url) return []
+        return [{ type: "input_image", image_url: url, detail: "auto" }]
       }
       return []
     })
