@@ -2,7 +2,6 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { createSimpleContext } from "./helper"
-import { initStreamProbe, type StreamProbe } from "../util/stream-probe"
 import { batch, createSignal, onCleanup, onMount } from "solid-js"
 
 export type EventSource = {
@@ -104,11 +103,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   }) => {
     const abort = new AbortController()
     let sse: AbortController | undefined
-    const probe: StreamProbe = initStreamProbe({
-      getWindow: getStreamBatchWindow,
-      getFlush: () => getStreamFlushMs(performance.now()),
-      getHighlight: () => getStreamHighlightMs(performance.now()),
-    })
 
     function createSDK() {
       return createOpencodeClient({
@@ -156,7 +150,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     }
 
     const handleEvent = (event: GlobalEvent) => {
-      probe.onDelta()
       queue.push(event)
       const elapsed = Date.now() - last
 
@@ -227,7 +220,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       sse?.abort()
       if (timer) clearTimeout(timer)
       handlers.clear()
-      probe.stop()
     })
 
     return {

@@ -98,7 +98,6 @@ import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
-import { getStreamProbe } from "./util/stream-probe"
 
 registerOpencodeSpinner()
 
@@ -262,7 +261,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                 const [entry] = list.splice(i, 1)
                 list.unshift(entry)
               }
-              getStreamProbe().onHighlightSkip()
               return list[0].result
             }
           }
@@ -271,7 +269,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         const result = await originalHighlightOnce(content, filetype)
         const workerMs = performance.now() - start
         onStreamHighlight(performance.now(), workerMs)
-        getStreamProbe().onHighlight(filetype, content.length, workerMs, !!(result as any)?.incremental, (result as any)?.timings)
         if (!list) {
           lastHighlights.set(filetype, [{ content, result }])
         } else {
@@ -310,7 +307,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
           const now = performance.now()
           const windowMs = getStreamBatchWindow()
           const deltaMs = getStreamDeltaMs(now)
-          getStreamProbe().onFrame(now - renderStartMs)
           if (deltaMs > STREAM_BATCH_IDLE_MS) {
             if (deltaMs > STREAM_BATCH_RESET_MS) {
               setStreamBatchWindow(STREAM_BATCH_MIN_MS)
