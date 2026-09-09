@@ -54,8 +54,6 @@ import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
 import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK, setStreamBatchWindow, STREAM_BATCH_MIN_MS } from "../../context/sdk"
-import { getStreamProbe } from "../../util/stream-probe"
-import { partTrace } from "../../util/part-trace"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
 import { useDialog } from "../../ui/dialog"
@@ -2665,9 +2663,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
   })
   const summary = createMemo(() => {
-    const t0 = performance.now()
     const v = reasoningSummary(content())
-    getStreamProbe().onFn("summary", performance.now() - t0)
     return v
   })
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
@@ -2715,7 +2711,6 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
       return
     }
     const c = el.textBufferView.measureForDimensions(liveW(), 99999)?.lineCount ?? 0
-    getStreamProbe().onFn("measure", performance.now() - t0)
     // 0305-probe / TRIAL FIX: same partial-row clip as useFixedStreamHeight -
     // grow to the buffer's true wrapped count so the streaming partial row
     // paints (no by-line reveal).
@@ -2734,37 +2729,6 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
           setStreamRowsCount(Math.max(c2, vr2))
         } catch {}
       }, 0)
-    }
-    getStreamProbe().onReasoning({ len: summary().body.length, lineCount: c, virtual: vr })
-    // 0322c: always-on height-stall anomaly - big content, tiny measured box
-    // (the "truncated after 1 line" symptom; lens == DB elsewhere, so this is
-    // the render/height layer, not text loss). Fires the FIRST time a part
-    // shows this pattern (part-trace de-dupes per partID).
-    if (summary().body.length > 1000 && Math.max(c, vr) < 3) {
-      // bufLen = the buffer's ACTUAL rendered content - the discriminator: a
-      // stale-applied highlight leaves bufLen << len (mid-line cuts), while a
-      // full buffer with a wrong wrap leaves bufLen ≈ len but a bad lineCount.
-      const bufLen = (el.textBufferView.getPlainText?.() ?? "").length
-      partTrace.onReasoningHeightStall({
-        partID: props.part.id,
-        len: summary().body.length,
-        bufLen,
-        lineCount: c,
-        virtual: vr,
-        width: liveW(),
-      })
-    }
-    // 0322f: buffer length at the moment the reasoning completes (de-duped in
-    // part-trace) - applied-full-but-painted-short discriminator.
-    if (isDone()) {
-      partTrace.onReasoningDone({
-        partID: props.part.id,
-        len: summary().body.length,
-        bufLen: (el.textBufferView.getPlainText?.() ?? "").length,
-        lineCount: c,
-        virtual: vr,
-        width: liveW(),
-      })
     }
   })
 
