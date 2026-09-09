@@ -2732,7 +2732,9 @@ function useDiffResizeRebuild() {
 //    wrapping (sparse tails, mostly-empty continuation rows) and goes
 //    single. Count-based, so text and code behave alike.
 // Assessed live during streaming (content + width reactive), re-assessed at
-// completion and on a resize.
+// completion and on a resize. 0332: the completed re-assess ALSO flips to
+// unified when the diff is change-sparse (DIFF_DENSITY_RATIO - see
+// patchDiffMode) - dual would duplicate the whole block for one changed line.
 const DIFF_MIN_COL_W = 32
 const DIFF_WRAP_LIMIT = 2
 const DIFF_COL_OVERHEAD = 10
@@ -2752,10 +2754,11 @@ function diffMode(oldText: string, newText: string, width: number): "split" | "u
 }
 // Split a patch body into old (context + -) and new (context + +) line
 // texts for the dual/single decision; hunk headers, ---/+++ and \ markers
-// are dropped.
-function patchOldNew(patch: string): { old: string; new: string } {
+// are dropped. `changed` = the -/+ bodies joined (for the density heuristic).
+function patchOldNew(patch: string): { old: string; new: string; changed: string } {
   let oldText = ""
   let newText = ""
+  let changedText = ""
   const push = (t: string, to: "old" | "new") => {
     if (to === "old") {
       if (oldText) oldText += "\n"
@@ -2765,18 +2768,49 @@ function patchOldNew(patch: string): { old: string; new: string } {
       newText += t
     }
   }
+  const pushChanged = (t: string) => {
+    if (changedText) changedText += "\n"
+    changedText += t
+  }
   for (const line of patch.split("\n")) {
     const c = line[0]
-    if (c === "-" && !line.startsWith("---")) push(line.slice(1), "old")
-    else if (c === "+" && !line.startsWith("+++")) push(line.slice(1), "new")
+    if (c === "-" && !line.startsWith("---")) push(line.slice(1), "old"), pushChanged(line.slice(1))
+    else if (c === "+" && !line.startsWith("+++")) push(line.slice(1), "new"), pushChanged(line.slice(1))
     else if (c === " ") push(line.slice(1), "old"), push(line.slice(1), "new")
     // "@@ ...", "---", "+++", "diff --git", "\ No newline" - skipped
   }
-  return { old: oldText, new: newText }
+  return { old: oldText, new: newText, changed: changedText }
 }
 function patchDiffMode(patch: string, width: number): "split" | "unified" {
+  // 0332: completed-only change-density heuristic - dual side-by-side renders
+  // BOTH columns over the whole (hunk) text; when the diff is change-sparse in
+  // RENDERED ROWS (a one-row change against a block that wraps to dozens of
+  // rows - e.g. a blank line deleted between two giant BUILD.md entries), dual
+  // duplicates the block for that one row. Unified renders the context once +
+  // the -/+ rows. NOT applied while streaming (the old/new strings are
+  // incomplete there - density is unknowable; the streaming dual->single latch
+  // is unchanged). The completed <diff> re-assesses fresh, so this is safe.
+  if (diffIsChangeSparse(patch, width)) return "unified"
   const o = patchOldNew(patch)
   return diffMode(o.old, o.new, width)
+}
+// Change-density in RENDERED ROWS (not lines - a single long line wraps to
+// many rows, so a line-count compares 1 changed vs a couple of context lines
+// and never sees the duplication). The dual view renders oldRows + newRows;
+// the changed rows are what is NOT duplicated. Flip to unified when (a) the
+// whole thing is big enough that the duplication matters (>= MIN_ROWS) and
+// (b) the changed rows are a small fraction (the context dominates).
+const DIFF_DENSITY_RATIO = 0.2
+const DIFF_DENSITY_MIN_ROWS = 16
+function diffIsChangeSparse(patch: string, width: number): boolean {
+  const colW = Math.floor(width / 2) - DIFF_COL_OVERHEAD
+  if (colW < DIFF_MIN_COL_W) return true // narrow - unified anyway
+  const rowsOf = (t: string) =>
+    (t ? t.split("\n") : []).reduce((n, l) => n + Math.max(1, Math.ceil(l.length / Math.max(1, colW))), 0)
+  const o = patchOldNew(patch)
+  const totalRows = rowsOf(o.old) + rowsOf(o.new)
+  const changedRows = rowsOf(o.changed)
+  return totalRows >= DIFF_DENSITY_MIN_ROWS && changedRows / totalRows < DIFF_DENSITY_RATIO
 }
 // ========================================================================
 
