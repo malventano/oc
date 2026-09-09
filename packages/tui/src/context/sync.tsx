@@ -27,8 +27,6 @@ import { useSDK } from "./sdk"
 import { useTuiStartup } from "./runtime"
 import { createSimpleContext } from "./helper"
 import { onStreamFlush, markContentDelta } from "./sdk"
-import { getStreamProbe } from "../util/stream-probe"
-import { partTrace } from "../util/part-trace"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
  import { batch, onMount } from "solid-js"
@@ -372,16 +370,6 @@ export const {
             // 0322b: the payload's completion stamp is time.completed (NOT
             // time.end - verified against the message.updated.1 event rows), so
             // the hook never matched on the first ship - fix the field.
-            {
-              const info = event.properties.info as { time?: { end?: number; completed?: number }; role?: string }
-              if ((info.time?.completed !== undefined || info.time?.end !== undefined) && info.role === "assistant") {
-                const msgParts = store.part[event.properties.info.id] as Array<{ id: string; text?: string }> | undefined
-                partTrace.onMessageDone({
-                  messageID: event.properties.info.id,
-                  parts: (msgParts ?? []).map((p) => ({ partID: p.id, len: typeof p.text === "string" ? p.text.length : -1 })),
-                })
-              }
-            }
             break
           }
           setStore(
@@ -427,21 +415,6 @@ export const {
             // after the raw has been superseded by the landed input). The
             // guard was dead code; the delta FIFO append path was the only
             // consumer, and it is untouched.
-            // 0322: a reconcile whose incoming text is SHORTER than the
-            // accumulated text regresses the display - log it (anomaly-trace).
-            {
-              const existing = parts[result.index] as { text?: string } | undefined
-              const next = event.properties.part as { text?: string }
-              if (typeof existing?.text === "string" && typeof next?.text === "string" && next.text.length < existing.text.length) {
-                partTrace.onReconcileShrink({
-                  messageID: event.properties.part.messageID,
-                  partID: event.properties.part.id,
-                  prevLen: existing.text.length,
-                  nextLen: next.text.length,
-                  nextText: next.text,
-                })
-              }
-            }
             setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
             break
           }
@@ -459,25 +432,11 @@ export const {
           const parts = store.part[event.properties.messageID]
           if (!parts) {
             // 0322: a delta for a message with no parts in the store is
-            // permanently lost - log it (anomaly-trace).
-            partTrace.onDeltaDropped({
-              messageID: event.properties.messageID,
-              partID: event.properties.partID,
-              field: event.properties.field,
-              deltaLen: event.properties.delta.length,
-              site: "no-parts",
-            })
+            // permanently lost.
             break
           }
           const result = search(parts, event.properties.partID, (part) => part.id)
           if (!result.found) {
-            partTrace.onDeltaDropped({
-              messageID: event.properties.messageID,
-              partID: event.properties.partID,
-              field: event.properties.field,
-              deltaLen: event.properties.delta.length,
-              site: "part-not-found",
-            })
             break
           }
           touchPart(event.properties.sessionID, event.properties.partID)
@@ -497,13 +456,6 @@ export const {
               target[last] = (existing ?? "") + event.properties.delta
             }),
           )
-          partTrace.onDeltaApplied({
-            messageID: event.properties.messageID,
-            partID: event.properties.partID,
-            field: event.properties.field,
-            deltaLen: event.properties.delta.length,
-          })
-          getStreamProbe().onDeltaChars(event.properties.delta.length)
           markContentDelta()
           // Full synchronous tail per delta (handler + Solid flush + anything
           // before the next macrotask): the reactive flush is the measured
