@@ -2664,6 +2664,98 @@ function useFixedStreamHeight(
   }
   return { height: rows, ref }
 }
+// 0329: completed <diff> re-wrap on an EXTERNAL terminal resize. The core's
+// own DiffRenderable.onResize -> requestRebuild path is NOT reliably
+// delivered to renderables nested this deep on a SIGWINCH (the same gap
+// that 0314/0315 had to bypass with a TUI-side useTerminalDimensions
+// subscription for the numeric height drivers). So a completed edit diff
+// kept its OLD wrap after a resize - widening left previously-wrapped
+// lines broken (gaps in the render), narrowing clipped. Mirror 0314b: the
+// resize signal fires BEFORE the layout applies the new width, so defer the
+// rebuild one tick, then force rebuildView() (the core's own intended
+// path - split = async microtask rebuild, unified = immediate). rebuildView
+// is private on the Diff d.ts - reached via (el as any) at runtime (the
+// applyStickyStart precedent).
+function useDiffResizeRebuild() {
+  const dims = useTerminalDimensions()
+  const els = new Set<{ isDestroyed?: boolean; rebuildView?: () => void }>()
+  let lastW = dims().width
+  createEffect(() => {
+    const w = dims().width
+    if (w === lastW) return
+    lastW = w
+    setTimeout(() => {
+      for (const el of els) {
+        if (!el || el.isDestroyed) continue
+        try {
+          el.rebuildView?.()
+        } catch {}
+      }
+    }, 0)
+  })
+  return {
+    ref: (node: any) => {
+      if (node) els.add(node)
+    },
+  }
+}
+// 0329: per-diff dual/single choice - NO arbitrary width threshold.
+// TWO columns is the default (easier to read, keeps what-inserted-where
+// context). Flip to single only when dual genuinely does not fit:
+//  - the window is too narrow for two usable columns (colW < DIFF_MIN_COL_W
+//    - covers very narrow windows), or
+//  - the content STARTS WRAPPING inside a column - a line or two wrapping is
+//    fine (a lone long URL/minified line stays dual), but once more than
+//    DIFF_WRAP_LIMIT lines need >1 row in either column, the block is
+//    wrapping (sparse tails, mostly-empty continuation rows) and goes
+//    single. Count-based, so text and code behave alike.
+// Assessed live during streaming (content + width reactive), re-assessed at
+// completion and on a resize.
+const DIFF_MIN_COL_W = 32
+const DIFF_WRAP_LIMIT = 2
+const DIFF_COL_OVERHEAD = 10
+// Number of lines that need more than one row at the given width.
+function wrapLineCount(text: string, width: number): number {
+  let count = 0
+  for (const line of text.split("\n")) {
+    if (line.length > width) count++
+  }
+  return count
+}
+function diffMode(oldText: string, newText: string, width: number): "split" | "unified" {
+  const colW = Math.floor(width / 2) - DIFF_COL_OVERHEAD
+  if (colW < DIFF_MIN_COL_W) return "unified"
+  const wrapped = Math.max(wrapLineCount(oldText, colW), wrapLineCount(newText, colW))
+  return wrapped > DIFF_WRAP_LIMIT ? "unified" : "split"
+}
+// Split a patch body into old (context + -) and new (context + +) line
+// texts for the dual/single decision; hunk headers, ---/+++ and \ markers
+// are dropped.
+function patchOldNew(patch: string): { old: string; new: string } {
+  let oldText = ""
+  let newText = ""
+  const push = (t: string, to: "old" | "new") => {
+    if (to === "old") {
+      if (oldText) oldText += "\n"
+      oldText += t
+    } else {
+      if (newText) newText += "\n"
+      newText += t
+    }
+  }
+  for (const line of patch.split("\n")) {
+    const c = line[0]
+    if (c === "-" && !line.startsWith("---")) push(line.slice(1), "old")
+    else if (c === "+" && !line.startsWith("+++")) push(line.slice(1), "new")
+    else if (c === " ") push(line.slice(1), "old"), push(line.slice(1), "new")
+    // "@@ ...", "---", "+++", "diff --git", "\ No newline" - skipped
+  }
+  return { old: oldText, new: newText }
+}
+function patchDiffMode(patch: string, width: number): "split" | "unified" {
+  const o = patchOldNew(patch)
+  return diffMode(o.old, o.new, width)
+}
 // ========================================================================
 
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
@@ -4529,6 +4621,11 @@ function LiveEditDiff(props: {
   left: string
   right: string
   filetype?: string
+  // 0329: "split" (two 50% columns, the default) or "unified" (one column,
+  // interleaved context/-old/+new) - the caller aligns it with the
+  // completed diff's split/unified choice so the streaming preview matches
+  // the completed format at narrow (sub-crossover) widths.
+  view?: "split" | "unified"
 }) {
   const { theme, syntax } = useTheme()
   const [left, setLeft] = createSignal("")
@@ -4582,9 +4679,60 @@ function LiveEditDiff(props: {
     }
     return map
   })
+  // 0329: unified (single-column) live view - the context prefix (before the
+  // anchor) once, then the old remainder as - rows and the new remainder as
+  // + rows, so the streaming preview matches the completed format at widths
+  // below the split/unified crossover. Sign prefixes render as text (no
+  // dedicated sign gutter in the live column - a best-effort live preview,
+  // replaced by the real <diff> at completion).
+  const unifiedRows = createMemo(() => {
+    const L = leftLines()
+    const R = rightLines()
+    const a = anchor()
+    const rows: { text: string; key: "ctx" | "del" | "add" }[] = []
+    for (let i = 0; i < a; i++) rows.push({ text: L[i] ?? "", key: "ctx" })
+    for (let i = a; i < L.length; i++) rows.push({ text: L[i]!, key: "del" })
+    for (let i = a; i < R.length; i++) rows.push({ text: R[i]!, key: "add" })
+    return rows
+  })
+  const unifiedText = createMemo(() =>
+    unifiedRows()
+      .map((r) => (r.key === "del" ? "- " : r.key === "add" ? "+ " : "  ") + r.text)
+      .join("\n"),
+  )
+  const unifiedColors = createMemo(() => {
+    const map = new Map<number, { gutter: any; content: any }>()
+    unifiedRows().forEach((r, i) => {
+      if (r.key === "del") map.set(i, { gutter: theme.diffRemoved, content: theme.diffRemovedBg })
+      else if (r.key === "add") map.set(i, { gutter: theme.diffAdded, content: theme.diffAddedBg })
+    })
+    return map
+  })
+  const heightU = useFixedStreamHeight(unifiedText, { released: () => !props.streaming })
+  const refU = (el: any) => {
+    heightU.ref(el)
+  }
+  const unifiedView = () => props.view === "unified"
   return (
     <BlockTool title={props.title} part={props.part} spinner={props.streaming}>
       <Show when={props.left.length > 0 || props.right.length > 0}>
+        {unifiedView() ? (
+          <line_number fg={theme.textMuted} minWidth={3} paddingRight={1} lineColors={unifiedColors()}>
+            <code
+              ref={refU}
+              height={heightU.height()}
+              {...(lang() ? { filetype: lang() } : {})}
+              width="100%"
+              flexShrink={1}
+              drawUnstyledText={false}
+              streaming={true}
+              syntaxStyle={syntax()}
+              content={unifiedText()}
+              conceal={false}
+              fg={theme.textMuted}
+            />
+          </line_number>
+        ) : (
         <box flexDirection="row">
           <box width="50%" paddingRight={1}>
             {/* Block-relative line numbers (1..N per column; the step-2
@@ -4646,6 +4794,7 @@ function LiveEditDiff(props: {
             </line_number>
           </box>
         </box>
+        )}
       </Show>
     </BlockTool>
   )
@@ -4655,6 +4804,11 @@ function Edit(props: ToolProps) {
   const ctx = use()
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
+  // 0329: the completed diff re-wraps on an external terminal resize (see
+  // useDiffResizeRebuild - the core's own onResize path is not delivered
+  // this deep; the LIVE diff columns are already covered by
+  // useFixedStreamHeight's resize re-measure.
+  const diffRebuild = useDiffResizeRebuild()
 
   const editPaths = createMemo(() => {
     const fromMetadata = props.metadata.paths
@@ -4698,12 +4852,30 @@ function Edit(props: ToolProps) {
     return `Edit ${paths.length} files`
   })
 
-  const view = createMemo(() => {
-    const diffStyle = ctx.tui.diff_style
-    if (diffStyle === "stacked") return "unified"
-    // Default to "auto" behavior
-    return ctx.width > 120 ? "split" : "unified"
+  // 0329: the split/unified choice is now content-aware (see diffView) and
+  // computed per diff entry at its site. `diff_style === "stacked"` still
+  // forces unified. The width signal is read HERE (not per site) so the
+  // choice re-evaluates on a terminal resize.
+  const diffDims = useTerminalDimensions()
+  const diffStacked = ctx.tui.diff_style === "stacked"
+  // 0329: STREAMING latch is ONE-WAY - dual is where it starts; once the
+  // live assessment says the content needs single, it latches single and
+  // stays there for the rest of the stream (no toggling as content grows /
+  // width changes). The COMPLETED render re-assesses fresh from the final
+  // content (diffPatchModeFor below) - if the final diff is genuinely small
+  // enough for dual, it flips back to it there.
+  const [streamLatch, setStreamLatch] = createSignal<"split" | "unified">("split")
+  createEffect(() => {
+    if (diffMode(oldBody(), newBody(), diffDims().width) === "unified") {
+      setStreamLatch("unified")
+    }
+    // Completion (or the swap to the static diff) releases the latch - the
+    // static view owns the choice from there.
+    if (props.part.state.status === "completed") {
+      setStreamLatch("split")
+    }
   })
+  const diffPatchModeFor = (patch: string) => (diffStacked ? "unified" : patchDiffMode(patch, diffDims().width))
 
   // 0323: the JSON edit streams its args as first-class JSON keys, so the
   // live body IS the two diff columns (oldString/newString) and the target
@@ -4748,8 +4920,9 @@ function Edit(props: ToolProps) {
           <Show when={file.changed} fallback={file.type === "delete" ? <text fg={theme.diffRemoved}>-{file.deletions} line{file.deletions !== 1 ? "s" : ""}</text> : <text fg={theme.error}>no change - content already matches</text>}>
                 <box paddingLeft={1}>
                   <diff
+                    ref={diffRebuild.ref}
                     diff={file.patch}
-                    view={view()}
+                    view={diffPatchModeFor(file.patch)}
                     filetype={filetype(file.filePath)}
                     syntaxStyle={syntax()}
                     showLineNumbers={true}
@@ -4796,8 +4969,9 @@ function Edit(props: ToolProps) {
           <Show when={numberValue(props.metadata.noop) !== 1}>
             <box paddingLeft={1}>
               <diff
+                ref={diffRebuild.ref}
                 diff={stringValue(props.metadata.diff) ?? ""}
-                view={view()}
+                view={diffPatchModeFor(stringValue(props.metadata.diff) ?? "")}
                 filetype={filetype(editPaths()[0] ?? "")}
                 syntaxStyle={syntax()}
                 showLineNumbers={true}
@@ -4836,6 +5010,7 @@ function Edit(props: ToolProps) {
           left={oldBody()}
           right={newBody()}
           filetype={liveFiletype()}
+          view={streamLatch()}
         />
       </Match>
       <Match when={true}>
@@ -4851,21 +5026,27 @@ function ApplyPatch(props: ToolProps) {
   const ctx = use()
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
+  // 0329: the completed diff re-wraps on an external terminal resize (see
+  // useDiffResizeRebuild).
+  const diffRebuild = useDiffResizeRebuild()
 
   const files = createMemo(() => parseApplyPatchFiles(props.metadata.files))
 
-  const view = createMemo(() => {
-    const diffStyle = ctx.tui.diff_style
-    if (diffStyle === "stacked") return "unified"
-    return ctx.width > 120 ? "split" : "unified"
-  })
+  // 0329: dual/single is now per-diff (see diffMode) - two columns is the
+  // default, single only for very narrow windows or when the content starts
+  // wrapping. `diff_style === "stacked"` still forces unified. The width
+  // signal is read here so the choice re-evaluates on a terminal resize.
+  const diffDims = useTerminalDimensions()
+  const diffStacked = ctx.tui.diff_style === "stacked"
+  const diffPatchModeFor = (patch: string) => (diffStacked ? "unified" : patchDiffMode(patch, diffDims().width))
 
   function Diff(p: { diff: string; filePath: string }) {
     return (
       <box paddingLeft={1}>
         <diff
+          ref={diffRebuild.ref}
           diff={p.diff}
-          view={view()}
+          view={diffPatchModeFor(p.diff)}
           filetype={filetype(p.filePath)}
           syntaxStyle={syntax()}
           showLineNumbers={true}
