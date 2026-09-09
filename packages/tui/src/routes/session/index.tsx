@@ -78,6 +78,7 @@ import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
 import { PermissionPrompt } from "./permission"
 import { QuestionPrompt } from "./question"
+import { diffLines } from "diff"
 import { DialogExportOptions } from "../../ui/dialog-export-options"
 import * as Model from "../../util/model"
 import { formatTranscript } from "../../util/transcript"
@@ -2654,7 +2655,28 @@ function useFixedStreamHeight(
         // revealed per completed wrapped row = the by-line cadence). Grow the box
         // to the buffer's real count so the partial row paints as it streams.
         const vr = viewed.getVirtualLineCount?.() ?? 0
-        setRows(Math.max(0, c, vr))
+        // 0329: the box must FOLLOW A SHRINK too. The buffer-derived rows (c/vr)
+        // only ever grow while streaming (the deferred/async highlight never
+        // shortens the buffer mid-stream - the supersede lag), but the CONTENT
+        // string can genuinely shrink (the live diff re-aligns its context/-/+
+        // as the newString confirms old lines - probe: cl dropped 698->661 while
+        // c/vr stayed). Cap the box at the CONTENT's char-wrap row count: on
+        // growth the cap is >= the buffer rows (char-wrap over-counts vs word
+        // wrap, so the min stays buffer-driven - no blank-bottom regression),
+        // on shrink the cap drops the box with the content (the painted text
+        // clips for the frame until the async apply catches up - better than
+        // the box staying tall on stale content).
+        const bufferRows = Math.max(0, c, vr)
+        let contentRows = bufferRows
+        try {
+          const cc = content()
+          if (cc.length > 0) {
+            let r = 0
+            for (const line of cc.split("\n")) r += Math.max(1, Math.ceil(line.length / w))
+            contentRows = r
+          }
+        } catch {}
+        setRows(Math.min(bufferRows, contentRows))
       } catch {
         setRows(0)
       }
@@ -4645,56 +4667,74 @@ function LiveEditDiff(props: {
   // 0276b: fixed-height driver per column - the code element's own height
   // must be the buffer's wrapped count at its real width, not the native
   // width-1 measure (persistent +1 phantom on the diff columns at cw~66).
-  const heightL = useFixedStreamHeight(left, { released: () => !props.streaming })
-  const heightR = useFixedStreamHeight(right, { released: () => !props.streaming })
+  const heightL = useFixedStreamHeight(left, { released: () => !props.streaming})
+  const heightR = useFixedStreamHeight(right, { released: () => !props.streaming})
   const refL = (el: any) => {
     heightL.ref(el)
   }
   const refR = (el: any) => {
     heightR.ref(el)
   }
-  // STEP 2 ladder: the line arrays + the diff anchor. The anchor is the
-  // first index where OLD[i] !== NEW[i] (or the shorter length when one
-  // column is a prefix of the other). Only moves forward as the stream
-  // confirms matching lines - the color maps below are color-only updates.
-  const leftLines = createMemo(() => (left().length === 0 ? [] : left().split("\n")))
-  const rightLines = createMemo(() => (right().length === 0 ? [] : right().split("\n")))
-  const anchor = createMemo(() => diffAnchor(leftLines(), rightLines()))
-  // Per-line colors for the line_number wrappers: lines past the anchor are
-  // the changed region (red removed on the left, green added on the right);
-  // the confirmed context prefix gets NO band (neutral, both columns).
+  // STEP 2 ladder (0329): a REAL line diff (jsdiff diffLines) decides
+  // context/removed/added per line - NOT the old single-anchor rule (which
+  // banded everything past the first divergence and made the streaming
+  // colors diverge from the final <diff>, e.g. a mid-block insertion
+  // over-colored whole blocks). The ladder colors only the actual changed
+  // lines, so the streaming preview matches the completed diff.
+  const ops = createMemo(() => {
+    const L = left()
+    const R = right()
+    if (L.length === 0 && R.length === 0) return { left: [] as { text: string; key: "ctx" | "del" }[], right: [] as { text: string; key: "ctx" | "add" }[], rows: [] as { text: string; key: "ctx" | "del" | "add" }[] }
+    const parts = diffLines(L, R)
+    const leftRuns: { text: string; key: "ctx" | "del" }[] = []
+    const rightRuns: { text: string; key: "ctx" | "add" }[] = []
+    const rows: { text: string; key: "ctx" | "del" | "add" }[] = []
+    const linesOf = (v: string) => {
+      const a = v.split("\n")
+      if (a.length > 1 && a[a.length - 1] === "") a.pop()
+      return a
+    }
+    for (const p of parts) {
+      if (p.added) {
+        for (const t of linesOf(p.value)) {
+          rightRuns.push({ text: t, key: "add" })
+          rows.push({ text: t, key: "add" })
+        }
+      } else if (p.removed) {
+        for (const t of linesOf(p.value)) {
+          leftRuns.push({ text: t, key: "del" })
+          rows.push({ text: t, key: "del" })
+        }
+      } else {
+        for (const t of linesOf(p.value)) {
+          leftRuns.push({ text: t, key: "ctx" })
+          rightRuns.push({ text: t, key: "ctx" })
+        }
+      }
+    }
+    return { left: leftRuns, right: rightRuns, rows }
+  })
+  const leftLines = createMemo(() => ops().left.map((r) => r.text))
+  const rightLines = createMemo(() => ops().right.map((r) => r.text))
   const leftColors = createMemo(() => {
     const map = new Map<number, { gutter: typeof theme.diffRemoved; content: typeof theme.diffRemovedBg }>()
-    const lines = leftLines()
-    for (let i = anchor(); i < lines.length; i++) {
-      map.set(i, { gutter: theme.diffRemoved, content: theme.diffRemovedBg })
-    }
+    ops().left.forEach((r, i) => {
+      if (r.key === "del") map.set(i, { gutter: theme.diffRemovedLineNumberBg, content: theme.diffRemovedBg })
+    })
     return map
   })
   const rightColors = createMemo(() => {
     const map = new Map<number, { gutter: typeof theme.diffAdded; content: typeof theme.diffAddedBg }>()
-    const lines = rightLines()
-    for (let i = anchor(); i < lines.length; i++) {
-      map.set(i, { gutter: theme.diffAdded, content: theme.diffAddedBg })
-    }
+    ops().right.forEach((r, i) => {
+      if (r.key === "add") map.set(i, { gutter: theme.diffAddedLineNumberBg, content: theme.diffAddedBg })
+    })
     return map
   })
-  // 0329: unified (single-column) live view - the context prefix (before the
-  // anchor) once, then the old remainder as - rows and the new remainder as
-  // + rows, so the streaming preview matches the completed format at widths
-  // below the split/unified crossover. Sign prefixes render as text (no
-  // dedicated sign gutter in the live column - a best-effort live preview,
-  // replaced by the real <diff> at completion).
-  const unifiedRows = createMemo(() => {
-    const L = leftLines()
-    const R = rightLines()
-    const a = anchor()
-    const rows: { text: string; key: "ctx" | "del" | "add" }[] = []
-    for (let i = 0; i < a; i++) rows.push({ text: L[i] ?? "", key: "ctx" })
-    for (let i = a; i < L.length; i++) rows.push({ text: L[i]!, key: "del" })
-    for (let i = a; i < R.length; i++) rows.push({ text: R[i]!, key: "add" })
-    return rows
-  })
+  // 0329: unified (single-column) live view from the SAME ops - context
+  // lines once, removed as - rows, added as + rows, so it matches the
+  // completed unified diff. Sign prefixes render as text (no dedicated sign
+  // gutter in the live column - replaced by the real <diff> at completion).
+  const unifiedRows = createMemo(() => ops().rows)
   const unifiedText = createMemo(() =>
     unifiedRows()
       .map((r) => (r.key === "del" ? "- " : r.key === "add" ? "+ " : "  ") + r.text)
@@ -4703,12 +4743,12 @@ function LiveEditDiff(props: {
   const unifiedColors = createMemo(() => {
     const map = new Map<number, { gutter: any; content: any }>()
     unifiedRows().forEach((r, i) => {
-      if (r.key === "del") map.set(i, { gutter: theme.diffRemoved, content: theme.diffRemovedBg })
-      else if (r.key === "add") map.set(i, { gutter: theme.diffAdded, content: theme.diffAddedBg })
+      if (r.key === "del") map.set(i, { gutter: theme.diffRemovedLineNumberBg, content: theme.diffRemovedBg })
+      else if (r.key === "add") map.set(i, { gutter: theme.diffAddedLineNumberBg, content: theme.diffAddedBg })
     })
     return map
   })
-  const heightU = useFixedStreamHeight(unifiedText, { released: () => !props.streaming })
+  const heightU = useFixedStreamHeight(unifiedText, { released: () => !props.streaming})
   const refU = (el: any) => {
     heightU.ref(el)
   }

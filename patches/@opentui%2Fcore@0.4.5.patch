@@ -15,7 +15,7 @@ index 701d70d..adea59c 100644
          return;
        }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..2a02c23 100644
+index e5e5874..5bee047 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -116,7 +116,7 @@ index e5e5874..2a02c23 100644
 +        // leave it for the async highlight.
 +        try {
 +          const painted = this.textBuffer.getPlainText();
-+          if (painted !== this._content && this._content.startsWith(painted) && !this.isDestroyed) {
++          if (painted !== this._content && this._content.startsWith(painted) && !this.isDestroyed && !this._isHighlighting) {
 +            this.textBuffer.setText(this._content);
 +            this.setRenderedLineSources(undefined);
 +          }
@@ -301,7 +301,7 @@ index 4a2cb78..07da349 100644
    }
    async startHighlight() {
 diff --git a/index.bun.js b/index.bun.js
-index 815856b..94daebe 100644
+index 815856b..b4ad117 100644
 --- a/index.bun.js
 +++ b/index.bun.js
 @@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
@@ -320,7 +320,17 @@ index 815856b..94daebe 100644
    }
    add(child) {
      if (!this.target && "lineInfo" in child && "lineCount" in child && "virtualLineCount" in child && "scrollY" in child) {
-@@ -5347,6 +5356,7 @@ class DiffRenderable extends Renderable {
+@@ -4911,6 +4920,9 @@ class LineNumberRenderable extends Renderable {
+       this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
+     }
+   }
++  set lineColors(value) {
++    this.setLineColors(value);
++  }
+   setLineColors(lineColors) {
+     this._lineColorsGutter.clear();
+     this._lineColorsContent.clear();
+@@ -5347,6 +5359,7 @@ class DiffRenderable extends Renderable {
    _syntaxStyle;
    _wrapMode;
    _conceal;
@@ -328,7 +338,7 @@ index 815856b..94daebe 100644
    _selectionBg;
    _selectionFg;
    _treeSitterClient;
-@@ -5388,6 +5398,11 @@ class DiffRenderable extends Renderable {
+@@ -5388,6 +5401,11 @@ class DiffRenderable extends Renderable {
      this._syntaxStyle = options.syntaxStyle;
      this._wrapMode = options.wrapMode;
      this._conceal = options.conceal ?? false;
@@ -340,7 +350,7 @@ index 815856b..94daebe 100644
      this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined;
      this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined;
      this._treeSitterClient = options.treeSitterClient;
-@@ -5665,7 +5680,8 @@ class DiffRenderable extends Renderable {
+@@ -5665,7 +5683,8 @@ class DiffRenderable extends Renderable {
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -350,7 +360,7 @@ index 815856b..94daebe 100644
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -5778,7 +5794,7 @@ class DiffRenderable extends Renderable {
+@@ -5778,7 +5797,7 @@ class DiffRenderable extends Renderable {
      }
      const content = contentLines.join(`
  `);
@@ -359,7 +369,7 @@ index 815856b..94daebe 100644
      this.attachLineInfoListeners();
      this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set, "100%");
      if (this.rightSide && this.rightSideAdded) {
-@@ -5905,8 +5921,11 @@ class DiffRenderable extends Renderable {
+@@ -5905,8 +5924,11 @@ class DiffRenderable extends Renderable {
  `);
      const needsConsistentConcealing = (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype;
      const drawUnstyledText = !needsConsistentConcealing;
@@ -373,7 +383,7 @@ index 815856b..94daebe 100644
      this.attachLineInfoListeners();
      let finalLeftLines;
      let finalRightLines;
-@@ -6054,8 +6073,8 @@ class DiffRenderable extends Renderable {
+@@ -6054,8 +6076,8 @@ class DiffRenderable extends Renderable {
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -384,7 +394,7 @@ index 815856b..94daebe 100644
    }
    get diff() {
      return this._diff;
-@@ -6291,6 +6310,20 @@ class DiffRenderable extends Renderable {
+@@ -6291,6 +6313,20 @@ class DiffRenderable extends Renderable {
        this.rebuildView();
      }
    }
@@ -405,7 +415,17 @@ index 815856b..94daebe 100644
    get fg() {
      return this._fg;
    }
-@@ -11436,6 +11469,39 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -6314,6 +6350,9 @@ class DiffRenderable extends Renderable {
+     this.leftSide?.clearLineColor(line);
+     this.rightSide?.clearLineColor(line);
+   }
++  set lineColors(value) {
++    this.setLineColors(value);
++  }
+   setLineColors(lineColors) {
+     this.leftSide?.setLineColors(lineColors);
+     this.rightSide?.setLineColors(lineColors);
+@@ -11436,6 +11475,39 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -445,7 +465,7 @@ index 815856b..94daebe 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11690,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11624,6 +11696,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -453,7 +473,7 @@ index 815856b..94daebe 100644
          this.updateStickyState();
        }
      });
-@@ -11929,12 +11996,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11929,12 +12002,122 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -576,7 +596,7 @@ index 815856b..94daebe 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11950,7 +12127,31 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11950,7 +12133,31 @@ class ScrollBoxRenderable extends BoxRenderable {
            if (this._stickyScrollTop) {
              this.scrollTop = 0;
            } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
@@ -609,7 +629,7 @@ index 815856b..94daebe 100644
            }
            if (this._stickyScrollLeft) {
              this.scrollLeft = 0;
-@@ -11959,6 +12160,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11959,6 +12166,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -619,10 +639,20 @@ index 815856b..94daebe 100644
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/index.node.js b/index.node.js
-index 0ddf03b..54ba1ef 100644
+index 0ddf03b..34a3efa 100644
 --- a/index.node.js
 +++ b/index.node.js
-@@ -5664,7 +5664,8 @@ class DiffRenderable extends Renderable {
+@@ -4910,6 +4910,9 @@ class LineNumberRenderable extends Renderable {
+       this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
+     }
+   }
++  set lineColors(value) {
++    this.setLineColors(value);
++  }
+   setLineColors(lineColors) {
+     this._lineColorsGutter.clear();
+     this._lineColorsContent.clear();
+@@ -5664,7 +5667,8 @@ class DiffRenderable extends Renderable {
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -632,7 +662,7 @@ index 0ddf03b..54ba1ef 100644
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -6053,8 +6054,8 @@ class DiffRenderable extends Renderable {
+@@ -6053,8 +6057,8 @@ class DiffRenderable extends Renderable {
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -643,7 +673,17 @@ index 0ddf03b..54ba1ef 100644
    }
    get diff() {
      return this._diff;
-@@ -11435,6 +11436,36 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -6313,6 +6317,9 @@ class DiffRenderable extends Renderable {
+     this.leftSide?.clearLineColor(line);
+     this.rightSide?.clearLineColor(line);
+   }
++  set lineColors(value) {
++    this.setLineColors(value);
++  }
+   setLineColors(lineColors) {
+     this.leftSide?.setLineColors(lineColors);
+     this.rightSide?.setLineColors(lineColors);
+@@ -11435,6 +11442,36 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -680,7 +720,7 @@ index 0ddf03b..54ba1ef 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11654,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11623,6 +11660,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -688,7 +728,7 @@ index 0ddf03b..54ba1ef 100644
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11960,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11928,12 +11966,122 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -811,7 +851,7 @@ index 0ddf03b..54ba1ef 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12100,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11958,6 +12106,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
