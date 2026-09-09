@@ -3721,15 +3721,30 @@ function heredocSegments(text: string): StreamSegmentData[] | undefined {
       // packages") cannot false-positive; the optional comment/label prefix
       // covers the "# file: foo.py" / "path = foo.py" shapes. A shebang
       // line has no extension token - sniffFiletype handles it below.
-      const m = /^(?:#\s*(?:file(?:name)?|path|source)?\s*[=:]?\s*|(?:file(?:name)?|path|source)\s*[=:]\s*|#!\s*)?([A-Za-z0-9_./+\-]+\.(?:py|js|mjs|cjs|ts|tsx|mts|sh|bash|zsh|json|ya?ml|md|rb|go|rs|sql|toml|ini|pl|pl6|pm|php|c|cpp|h|hpp|java|kt|swift|hs|lua|css|scss|sass|xml|html|vue|svelte|astro|zig|tf|hcl|nix|typ|bat|ps1|psm1|diff|patch|tex|bib|erl|ex|exs|dart|groovy|gradle|scala|clj|cljs|edn|jl))(?:\s|$|#|['\"]|,|:)/i.exec(first)
-      return m ? coalesceFiletype(filetype(m[1]!)) : undefined
+      const firstM = /^(?:#\s*(?:file(?:name)?|path|source)?\s*[=:]?\s*|(?:file(?:name)?|path|source)\s*[=:]\s*|#!\s*)?([A-Za-z0-9_./+\-]+\.(?:py|js|mjs|cjs|ts|tsx|mts|sh|bash|zsh|json|ya?ml|md|rb|go|rs|sql|toml|ini|pl|pl6|pm|php|c|cpp|h|hpp|java|kt|swift|hs|lua|css|scss|sass|xml|html|vue|svelte|astro|zig|tf|hcl|nix|typ|bat|ps1|psm1|diff|patch|tex|bib|erl|ex|exs|dart|groovy|gradle|scala|clj|cljs|edn|jl))(?:\s|$|#|['\"]|,|:)/i.exec(first)
+      // 0326.3: ALSO a QUOTED filename anywhere on the body's first line
+      // (p="bugs/file.md"; doc = read("README.md"); open("config.json")) -
+      // the model puts the write target on the first line as an argument
+      // string when the opener line carries no redirect target. This is the
+      // "we know what it's writing" case: identify THAT format and latch it,
+      // favored over the interpreter rule below (a `python3 - <<'PYEOF'`
+      // heredoc whose body writes a .md renders as markdown - NOT as a
+      // mis-parsed python string, whose unterminated ''' streamed white and
+      // flipped green block-by-block).
+      const quotedM = /(["'])([A-Za-z0-9_./+\-]+\.(?:py|js|mjs|cjs|ts|tsx|mts|sh|bash|zsh|json|ya?ml|md|rb|go|rs|sql|toml|ini|pl|pl6|pm|php|c|cpp|h|hpp|java|kt|swift|hs|lua|css|scss|sass|xml|html|vue|svelte|astro|zig|tf|hcl|nix|typ|bat|ps1|psm1|diff|patch|tex|bib|erl|ex|exs|dart|groovy|gradle|scala|clj|cljs|edn|jl))\1/i.exec(first)
+      const m = firstM ?? quotedM
+      return m ? coalesceFiletype(filetype(m[2] ?? m[1]!)) : undefined
     })()
     return (
       HEREDOC_LANG[op.delim.toUpperCase()] ??
       EVAL_LANG[op.delim] ??
       (targetFt && targetFt !== "none" ? targetFt : undefined) ??
-      (interp ? EVAL_LANG[interp[1]!] : undefined) ??
+      // 0326.3: the first line's filename (bare or quoted) is the CONTENT
+      // being written - it beats the interpreter rule so the block latches
+      // the target format (`.md` -> markdown) instead of the runtime that
+      // happens to feed it.
       (bodyFt && bodyFt !== "none" ? bodyFt : undefined) ??
+      (interp ? EVAL_LANG[interp[1]!] : undefined) ??
       sniffFiletype(body, 0) ??
       "bash"
     )
