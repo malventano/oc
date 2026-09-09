@@ -1,9 +1,6 @@
 diff --git a/.bun-tag-25a687ae5c8b9d02 b/.bun-tag-25a687ae5c8b9d02
 new file mode 100644
 index 0000000..e69de29
-diff --git a/.bun-tag-73a3ab43403b7233 b/.bun-tag-73a3ab43403b7233
-new file mode 100644
-index 0000000..e69de29
 diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
 index 701d70d..adea59c 100644
 --- a/chunk-bun-t2myhmwd.js
@@ -806,7 +803,7 @@ index 0ddf03b..54ba1ef 100644
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/parser.worker.js b/parser.worker.js
-index 1b7549e..969fea1 100644
+index 1b7549e..c115508 100644
 --- a/parser.worker.js
 +++ b/parser.worker.js
 @@ -3957,6 +3957,32 @@ class ParserWorker {
@@ -890,7 +887,7 @@ index 1b7549e..969fea1 100644
      if (!reusableState) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4330,7 +4377,81 @@ class ParserWorker {
+@@ -4330,7 +4377,75 @@ class ParserWorker {
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
@@ -924,13 +921,7 @@ index 1b7549e..969fea1 100644
 +    let queryStart = 0;
 +    let queryEnd = 0;
 +    const timings = {};
-+    // 0322 (reliability refinement): the incremental tree reuse stays ON for
-+    // code/bash but is DISABLED for markdown (the reasoning / large markdown
-+    // block class) - 0322o's cross-element abort / output-stopping family, and
-+    // the stale-apply truncation seen on a long reasoning turn (the cut list
-+    // items). The markdown blocks reparse in full per update: the refresh
-+    // climbs (was 0322o's accepted trade) but no truncated/stale apply.
-+    if (cached && filetype !== "markdown" && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
++    if (cached && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
 +      // Append-only streaming: the appended text is the only changed region
 +      // (the incremental parse alters just the tail), so the query is scoped to
 +      // it directly - no getChangedRanges walk, which is O(n) in tree-sitter.
@@ -973,7 +964,7 @@ index 1b7549e..969fea1 100644
      if (!tree) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4341,30 +4462,135 @@ class ParserWorker {
+@@ -4341,30 +4456,135 @@ class ParserWorker {
        return;
      }
      try {
@@ -1117,7 +1108,7 @@ index 1b7549e..969fea1 100644
      }
    }
    async updateDataPath(dataPath) {
-@@ -4391,6 +4617,19 @@ class ParserWorker {
+@@ -4391,6 +4611,19 @@ class ParserWorker {
        this.filetypeParserPromises.clear();
        this.reusableParsers.clear();
        this.reusableParserPromises.clear();
@@ -1137,7 +1128,7 @@ index 1b7549e..969fea1 100644
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
-@@ -4509,7 +4748,56 @@ if (isWorkerRuntime) {
+@@ -4509,7 +4742,56 @@ if (isWorkerRuntime) {
            });
            break;
          case "ONESHOT_HIGHLIGHT":
