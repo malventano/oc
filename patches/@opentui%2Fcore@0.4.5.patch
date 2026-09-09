@@ -1,6 +1,3 @@
-diff --git a/.bun-tag-25a687ae5c8b9d02 b/.bun-tag-25a687ae5c8b9d02
-new file mode 100644
-index 0000000..e69de29
 diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
 index 701d70d..adea59c 100644
 --- a/chunk-bun-t2myhmwd.js
@@ -15,7 +12,7 @@ index 701d70d..adea59c 100644
          return;
        }
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..6d4c1e9 100644
+index e5e5874..005dd00 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
 @@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
@@ -164,8 +161,7 @@ index e5e5874..6d4c1e9 100644
        this._hadInitialContent = true;
      }
      this._isHighlighting = true;
-@@ -3385,6 +3443,17 @@ class CodeRenderable extends TextBufferRenderable {
-           return;
+@@ -3386,3 +3444,14 @@ class CodeRenderable extends TextBufferRenderable {
          const styledText = new StyledText(chunks);
          this.textBuffer.setStyledText(styledText);
 +        {
@@ -180,8 +176,6 @@ index e5e5874..6d4c1e9 100644
 +          ((globalThis).__ocPartApplyEvents ??= []).push({ cl: content.length, sl: __sl, cc: content.slice(0, 32) });
 +        }
          this.setRenderedLineSources(renderedLineSources);
-       } else {
-         this.textBuffer.setText(content);
 @@ -3393,6 +3462,15 @@ class CodeRenderable extends TextBufferRenderable {
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
@@ -803,43 +797,10 @@ index 0ddf03b..54ba1ef 100644
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/parser.worker.js b/parser.worker.js
-index 1b7549e..c115508 100644
+index 1b7549e..2074aff 100644
 --- a/parser.worker.js
 +++ b/parser.worker.js
-@@ -3957,6 +3957,32 @@ class ParserWorker {
-     };
-     return reusableState;
-   }
-+  // 0326 (0322s): per-ELEMENT parser. 0322n's Mode A was concurrent use of the
-+  // ONE shared per-filetype parser (not reentrant - _ts_tree_delete crash +
-+  // poison). Giving each streaming element its OWN parser removes the sharing
-+  // entirely - different elements highlight CONCURRENTLY on distinct parsers
-+  // (no queue-storm - the global chain's 70-85ms worst case on many elements)
-+  // while same-element highlights stay ordered on the element's own chain.
-+  // Free the parser when the element's one-shot cache entry is evicted/dropped.
-+  async getElementParser(filetype, cacheKey) {
-+    const canonicalFiletype = this.resolveCanonicalFiletype(filetype);
-+    if (this.elementParsers?.has(cacheKey)) {
-+      return this.elementParsers.get(cacheKey);
-+    }
-+    const state = await this.createReusableParser(canonicalFiletype);
-+    if (state) {
-+      if (!this.elementParsers) this.elementParsers = new Map();
-+      this.elementParsers.set(cacheKey, state);
-+    }
-+    return state;
-+  }
-+  dropElementParser(cacheKey) {
-+    if (this.elementParsers?.has(cacheKey)) {
-+      const state = this.elementParsers.get(cacheKey);
-+      if (state?.parser) state.parser.delete();
-+      this.elementParsers.delete(cacheKey);
-+    }
-+  }
-   async handleInitializeParser(bufferId, version, content, filetype, messageId) {
-     const filetypeParser = await this.resolveFiletypeParser(filetype);
-     if (!filetypeParser) {
-@@ -4019,7 +4045,7 @@ class ParserWorker {
+@@ -4019,7 +4019,7 @@ class ParserWorker {
    getNodeText(node, content) {
      return content.substring(node.startIndex, node.endIndex);
    }
@@ -848,7 +809,7 @@ index 1b7549e..c115508 100644
      const injectionMatches = [];
      const injectionRanges = new Map;
      if (!parserState.queries.injections) {
-@@ -4030,6 +4056,14 @@ class ParserWorker {
+@@ -4030,6 +4030,14 @@ class ParserWorker {
      const languageGroups = new Map;
      const injectionMapping = parserState.injectionMapping;
      for (const capture of injectionCaptures) {
@@ -863,65 +824,33 @@ index 1b7549e..c115508 100644
        const captureName = capture.name;
        if (captureName === "injection.content" || captureName.includes("injection")) {
          const nodeType = capture.node.type;
-@@ -4317,8 +4351,21 @@ class ParserWorker {
-     parserState.parser.delete();
+@@ -4318,6 +4326,7 @@ class ParserWorker {
      this.bufferParsers.delete(bufferId);
    }
--  async handleOneShotHighlight(content, filetype, messageId) {
--    const reusableState = await this.getReusableParser(filetype);
-+  hlDbg(cacheKey, phase, extra) {
-+    try {
-+      postWorkerMessage({
-+        type: "HL_DEBUG",
-+        cacheKey: cacheKey ?? null,
-+        phase,
-+        extra: extra ?? undefined,
-+        t: Date.now()
-+      });
-+    } catch {}
-+  }
-+  async handleOneShotHighlight(content, filetype, messageId, cacheKey) {
+   async handleOneShotHighlight(content, filetype, messageId) {
 +    const total0 = performance.now();
-+    const reusableState = cacheKey ? await this.getElementParser(filetype, cacheKey) : await this.getReusableParser(filetype);
-+    this.hlDbg(cacheKey, "parser", { len: (content || "").length });
+     const reusableState = await this.getReusableParser(filetype);
      if (!reusableState) {
        postWorkerMessage({
-         type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4330,7 +4377,75 @@ class ParserWorker {
+@@ -4330,7 +4339,56 @@ class ParserWorker {
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
 -    const tree = reusableState.parser.parse(parseContent);
-+    // 0326 (0322r): the one-shot cache is keyed PER ELEMENT (cacheKey). 0322o's
-+    // Mode B came from the single-slot filetype key handing one element's tree
-+    // to a different element sharing a prefix - per-element keys make
-+    // append-only incremental reuse SAFE again (O(delta) parse + scoped
-+    // injections = the 0308 flat refresh). Elements without a cacheKey get no
-+    // incremental (fresh parse, correct - the 0322o behavior for those).
-+    let cached;
-+    let cacheRes = { key: !!cacheKey, found: false, mode: "nocache" };
-+    if (cacheKey && this.oneShotParseCache) {
-+      const entry = this.oneShotParseCache.get(cacheKey);
-+      if (entry) {
-+        if (entry.filetype === filetype) {
-+          cached = entry;
-+          cacheRes = { key: true, found: true, mode: "same" };
-+        } else {
-+          if (entry.tree) entry.tree.delete();
-+          this.oneShotParseCache.delete(cacheKey);
-+          this.dropElementParser(cacheKey);
-+          cacheRes = { key: true, found: false, mode: "filetype" };
-+        }
-+      } else {
-+        cacheRes = { key: true, found: false, mode: "miss" };
-+      }
-+    }
++    const cached = this.oneShotParseCache && this.oneShotParseCache.filetype === filetype ? this.oneShotParseCache : undefined;
 +    let tree;
 +    let incremental = false;
 +    let queryStart = 0;
 +    let queryEnd = 0;
 +    const timings = {};
-+    if (cached && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
++    // 0322o: the incremental tree-reuse branch is DISABLED (0308) - the shared
++    // one-shot cache is keyed by filetype only, so a DIFFERENT element's
++    // document can pass the startsWith prefix check and reuse another
++    // element's tree; tree.edit() + parse(content, foreignTree) aborts the
++    // WASM parser ("RuntimeError: Aborted()" - live 2026-09-08). Always parse
++    // fresh; the client's unchanged-content dedupe (0307) still skips
++    // identical content, so the lost incremental win is minor.
++    if (false && cached && parseContent.length > cached.content.length && parseContent.startsWith(cached.content)) {
 +      // Append-only streaming: the appended text is the only changed region
 +      // (the incremental parse alters just the tail), so the query is scoped to
 +      // it directly - no getChangedRanges walk, which is O(n) in tree-sitter.
@@ -939,7 +868,6 @@ index 1b7549e..c115508 100644
 +          column: newlines === 0 ? endPos.column + insert.length : insert.length - insert.lastIndexOf("\n") - 1
 +        }
 +      });
-+      this.hlDbg(cacheKey, "parse-inc", { len: parseContent.length });
 +      const t0 = performance.now();
 +      tree = reusableState.parser.parse(parseContent, cached.tree);
 +      timings.parse = performance.now() - t0;
@@ -954,9 +882,7 @@ index 1b7549e..c115508 100644
 +      // again so subsequent appends get the incremental path.
 +      if (cached) {
 +        cached.tree.delete();
-+        if (cacheKey) this.oneShotParseCache?.delete(cacheKey);
 +      }
-+      this.hlDbg(cacheKey, "parse-full", { len: parseContent.length });
 +      const t0 = performance.now();
 +      tree = reusableState.parser.parse(parseContent);
 +      timings.parse = performance.now() - t0;
@@ -964,14 +890,13 @@ index 1b7549e..c115508 100644
      if (!tree) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4341,30 +4456,135 @@ class ParserWorker {
+@@ -4341,30 +4392,80 @@ class ParserWorker {
        return;
      }
      try {
 -      const matches = reusableState.filetypeParser.queries.highlights.captures(tree.rootNode);
 +      const queries = reusableState.filetypeParser.queries;
 +      let matches;
-+      this.hlDbg(cacheKey, "query", { len: parseContent.length });
 +      let t0 = performance.now();
 +      // 0309: the binding's RANGED captures({startIndex, endIndex}) truncates
 +      // at ~50% of the tree (probed: matchedEnd 100/191 vs fullEnd 191 on the
@@ -998,7 +923,6 @@ index 1b7549e..c115508 100644
          };
 -        const injectionResult = await this.processInjections(parserState);
 -        matches.push(...injectionResult.captures);
-+        this.hlDbg(cacheKey, "inject", { len: parseContent.length });
 +        const injectionResult = await this.processInjections(
 +          parserState,
 +          incremental ? { start: queryStart, end: queryEnd } : undefined,
@@ -1008,131 +932,66 @@ index 1b7549e..c115508 100644
          injectionRanges = injectionResult.injectionRanges;
        }
 -      const highlights = this.getSimpleHighlights(matches, injectionRanges);
-+      this.hlDbg(cacheKey, "simple", { len: parseContent.length });
 +      t0 = performance.now();
 +      const fresh = this.getSimpleHighlights([...matches, ...injectionMatches], injectionRanges);
-+      // 0322t REVERTED (2026-09-08): the delta protocol regressed restored-
-+      // content rendering (short/empty buffers on rehydrated reasoning parts)
-+      // and re-triggered the 0322g-class worker stall on undo+submit (no JS
-+      // error - the hang class; needs the hang root-caused first). Back to the
-+      // full-list 0309 key-dedupe merge (O(n) - the known residual slope).
 +      let highlights;
 +      if (incremental && cached && cached.highlights) {
-+        // 0326 (0322w): corrected 3-way merge. The key-dedupe union (0309) held
-+        // BOTH the cached and fresh versions of the same region's spans - their
-+        // boundaries shift slightly between incremental steps, so the paint
-+        // toggled (the streaming color jitter). Take the PREFIX from the cached
-+        // list verbatim (stable - the applied version, never re-derived from the
-+        // incremental tree) and the CHANGE REGION from the fresh parse (the only
-+        // part the append changed - newly parsed = correct). Key-dedupe ONLY the
-+        // region so overlapping stale/new spans collapse to one version. Also
-+        // O(delta) instead of O(n) - the 0309 merge was the climb.
-+        const prefix = [];
-+        const region = [];
-+        for (const h of cached.highlights) {
-+          if (h[1] < queryStart) prefix.push(h);
-+          else region.push(h);
-+        }
++        // Key-dedupe merge: fresh captures overwrite cached ones by exact
++        // [start, end, name, meta] key. The three-way slice was WRONG - the
++        // cached list is sorted by START, and a binary search on the END
++        // index over it is invalid, so growing single-span captures (bash
++        // heredoc_body @string etc.) intermittently left the STALE shorter
++        // span in and dropped the tail - the applied StyledText came out
++        // short (apply.pct 36-58%), leaving the bottom rows white
++        // (2026-09-08, caught live via the apply/paint probes). O(n log n)
++        // is fine - measured ~0.1-0.3ms at 14-32K.
 +        const merged = new Map;
-+        for (const h of region) {
++        for (const h of cached.highlights) {
 +          merged.set(`${h[0]}:${h[1]}:${h[2]}:${JSON.stringify(h[3])}`, h);
 +        }
 +        for (const h of fresh) {
 +          merged.set(`${h[0]}:${h[1]}:${h[2]}:${JSON.stringify(h[3])}`, h);
 +        }
-+        highlights = prefix.concat([...merged.values()].sort((a, b) => a[0] - b[0]));
-+        // 0326 (0322x): merge-stats diagnostic - prefix/region/fresh sizes + span
-+        // extent, so the streaming color-drop trace shows what the merge retained.
-+        try {
-+          let mn = 0, mx = 0;
-+          for (const h of highlights) { if (h[1] > mx) mx = h[1]; }
-+          this.hlDbg(cacheKey, "merge", { cl: parseContent.length, n: highlights.length, prefix: prefix.length, region: region.length, fresh: fresh.length, mn: highlights.length ? Math.min(...highlights.map((h) => h[0])) : 0, mx });
-+        } catch {}
++        highlights = Array.from(merged.values()).sort((a, b) => a[0] - b[0]);
 +      } else {
 +        highlights = fresh;
 +      }
 +      timings.merge = performance.now() - t0;
 +      timings.total = performance.now() - total0;
 +      timings.count = highlights.length;
-+      // 0326 (0322t DELTA - the 2nd-round 8ms, element-side): the incremental
-+      // append sends ONLY the change-region captures (end >= queryStart) as
-+      // `delta` + `deltaMode` + `changedStart`; the CodeRenderable merges them
-+      // into its _lastHighlights (key-dedupe). Cold/full responses send the
-+      // authoritative full `highlights`. (The 0322t revert was for the RESTORED-
-+      // content regression + the delta-triggered stall - the client merge stays
-+      // element-side where the baseline is element-scoped.)
-+      let delta = null;
-+      let sendHighlights = highlights;
-+      let deltaMode = false;
-+      let changedStart = 0;
-+      if (incremental && cached?.highlights?.length) {
-+        deltaMode = true;
-+        changedStart = queryStart;
-+        delta = [];
-+        for (const h of highlights) {
-+          if (h[1] >= queryStart) delta.push(h);
-+        }
-+        sendHighlights = [];
-+      }
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
          messageId,
          hasParser: true,
 -        highlights
-+        highlights: sendHighlights,
++        highlights,
 +        incremental,
-+        timings,
-+        deltaMode,
-+        delta,
-+        changedStart,
-+        d: { ...cacheRes, len: parseContent.length, cachedLen: cached?.content.length ?? 0, pfx: cached ? parseContent.startsWith(cached.content) : undefined }
++        timings
        });
 +      // Both paths cache the tree + captures for the next append. On the
 +      // incremental path the parse hands subtree ownership to the new tree, so
 +      // the previous reference is dropped (never deleted - that would
 +      // double-free shared subtrees); on the full path the old tree was freed.
-+      if (cacheKey) {
-+        if (!this.oneShotParseCache) this.oneShotParseCache = new Map();
-+        this.oneShotParseCache.set(cacheKey, { filetype, content: parseContent, tree, highlights: fresh });
-+        while (this.oneShotParseCache.size > 12) {
-+          const oldestKey = this.oneShotParseCache.keys().next().value;
-+          const oldest = this.oneShotParseCache.get(oldestKey);
-+          if (oldest?.tree) oldest.tree.delete();
-+          this.oneShotParseCache.delete(oldestKey);
-+          this.dropElementParser(oldestKey);
-+        }
-+      }
++      this.oneShotParseCache = { filetype, content: parseContent, tree, highlights };
      } finally {
 -      tree.delete();
 +      // The tree is always retained in the cache - never delete it here.
      }
    }
    async updateDataPath(dataPath) {
-@@ -4391,6 +4611,19 @@ class ParserWorker {
+@@ -4391,6 +4492,10 @@ class ParserWorker {
        this.filetypeParserPromises.clear();
        this.reusableParsers.clear();
        this.reusableParserPromises.clear();
-+      if (this.elementParsers) {
-+        for (const state of this.elementParsers.values()) {
-+          if (state?.parser) state.parser.delete();
-+        }
-+        this.elementParsers = undefined;
-+      }
-+      this._elemChains = undefined;
 +      if (this.oneShotParseCache) {
-+        for (const entry of this.oneShotParseCache.values()) {
-+          if (entry?.tree) entry.tree.delete();
-+        }
++        this.oneShotParseCache.tree.delete();
 +        this.oneShotParseCache = undefined;
 +      }
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
-@@ -4509,7 +4742,56 @@ if (isWorkerRuntime) {
-           });
-           break;
+@@ -4511,3 +4618,17 @@
          case "ONESHOT_HIGHLIGHT":
--          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId);
 +          // 0322n: the shared tree-sitter Parser + oneShotParseCache are NOT
 +          // reentrant-safe: multiple async highlight handlers overlap (the
 +          // reasoning + answer + tool-stream code elements all highlight on the
@@ -1144,48 +1003,12 @@ index 1b7549e..c115508 100644
 +          // collide; undo/redo + consecutive prompts collide instantly).
 +          // Serialize every highlight so the parser is used by exactly one
 +          // handler at a time.
-+          // 0326 (0322s): PER-ELEMENT chain + parser. Same-element highlights
-+          // wait on the element's own chain (one parser is not reentrant - the
-+          // element fires a highlight per render). DIFFERENT elements run on
-+          // their own parsers CONCURRENTLY - no global queue-storm (the
-+          // _hlChain's 70-85ms worst case with ~20 elements re-highlighting,
-+          // live 2026-09-08). CacheKey-less callers keep the shared per-
-+          // filetype parser + the global chain (0322n behavior, safe).
-+          // Poison-proof: a rejecting handler must not skip every later .then
-+          // (the 0322g-class "stops answering" - seen live when the incremental
-+          // reintroduced error sources). The error is reported (the client
-+          // falls back to raw text) and the chain lives on.
-+          const run = (handler) =>
-+            Promise.resolve()
-+              .then(handler)
-+              .catch((error) => {
-+                try {
-+                  postWorkerMessage({
-+                    type: "ONESHOT_HIGHLIGHT_ERROR",
-+                    messageId: message.messageId,
-+                    error: error instanceof Error ? (error.stack || error.message) : String(error)
-+                  });
-+                } catch {}
-+              });
-+          if (message.cacheKey) {
-+            if (!worker._elemChains) worker._elemChains = new Map();
-+            const prev = worker._elemChains.get(message.cacheKey) ?? Promise.resolve();
-+            const next = prev.then(() => run(() => worker.handleOneShotHighlight(message.content, message.filetype, message.messageId, message.cacheKey)));
-+            worker._elemChains.set(message.cacheKey, next);
-+            try {
-+              await next;
-+            } finally {
-+              if (worker._elemChains.get(message.cacheKey) === next) worker._elemChains.delete(message.cacheKey);
-+            }
-+          } else {
-+            worker._hlChain = (worker._hlChain ?? Promise.resolve())
-+              .then(() => run(() => worker.handleOneShotHighlight(message.content, message.filetype, message.messageId, undefined)))
-+              .catch(() => {});
-+            await worker._hlChain;
-+          }
++          worker._hlChain = (worker._hlChain ?? Promise.resolve()).then(() =>
++            worker.handleOneShotHighlight(message.content, message.filetype, message.messageId),
++          );
+-          await worker.handleOneShotHighlight(message.content, message.filetype, message.messageId);
++          await worker._hlChain;
            break;
-         case "UPDATE_DATA_PATH":
-           try {
 diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
 index 62ce331..1e922c8 100644
 --- a/renderables/Diff.d.ts
