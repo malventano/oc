@@ -16,7 +16,7 @@ Requires only `bun`:
 - `--skip-embed-web-ui` is required: v1.18.5+ app Rollup cannot resolve `@opencode-ai/client/promise` (upstream dep issue, not ours); plain `bun run build` fails on it.
 - **Changing an `@opentui` patch does not re-patch an existing install.** Bun keys the patched store on the package *version*, not the patch *content*, so after updating an opentui patch you must `rm -rf node_modules/.bun/@opentui+core* node_modules/.bun/@opentui+solid* node_modules/@opentui/core node_modules/@opentui/solid && bun install` to force re-apply. Otherwise an old checkout keeps its old store while a fresh clone gets the new one - the classic "works here, fails on a fresh clone" split (2026-09-09 incident: stale hunk offsets mangle `parser.worker.js`, see bugs/BUG_OPENTUI_PATCH_OFFSETS.md).
 - **Committed `@opentui` patches must have ZERO-offset hunks.** Bun applies hunks at the literal declared line numbers, while `git apply` context-matches and *tolerates* offsets (reporting `Hunk #N succeeded at M (offset K)`) - so `git apply --check` passing does NOT mean bun will produce a valid file. Verify with `git apply -v` (fail on any `offset`/`fuzz` line) and `node --check node_modules/.bun/@opentui+core@0.4.5*/node_modules/@opentui/core/parser.worker.js` after `bun install`.
-- Keep the `-oc` suffix in `OPENCODE_VERSION`: the autoupdate-disable patch (and `oc upgrade` message) key off it. Any `<tag>-oc` version works; `1.18.27-oc` matches this base (the build in this repo is `1.18.27-oc-0327`).
+- Keep the `-oc` suffix in `OPENCODE_VERSION`: the autoupdate-disable patch (and `oc upgrade` message) key off it. Any `<tag>-oc` version works; `1.18.27-oc` matches this base (the build in this repo is `1.18.27-oc-0335`).
 - `OPENCODE_VERSION` also pins the channel to `latest`, which keeps the session DB at the standard `~/.local/share/opencode/opencode.db` (shared with stock opencode). Building WITHOUT it puts the branch name in the channel and the DB becomes `opencode-<branch>.db` (e.g. `opencode-main.db`): a separate empty database, so no existing sessions appear and new ones land in the wrong file.
 - The built binary is `dist/opencode-linux-x64/bin/oc` (named `oc`, unlike upstream's `opencode`).
 
@@ -42,12 +42,11 @@ Requires only `bun`:
 
 
 
-### Editing (hashline anchors)
-- **Content-anchored edits**: every op references lines by `LINE#ID` anchors validated against the file's live content; stale or fabricated anchors are rejected fail-closed with retry-with anchors, so edits are never applied blind
-- **Atomic batches**: multiple ops in one call apply against a single snapshot, so inserts/deletes never shift anchors mid-call; `cut`/`paste` registers move content across sections and files
-- **Autocorrect**: copied `N#ID:` / `+N#ID:` / `>>>` prefixes strip per line; `text: []` / `""` means deletion (no blank-line artifacts); trailing empty strings are dropped
-- **Echo-reject**: `set_line` / `replace_lines` refuse text that repeats the anchor line's own content (fail-closed with guidance); op-shape mistakes get corrective hints (every op requires its `type`)
-- Annotated diffs: applied lines carry their new refs (`+3#AB:content`) so the next edit can chain without a re-read
+### Editing (flat-JSON edit tool)
+- **Upstream flat-JSON method (0323)**: `{filePath, oldString, newString, replaceAll}` exact string replacement. The hashline (0026-0124) and fence (0124-0322) grammars are retired - they drove 22-63% failure/adherence classes and a V4A contamination collapse (endpoint-measured; docs/EDIT_TOOL_EVALUATION_20260908.md)
+- **Matching ladder (0131, 0301)**: byte-exact primary; tolerance tiers (line-trimmed, whitespace/indent/escape-normalized, block-anchor, context-aware) fall back; non-byte-exact applies echo the matched tier + line, and NEW indentation rebases onto the file region
+- **Fail-loud, fail-cheap**: unique `oldString` required (multiple matches are named), disproportionate matches refused, empty `oldString` rejected on existing files, no partial writes
+- Read-before-edit enforced; minimal-anchor + region-read guidance in the tool description (0335)
 
 ### Built-in tooling (ships in the binary)
 - **Time context (0027, 0119)**: every user message and tool output carries a UTC `<system-reminder>` stamp (ISO 8601, second precision, trailing Z - TZ-invariant since 0119); the env block declares the user's local date + offset (`Today's date: Wed Aug 13 2026 (America/Kentucky/Monticello, UTC-04:00)`, epoch-delta'd on change); sessions-browse/skill-metadata emit UTC Z seconds
