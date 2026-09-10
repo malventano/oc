@@ -49,7 +49,7 @@ export type ReconstructedSkill = {
   location: string | null
 }
 
-/** Canonical body extraction: the region between the "# Skill:" header and the base-dir note in the tool output. Returns null when the load structure is missing - the part is not a genuine skill load (e.g. its output was squashed by shrink [formerly squash-output], leaving only a summary; treating that as the baseline poisoned the reconstruction and emitted a bogus drift, see oc 0256). */
+/** Canonical body extraction: the region between the "# Skill:" header and the base-dir note in the tool output. Returns null when the load structure is missing - the part is not a genuine skill load (e.g. its output was shrunk [the shrink tool, formerly titled squash-output], leaving only a summary; treating that as the baseline poisoned the reconstruction and emitted a bogus drift, see oc 0256). */
 export function extractSkillBody(output: string): string | null {
   const lines = output.split("\n")
   const start = lines.findIndex((l) => l.startsWith(SKILL_HEADER))

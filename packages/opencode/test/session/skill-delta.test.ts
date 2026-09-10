@@ -111,7 +111,7 @@ describe("skill-delta.extractSkillBody", () => {
     expect(extractSkillBody(output)).toBe("Use lookup before mutate.\n\nPrefer search.")
   })
 
-  test("returns null when the load structure is missing (oc 0256: a squashed load has no markers)", () => {
+  test("returns null when the load structure is missing (oc 0256: a shrunk load has no markers)", () => {
     expect(extractSkillBody("just some text\n")).toBeNull()
     expect(extractSkillBody("writing-style skill + PCPER_ARCHIVE_WORKFLOW.md loaded: full extraction procedure.\n\n<system-reminder>2026-09-05T16:13:54Z</system-reminder>")).toBeNull()
   })
@@ -222,13 +222,13 @@ describe("skill-delta.integrateSkillBodies", () => {
     expect(out.get("mcp-docs")).toEqual(reconstructed(null, "v2 fresh"))
   })
 
-  test("a squashed load does not reset the baseline (oc 0256)", () => {
+  test("a shrunk load does not reset the baseline (oc 0256)", () => {
     // The skill load's output was rewritten by shrink to a summary:
     // no "# Skill:" header, no base-dir marker. It must not clobber the
     // prior genuine baseline - the summary would become the "old" side of a
     // bogus drift reminder.
-    const squashed = {
-      id: "p-squashed-load",
+    const shrunk = {
+      id: "p-shrunk-load",
       sessionID: "s",
       messageID: "m",
       type: "tool",
@@ -242,7 +242,7 @@ describe("skill-delta.integrateSkillBodies", () => {
     const out = integrateSkillBodies([
       msg([loadPart("mcp-docs", "v1")]),
       msg([deltaPart("mcp-docs", "v2")]),
-      msg([squashed]),
+      msg([shrunk]),
     ])
     expect(out.get("mcp-docs")).toEqual(reconstructed("v2", "v1"))
   })

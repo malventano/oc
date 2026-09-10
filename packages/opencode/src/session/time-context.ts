@@ -29,24 +29,24 @@ export function stampToolOutput(output: { output?: string; [key: string]: unknow
   output.output += `\n\n<system-reminder>${isoZ(Date.now())}</system-reminder>`
 }
 
-/** Threshold for the squash hint: ~6.4K tokens at ~4 chars/token - the
+/** Threshold for the shrink hint: ~6.4K tokens at ~4 chars/token - the
  * truncation ceiling (50 KiB, truncate.ts) caps in-chain outputs, so the
  * hint targets the top of that band (~0.6% of a 1M-token window). */
-export const SQUASH_HINT_MIN_CHARS = 25_600
+export const SHRINK_HINT_MIN_CHARS = 25_600
 
 /**
 * Append a shrink hint reminder to very large tool outputs that lack
 * one. The hint tag is dropped again by shrink's extractOutput when
 * the output is shrunk, so it never outlives the output it describes.
 */
-export function stampSquashHint(output: { output?: string; [key: string]: unknown }): void {
+export function stampShrinkHint(output: { output?: string; [key: string]: unknown }): void {
   if (typeof output.output !== "string") return
-  // Skip only an existing squash hint, not other reminders: stampToolOutput
+  // Skip only an existing shrink hint, not other reminders: stampToolOutput
   // runs first and appends the timestamp, so a generic reminder check would
   // make the hint never fire on any tool output (0065 regression, fixed 0068).
   if (output.output.includes("Very large tool output")) return
   const len = output.output.length
-  if (len < SQUASH_HINT_MIN_CHARS) return
+  if (len < SHRINK_HINT_MIN_CHARS) return
   const tokens = Math.round(len / 4)
   output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call shrink NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it.</system-reminder>`
 }
