@@ -4,7 +4,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Provider } from "@/provider/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { Context, Effect, Layer } from "effect"
+import { Context, Deferred, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
@@ -14,6 +14,8 @@ import type { LLMClientService } from "@opencode-ai/llm/route"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { ProviderTransform } from "@/provider/transform"
 import { RDT } from "@/provider/rdt"
+import { ProviderError } from "@/provider/error"
+import { RETRY_MAX_DELAY_UNREACHABLE } from "./retry"
 import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
@@ -398,11 +400,54 @@ const live: Layer.Layer<
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
             const state = LLMAISDK.adapterState()
+            // Idle watchdog (2026-09-10): a dead endpoint that HANGS (keep-alive
+            // socket to a dying server, no error, no events) never surfaces an
+            // error, so the retry policy (which reacts to errors) never fires and
+            // the step hangs forever with active tool calls stuck "running".
+            // Reuse the existing unreachable-endpoint threshold: no event for
+            // RETRY_MAX_DELAY_UNREACHABLE -> fail the stream with a retryable
+            // ResponseStreamError -> the existing retry budget bridges/gives up ->
+            // halt surfaces the error + cleanup ends running tool calls.
+            // Tool-aware (2026-09-11): tool calls (task/subagent, long bash)
+            // execute while the model stream is legitimately event-less, so a
+            // tool running longer than IDLE_MS is NOT an endpoint hang. The
+            // idle check is suspended while any tool call is in flight
+            // (incremented on tool-call, decremented on tool-result/error);
+            // without this the watchdog false-fires during subagent runs and
+            // aborts them at the 60s mark (Revising style guide session).
+            const IDLE_MS = RETRY_MAX_DELAY_UNREACHABLE
+            let lastEvent = Date.now()
+            let toolsInFlight = 0
+            const idleExpired = yield* Deferred.make<never, Error>()
+            yield* Effect.forkScoped(
+              Effect.forever(
+                Effect.gen(function* () {
+                  yield* Effect.sleep(IDLE_MS)
+                  if (toolsInFlight === 0 && Date.now() - lastEvent >= IDLE_MS) {
+                    yield* Deferred.fail(
+                      idleExpired,
+                      new ProviderError.ResponseStreamError(
+                        `Provider stream idle: no events for ${IDLE_MS}ms - endpoint unreachable`,
+                      ),
+                    )
+                  }
+                }),
+              ),
+            )
             return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             ).pipe(
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
+              Stream.tap((event) =>
+                Effect.sync(() => {
+                  lastEvent = Date.now()
+                  if (event.type === "tool-call") toolsInFlight++
+                  else if (event.type === "tool-result" || event.type === "tool-error")
+                    toolsInFlight = Math.max(0, toolsInFlight - 1)
+                }),
+              ),
+              Stream.interruptWhen(Deferred.await(idleExpired)),
             )
           }),
         ),
