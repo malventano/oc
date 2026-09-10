@@ -108,6 +108,16 @@ interface ProcessorContext extends Input {
   stallHit: string | null
   stallGuardEnabled: boolean
   restartClosed: boolean
+  // Sticky retry feedback (0346 amend, 2026-09-14): the retry banner used to
+  // live only in the ~2-4s backoff window between attempts - the re-issued
+  // attempt set bare "busy" and the banner vanished, so a long prefill (the
+  // 0346 watchdog class) showed as a silent spinner with no trace of the
+  // retry. The policy's `set` callback stashes the last retry info here; the
+  // re-issued attempt re-announces it as a "retry" status (attempt carried
+  // forward), and the FIRST stream event of the attempt clears it back to
+  // "busy" - event-less prefill keeps the banner visible while real output
+  // proves the stream is alive.
+  lastRetry: { attempt: number; message: string; action?: SessionRetry.Retryable["action"] } | undefined
   // The question tool ALSO ends the turn at the tool result (0269): the ask
   // closes the turn like the restart - finish forced to "stop" so the TUI
   // footer's final() gate renders the completed stats (clock stops + stays)
@@ -171,6 +181,7 @@ const layer = Layer.effect(
         stallGuardCompactionContinue: input.stallGuardCompactionContinue ?? false,
         restartClosed: false,
         questionClosed: false,
+        lastRetry: undefined,
       }
       let aborted = false
 
@@ -855,14 +866,50 @@ const layer = Layer.effect(
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
-            yield* status.set(ctx.sessionID, { type: "busy" })
+            // Sticky retry re-announce (0346 amend): if the previous attempt
+            // hit a retryable failure, carry its info forward - the user sees
+            // the banner through this attempt's (possibly minutes-long,
+            // event-less) prefill until the first event proves liveness.
+            const retryCtx = ctx.lastRetry
+            yield* status.set(
+              ctx.sessionID,
+              retryCtx
+                ? {
+                    type: "retry",
+                    attempt: retryCtx.attempt,
+                    message: retryCtx.message,
+                    action: retryCtx.action,
+                    next: Date.now(),
+                  }
+                : { type: "busy" },
+            )
             const stream = llm.stream(streamInput)
 
+            let clearedRetry = !retryCtx
+            // Content-event gate: only a real output event (delta/start of
+            // text, reasoning, or a tool call) clears the banner. Step-level
+            // events (stepStart) can arrive at stream-open BEFORE prefill,
+            // which would erase the banner while the event-less prefill - the
+            // exact state the user needs feedback about - is still running.
+            const CONTENT_EVENTS = new Set(["text-delta", "text-start", "reasoning-delta", "reasoning-start", "tool-call", "tool-input-start"])
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap((event) =>
+                Effect.gen(function* () {
+                  if (!clearedRetry && CONTENT_EVENTS.has(event.type)) {
+                    clearedRetry = true
+                    yield* Effect.ignore(status.set(ctx.sessionID, { type: "busy" }))
+                  }
+                  yield* handleEvent(event)
+                }),
+              ),
               Stream.takeUntil(() => ctx.needsCompaction || ctx.loopGuardFired),
               Stream.runDrain,
             )
+            // Attempt completed (recovered or finished cleanly): the stash has
+            // served its purpose - clear it so the NEXT step of this turn does
+            // not re-announce a stale retry banner. (A failed attempt never
+            // reaches this line; the stash must survive for the re-announce.)
+            ctx.lastRetry = undefined
           }).pipe(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
@@ -881,6 +928,7 @@ const layer = Layer.effect(
                 provider: input.model.providerID,
                 parse,
                 set: (info) => {
+                  ctx.lastRetry = { attempt: info.attempt, message: info.message, action: info.action }
                   return status.set(ctx.sessionID, {
                     type: "retry",
                     attempt: info.attempt,

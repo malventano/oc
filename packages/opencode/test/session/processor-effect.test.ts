@@ -888,7 +888,11 @@ it.live("session.processor effect tests publish retry status updates", () =>
 
         expect(value).toBe("continue")
         expect(yield* llm.calls).toBe(2)
-        expect(states).toStrictEqual([1])
+        // Sticky retry (0346 amend): attempt 1's policy set publishes the first
+        // "retry" status; the re-issued attempt re-announces it (carried
+        // forward, cleared back to busy on the first content event) so the
+        // banner stays visible through the event-less window between attempts.
+        expect(states).toStrictEqual([1, 1])
       }),
     { config: (url) => providerCfg(url) },
   ),

@@ -273,8 +273,19 @@ export const make = Effect.gen(function* () {
       proc.on("error", (err) => {
         resume(Effect.fail(toPlatformError("spawn", err, command)))
       })
+      // Resolve exitCode on "exit" (process exited, code/signal final), NOT
+      // "close" (stdio drained). A detached child whose grandchild holds a
+      // stdio pipe open (e.g. sshpass -> ssh -> remote `sleep 330`) never
+      // fires "close" even after the process exits, so exitCode previously
+      // hung forever and the shell tool's exit/abort/timeout race never
+      // completed -> tool part stuck "running" (BUG_DSV4_NUMBER_CORRUPTION
+      // session, 2026-09-10, zombie sshpass). "close" stays as a fallback
+      // (guarded by `end`) for the no-"exit" edge.
       proc.on("exit", (...args) => {
         exit = args
+        if (end) return
+        end = true
+        Deferred.doneUnsafe(signal, Exit.succeed(args))
       })
       proc.on("close", (...args) => {
         if (end) return
