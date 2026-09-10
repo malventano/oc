@@ -125,7 +125,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               output,
             )
 TimeContext.stampToolOutput(output)
-TimeContext.stampSquashHint(output)
+TimeContext.stampShrinkHint(output)
             if (options.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(options.toolCallId, output)
             }
@@ -214,7 +214,7 @@ TimeContext.stampSquashHint(output)
               output,
             )
 TimeContext.stampToolOutput(output)
-TimeContext.stampSquashHint(output)
+TimeContext.stampShrinkHint(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -299,7 +299,7 @@ TimeContext.stampSquashHint(output)
               output,
             )
 TimeContext.stampToolOutput(output)
-TimeContext.stampSquashHint(output)
+TimeContext.stampShrinkHint(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -383,7 +383,7 @@ TimeContext.stampSquashHint(output)
               output,
             )
 TimeContext.stampToolOutput(output)
-TimeContext.stampSquashHint(output)
+TimeContext.stampShrinkHint(output)
             if (opts.abortSignal?.aborted) {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
@@ -432,7 +432,7 @@ TimeContext.stampSquashHint(output)
             result,
           )
 TimeContext.stampToolOutput(result)
-TimeContext.stampSquashHint(result)
+TimeContext.stampShrinkHint(result)
 
           const textParts: string[] = []
           const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []
