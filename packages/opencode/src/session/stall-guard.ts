@@ -222,7 +222,7 @@ function markerEchoTrimAt(text: string): number | null {
 // STRUCTURE (a sentence starting "let me" that ends the response with nothing
 // delivered), not the verb: whack-a-mole verb lists keep missing the next
 // phrasing (the missed 2026-09-06 stall closed a long analysis with "Let me
-// squash this output and build the decisive sim" - "squash"/"build" were not
+// shrink this output and build the decisive sim" - "shrink"/"build" were not
 // in the old list). A solely "Let me ..." reply (the old start-anchored case)
 // is its own final sentence, so one detector covers both. Gated on
 // hadToolCall=false at the call site (fulfilled intents are excluded).
@@ -380,7 +380,7 @@ export function detect(
   // (the gate lives here: hadToolCall true means the intent was fulfilled).
   // 0278: ANY verb applies - the detector keys on the response's FINAL
   // sentence being a "let me ..." intent clause, not on a verb list (the
-  // missed 2026-09-06 stall used "squash"/"build", outside the old list).
+  // missed 2026-09-06 stall used "shrink"/"build", outside the old list).
   if (!hadToolCall && trailingLetMeIntent(text)) {
     return {
       signature: "let-me",
