@@ -1553,9 +1553,16 @@ const layer = Layer.effect(
                 tools[name] = tool({
                   description: t.description,
                   inputSchema: t.inputSchema,
-                  execute: async () => ({
-                    output: "This tool is disabled during compaction. Persist learnings with read/edit/write instead, then output the summary directly.",
-                  }),
+                  // FAIL the call with the denial as the error result (not a
+                  // fake "completed" output): the model sees the same message
+                  // the TUI shows (the standard red failed-tool line, no
+                  // misleading completed block), and the call reads as the
+                  // permission-style deny it actually is.
+                  execute: async (): Promise<string> => {
+                    throw new Error(
+                      "This tool is disabled during compaction. Persist learnings with read/edit/write instead, then output the summary directly.",
+                    )
+                  },
                 })
               }
             }

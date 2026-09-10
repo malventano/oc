@@ -3452,6 +3452,11 @@ function Shell(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   const ctx = use()
   const isRunning = createMemo(() => props.part.state.status === "running")
+  // Errored calls (permission-style denies, the compaction stub) render the
+  // standard red failed line instead of the tool box: a boxed "# bash" after
+  // a fail makes the call look like a normal completed bash run (the
+  // compaction-stub case showed an empty "# bash" block).
+  const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error : undefined))
   const stream = useToolStream(props, {
     bodyKey: "command",
     title: () => undefined,
@@ -3550,11 +3555,12 @@ function Shell(props: ToolProps) {
     command().length > 0
 
   return (
-    <Show when={showBlock()} fallback={
-      <InlineTool icon="$" pending="Writing command..." complete={command()} part={props.part}>
-        {command()}
-      </InlineTool>
-    }>
+    <Show when={error()} fallback={
+      <Show when={showBlock()} fallback={
+        <InlineTool icon="$" pending="Writing command..." complete={command()} part={props.part}>
+          {command()}
+        </InlineTool>
+      }>
       {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
           completed. The single code element persists (its buffer holds the
           last highlight of the identical content), so the completion never
@@ -3593,6 +3599,11 @@ function Shell(props: ToolProps) {
           <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
         </Show>
       </LiveToolStream>
+      </Show>
+    }>
+      <InlineTool icon="$" pending="Writing command..." failure={error()} complete={false} part={props.part}>
+        {command()}
+      </InlineTool>
     </Show>
   )
 }
