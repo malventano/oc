@@ -195,7 +195,6 @@ const main = async () => {
     ["cat in.txt | rg -rn foo", "rg -rn in pipe"],
     ["rg -r n foo file.txt", "rg -r n split"],
     ['rg "-rn" foo', "rg quoted -rn"],
-    ["ssh root@host 'rg -rn foo /app'", "rg -rn via ssh (context-free)"],
   ]
   const NOT_BLOCKED = [
     ["rg -n foo file.txt", "rg -n sanctioned"],
@@ -204,6 +203,13 @@ const main = async () => {
     ["rg --replace x file.txt", "rg --replace long form"],
     ["rg -r x file.txt", "rg -r explicit value"],
     ["rg -r 'n' file.txt", "rg -r quoted value (not bare n)"],
+    // 0344: quoted prose mentioning the form must NOT block (the 0342
+    // context-free regex false-positived on a commit message).
+    ["git commit -m 'feat: hard-reject rg -rn / -r n foot-gun'", "prose in commit message"],
+    ["echo 'rg -rn is bad'", "prose in echo"],
+    ["git commit -m 'rg -rn misuse'", "quoted string starting with rg"],
+    // quoted-command forms escape the gate (boundary anchor trade-off)
+    ["ssh root@host 'rg -rn foo /app'", "rg -rn in ssh single quotes (not gated)"],
   ]
   for (const [cmd, label] of BLOCKED) {
     if (await blocked(cmd)) pass++

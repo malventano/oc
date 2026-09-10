@@ -19,8 +19,13 @@
 
 // Class 20 foot-gun regex, shared by the reject hook and the (now-removed)
 // after-hook entry. Scoped to `-rn` / `-r n` (incl. quoted `"-rn"`): bare
-// `-r VALUE` and `--replace VALUE` are legit and stay silent.
-const RG_REPLACE_FOOTGUN = /\brg\s+(?:-(?!-rn|-r\s)|[^-\s])*?(?:-rn\b|-r\s+n\b)/
+// `-r VALUE` and `--replace VALUE` are legit and stay silent. 0344: anchored
+// to a COMMAND boundary (start, or after ; & | && ||) so prose that merely
+// mentions the form (a commit message, an echo) is not blocked - the 0342
+// context-free regex false-positived on `git commit -m "...rg -rn..."`.
+// Trade-off: quoted-command forms (`ssh host 'rg -rn ...'`) are no longer
+// gated - the boundary is the cost of quote-awareness.
+const RG_REPLACE_FOOTGUN = /(?:(?:^|&&|\|\||[;&|])\s*)\brg\s+(?:-(?!-rn|-r\s)|[^-\s])*?(?:-rn\b|-r\s+n\b)/
 
 const GUARDED = [
   // --- in-place mutations (edit tool OLD/NEW blocks) ---
