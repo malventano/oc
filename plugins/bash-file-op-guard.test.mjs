@@ -8,12 +8,24 @@
 import guard from "./bash-file-op-guard.js"
 
 const hook = guard.server()["tool.execute.after"]
+const beforeHook = guard.server()["tool.execute.before"]
 
 const fire = async (cmd) => {
   const input = { tool: "bash", args: { command: cmd } }
   const output = { output: "" }
   await hook(input, output)
   return output.output
+}
+
+// Class 20 (rg -rn / -r n): the BEFORE hook must THROW (hard reject).
+const blocked = async (cmd) => {
+  const output = { args: { command: cmd } }
+  try {
+    await beforeHook({ tool: "bash" }, output)
+    return false
+  } catch {
+    return true
+  }
 }
 
 let pass = 0
@@ -91,11 +103,6 @@ const POSITIVE = [
   ["grep -n foo bar.txt", "grep -n bare"],
   ["grep -rn foo src/", "grep recursive dir"],
   ["grep -P 'foo' file.txt", "grep -P"],
-  ["rg -rn foo src/", "rg -rn (--replace n foot-gun)"],
-  ["rg -rn \"state.output\" src", "rg -rn quoted destructure"],
-  ["cd x && rg -rn foo", "rg -rn after cd"],
-  ["cat in.txt | rg -rn foo", "rg -rn in pipe"],
-  ["rg -r n foo file.txt", "rg -r n split"],
   ["rg -n foo file.txt", "rg is sanctioned but still a file search - no fire expected (see negative)"],
   ["wc -l file.txt", "wc -l"],
   ["wc file.txt", "wc bare"],
@@ -178,6 +185,39 @@ const main = async () => {
   for (const [cmd, label] of NEGATIVE) {
     if (label === "non-bash tool (checked separately)") continue
     await check(cmd, false, label)
+  }
+
+  // Class 20 hard reject (before hook must throw); legit rg forms must not
+  const BLOCKED = [
+    ["rg -rn foo src/", "rg -rn"],
+    ["rg -rn \"state.output\" src", "rg -rn quoted destructure"],
+    ["cd x && rg -rn foo", "rg -rn after cd"],
+    ["cat in.txt | rg -rn foo", "rg -rn in pipe"],
+    ["rg -r n foo file.txt", "rg -r n split"],
+    ['rg "-rn" foo', "rg quoted -rn"],
+    ["ssh root@host 'rg -rn foo /app'", "rg -rn via ssh (context-free)"],
+  ]
+  const NOT_BLOCKED = [
+    ["rg -n foo file.txt", "rg -n sanctioned"],
+    ["rg -l foo src", "rg -l"],
+    ["rg foo file.txt", "rg plain"],
+    ["rg --replace x file.txt", "rg --replace long form"],
+    ["rg -r x file.txt", "rg -r explicit value"],
+    ["rg -r 'n' file.txt", "rg -r quoted value (not bare n)"],
+  ]
+  for (const [cmd, label] of BLOCKED) {
+    if (await blocked(cmd)) pass++
+    else {
+      fail++
+      failures.push(`NOT BLOCKED (${label}): ${cmd}`)
+    }
+  }
+  for (const [cmd, label] of NOT_BLOCKED) {
+    if (!(await blocked(cmd))) pass++
+    else {
+      fail++
+      failures.push(`FALSE BLOCK (${label}): ${cmd}`)
+    }
   }
 
   // non-bash tool: the hook must no-op
