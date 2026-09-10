@@ -216,6 +216,12 @@ export const CompactionPart = Schema.Struct({
   // marker to ONLY the lifted marker+summary pair, then the post-marker
   // continuation; everything before the marker is folded into the summary.
   no_tail: Schema.optional(Schema.Boolean),
+  // clean_start: true = deliberate "start completely clean" virtual rung
+  // (0341): the marker's LIFTED PAIR (its summary) and the whole
+  // pre-marker history are excluded from the model chain - the model sees
+  // only the post-marker continuation, as if the session had just begun.
+  // Distinct from no_tail (which keeps the lifted marker+summary pair).
+  clean_start: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "CompactionPart" })
 export type CompactionPart = Types.DeepMutable<Schema.Schema.Type<typeof CompactionPart>>
 

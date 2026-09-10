@@ -847,13 +847,58 @@ TimeContext.stampUserMessages(msgs)
       if (tailIdx < 0 || tailIdx >= markerIdx) return "virtual_empty" as const
 
       const retained = turns(chronologicalOrNewest.slice(tailIdx, markerIdx))
-      if (retained.length === 0) return "virtual_empty" as const
-
       const count = retained.length
-      // Drop the oldest retained turn; the next tail becomes the second turn,
-      // or the marker itself when only one turn remains (making the NEXT
-      // virtual compact a no-op - nothing left to drop).
-      const nextTail = count >= 2 ? retained[1]!.id : user.id
+
+      // Floor + lossy rungs (0340/0341): the compaction turn is the FLOOR of
+      // the NORMAL rungs - the boundary may retreat through real
+      // pre-compaction tail turns only, never past the newest real compaction
+      // marker (marker + its summary-turn children are always retained).
+      // Without the clamp the last drop set nextTail = user.id, the newest
+      // marker physically PAST the compaction turn, folding the whole turn
+      // (live 2026-09-10 ses_004166c94ff: virtual #3 boundary landed on a
+      // virtual-marker id past the turn; turns() skips marker messages, so a
+      // later /compact saw no real turn left and was refused - no undo hint
+      // that the turn was consumed).
+      //
+      // Past the floor, two DELIBERATELY lossy rungs (opt-in, repeated
+      // /compact): rung 3 = summary-only (fold the compaction turn's work,
+      // keep marker + summary + continuation), rung 4 = clean start (fold the
+      // marker + summary pair too - the model sees only the continuation).
+      // The floor still protects the automatic path from reaching them.
+      const floorIdx = chronologicalOrNewest.findLastIndex(
+        (m) =>
+          m.info.role === "user" &&
+          m.parts.some(
+            (part): part is SessionV1.CompactionPart => part.type === "compaction" && part.virtual !== true,
+          ),
+      )
+      const floorId = floorIdx < 0 ? undefined : chronologicalOrNewest[floorIdx]!.info.id
+      const idxOf = (id: MessageID) => chronologicalOrNewest.findIndex((m) => m.info.id === id)
+
+      let nextTail: MessageID
+      let cleanStart = false
+      if (count === 0) {
+        if (part?.clean_start === true || floorId === undefined) return "virtual_empty" as const
+        const boundaryIdx = idxOf(part.tail_start_id ?? floorId)
+        if (boundaryIdx === floorIdx) {
+          // Rung 3 (summary-only): land on the newest marker (past the floor)
+          // so the fold folds the compaction turn's work but keeps the pair.
+          nextTail = user.id
+        } else if (boundaryIdx > floorIdx) {
+          // Rung 4 (clean start): the clean_start flag makes filterCompacted
+          // exclude the marker + summary pair from the model chain.
+          nextTail = user.id
+          cleanStart = true
+        } else {
+          return "virtual_empty" as const
+        }
+      } else {
+        // Drop the oldest retained turn; the next tail becomes the second turn,
+        // or the floor when only one turn remains (making the NEXT virtual
+        // compact the lossy rung instead - nothing left to drop normally).
+        nextTail = count >= 2 ? retained[1]!.id : user.id
+        if (floorId && idxOf(nextTail) >= floorIdx) nextTail = floorId
+      }
 
       const ctx = yield* InstanceState.context
       const markerMsg = yield* session.updateMessage({
@@ -871,10 +916,15 @@ TimeContext.stampUserMessages(msgs)
         type: "compaction",
         auto: false,
         tail_start_id: nextTail,
-      virtual: true,
+        virtual: true,
+        ...(cleanStart ? { clean_start: true } : {}),
       })
 
-      const note = `Pre-compaction tail reduced: ${count} → ${count - 1}. Undo (/undo) to restore the previous state.`
+      const note = cleanStart
+        ? "Clean slate (no summary). Undo (/undo) to restore the previous state."
+        : count === 0
+          ? "Compaction summary only. Undo (/undo) to restore the previous state."
+          : `Pre-compaction tail reduced: ${count} → ${count - 1}. Undo (/undo) to restore the previous state.`
       const summaryMsg: SessionV1.Assistant = {
         id: MessageID.ascending(),
         role: "assistant",
