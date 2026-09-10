@@ -56,6 +56,7 @@ Requires only `bun`:
 - **Skill metadata (0034, 0038)**: frontmatter name/description, line/char counts, sibling inventory, mtime, and description byte count for one or all skills; reads raw SKILL.md frontmatter; built-in skills guarded
 - **tmux pane management**: run/poll/keys/capture/wait lifecycle ops for long-running jobs in visible panes
 - **Shell safety guards (0036, 0040, 0041)**: `pkill -f` and `kill -9` / `-KILL` on `$$` / `$PPID` are blocked in the bash tool (anchored to command position; covers semicolon-suffixed and sudo forms) because they hang the session
+- **Bash file-op guard plugin (see [plugins/README.md](plugins/README.md))**: the ONE non-bundled piece - a hook plugin (`bash-file-op-guard.js`) that nudges toward the native file tools and hard-rejects the `rg -rn`/`-r n` (`--replace n`) foot-gun. Install it (copy + config `plugin` entry + restart) or the guard is silently absent.
 
 ### Prompt guidance (0029, 0039, 0044)
 - Tool prompts: question/read/write/webfetch ship refined guidance (exact JSON array shapes for the question tool, URL discipline for webfetch, output-budget chunking for write)
@@ -110,6 +111,8 @@ This applies to all non-git sessions (project `global`): their `path` is the lau
 ## Everything is built in
 
 The oc binary ships the full tooling: hashline editing, sessions DB tools, time context, loop guard, squash output, skill metadata, tmux pane management, and shell safety guards are compiled in. Nothing needs to be copied, configured, or installed.
+
+**ONE exception:** the bash file-op guard is a hook plugin, not bundled (see [plugins/README.md](plugins/README.md)) - copy `plugins/bash-file-op-guard.js` into your opencode plugin directory, declare it in the config `plugin` array, and restart opencode.
 
 ## Repository layout
 
