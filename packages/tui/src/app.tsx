@@ -97,6 +97,7 @@ import { createTuiAttention } from "./attention"
 import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
+import { disposeTerminalDimensions, initTerminalDimensions } from "./util/terminal-dimensions"
 import { cliErrorMessage, errorFormat } from "./util/error"
 
 registerOpencodeSpinner()
@@ -222,9 +223,16 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         (renderer) =>
           Effect.sync(() => {
             destroyRenderer(renderer)
+            disposeTerminalDimensions()
             treeSitterClient.highlightOnce = originalHighlightOnce
           }),
       )
+      // 0343: ONE shared resize subscription (see util/terminal-dimensions).
+      // The oc bash-slot system mounts up to MAX_SLOTS=24 StreamSegments per
+      // tool call, each previously subscribing to the renderer's "resize"
+      // event for its own height re-measure - a terminal resize affects the
+      // WHOLE screen, so one subscription + one signal serves every consumer.
+      initTerminalDimensions(renderer)
       // Adaptive streaming batch window. The SDK flushes SSE deltas on a short window
       // (default 4ms); when a render pass can't keep up with the flush cadence, the main
       // thread blocks and the flush loop collapses into the render-freeze. Widen the
