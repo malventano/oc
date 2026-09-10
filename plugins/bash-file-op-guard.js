@@ -5,10 +5,22 @@
 // (ssh), container (docker), build (npm/bun/make), and pane contexts are
 // excluded. Pane/terminal output (tmux capture | grep) is not file work.
 //
+// ONE EXCEPTION - Class 20 (rg -rn / -r n): this is a HARD REJECT via
+// tool.execute.before (0262), not a passive nudge. The command is never
+// correct anywhere (rg recurses and line-numbers by default), so it must
+// not run: the mangled output ("n\nn" instead of matches, exit 0) would
+// otherwise land in the DB as reasoning churn. It is context-free - the
+// exclusion list does NOT apply to it.
+//
 // Case table maintained in oc-spec/11 (bash guards). Every class here maps
 // to a native-tool equivalent; the test suite (bash-file-op-guard.test.mjs)
 // walks the table. Do not add regexes without extending the table and the
 // suite.
+
+// Class 20 foot-gun regex, shared by the reject hook and the (now-removed)
+// after-hook entry. Scoped to `-rn` / `-r n` (incl. quoted `"-rn"`): bare
+// `-r VALUE` and `--replace VALUE` are legit and stay silent.
+const RG_REPLACE_FOOTGUN = /\brg\s+(?:-(?!-rn|-r\s)|[^-\s])*?(?:-rn\b|-r\s+n\b)/
 
 const GUARDED = [
   // --- in-place mutations (edit tool OLD/NEW blocks) ---
@@ -55,19 +67,6 @@ const GUARDED = [
   // counting).
   { re: /\bgrep\s+(?:-[a-zA-Z0-9]+\s+)*[^-\s<|;>][^\s|;]*\s+[^-\s<|;>][^\s|;]+/, hint: "grep on a file - the grep tool (and rg for match counting) does this" },
   { re: /\bwc\s+(?:-[a-zA-Z0-9]+\s+)*[^-\s<|;>][^\s|;]+/, hint: "wc on a file - the read tool shows the content; negative offset reads the tail" },
-
-  // --- rg foot-gun: -rn means --replace n, not recursive ---
-  // rg is sanctioned (the comment above: "for match counting"), but its
-  // recursion is DEFAULT - there is NO -rn recursive flag. `rg -rn "X"` is
-  // parsed as `--replace n` (replace every match with 'n') and exits 0 with
-  // corrupted output ("n\nn" instead of the matches). Measured: 3,301 such
-  // commands across 46 sessions (first 2026-06, ongoing 2026-09). Scoped to
-  // `-rn` (and `-r n`, the manual split): bare `-r VALUE` with a real value
-  // is legit --replace and must not fire. This is a DIFFERENT guard class
-  // from the others: not "use a native tool" but "this exact command
-  // silently mangles its own output" - fix the flag (drop -rn; recursion +
-  // line numbers are already rg defaults), don't switch tools.
-  { re: /\brg\s+(?:-(?!-rn|-r\s)|[^-\s])*?(?:-rn\b|-r\s+n\b)/, hint: "rg -rn = --replace n, not recursive (rg recurses by default) - it silently replaces every match with 'n' and exits 0. Use plain rg PATTERN; recursion and line numbers are already defaults" },
 ]
 
 // Remote / container / build / pane contexts where shell file work is legit.
@@ -82,6 +81,21 @@ const READ_FILE = /\b(cat|head|tail)\s+(-[a-zA-Z0-9]+\s+)*[^-\s<|;>][^\s|;]+/
 export default {
   id: "bash-file-op-guard",
   server: () => ({
+    // Class 20 hard reject: rg -rn / -r n is ALWAYS wrong (rg recurses by
+    // default; -r is --replace, so -rn parses as --replace n and silently
+    // rewrites every match to 'n', exit 0). Refuse before execution so the
+    // mangled output never reaches the session DB. Context-free: the
+    // EXCLUDED list below does not apply. Throwing surfaces as a normal
+    // tool error (red failed line), same as the compaction stub.
+    "tool.execute.before": async (input, output) => {
+      if (input.tool !== "bash") return
+      const cmd = String(output.args?.command ?? "")
+      if (!RG_REPLACE_FOOTGUN.test(cmd)) return
+      throw new Error(
+        "rg -rn / -r n is --replace n, NOT recursive - blocked before execution. " +
+          "rg recurses and prints line numbers by default, so drop the -r: use `rg PATTERN <paths>` (plain).",
+      )
+    },
     "tool.execute.after": async (input, output) => {
       if (input.tool !== "bash") return
       const cmd = String(input.args?.command ?? "")
