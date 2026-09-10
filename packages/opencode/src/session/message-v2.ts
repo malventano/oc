@@ -799,39 +799,51 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
 
   const candidate: WithParts[] = []
   if (newestMarker && newestSummary) {
-    // Fold the effective newest completed pair to the front: a real marker
-    // renders as the "[Compacted summary of the prior conversation]"
-    // placeholder, its summary carries the actual text. A virtual pair is
-    // lifted the same way but its marker+note are dropped by the single
-    // virtual cut applied below. Both are skipped when the fold reaches
-    // their physical positions.
-    candidate.push(newestMarker, newestSummary)
-    const liftedMarker = newestMarker.info.id
-    const liftedSummary = newestSummary.info.id
     const part = newestMarker.parts.find((p): p is CompactionPart => p.type === "compaction")
-    // no_tail (guard-origin compaction): NOTHING pre-compaction is retained
-    // verbatim - the fold emits the lifted pair, then only the post-marker
-    // continuation. Anchored by the marker's PHYSICAL position in the walk:
-    // the marker+summary are skipped by id above, so an id-based boundary
-    // (boundary === liftedMarker) would never flip `started` - the post-pair
-    // region starts at the first message after the marker index instead.
-    // Distinct from boundary === undefined (the whole chain was retained).
-    const noTail = part?.no_tail === true
-    const markerIdx = noTail ? chronological.findIndex((m) => m.info.id === liftedMarker) : -1
-    const boundary = noTail ? undefined : part?.tail_start_id
-    // noTail: started stays false until the walk passes the marker's physical
-    // position (idx > markerIdx) - boundary === undefined would start the
-    // fold at message 0, which is the "whole chain retained" encoding, the
-    // OPPOSITE of no_tail.
-    let started = noTail ? false : boundary === undefined
-    for (let idx = 0; idx < chronological.length; idx++) {
-      const msg = chronological[idx]!
-      if (msg.info.id === liftedMarker || msg.info.id === liftedSummary) continue
-      if (!started) {
-        if (noTail ? idx > markerIdx : msg.info.id === boundary) started = true
-        else continue // everything before the boundary is folded into the summary
+    if (part?.clean_start === true) {
+      // Deliberate clean start (0341): the marker+summary pair and the whole
+      // pre-marker history are excluded from the model chain - the fold emits
+      // ONLY the post-marker continuation, as if the session had just begun.
+      // The marker stays in the DB/TUI (history), it just never reaches the
+      // model, and nothing is re-inserted below. The virtual cut still runs.
+      const markerIdx = chronological.findIndex((m) => m.info.id === newestMarker.info.id)
+      for (let idx = markerIdx + 1; idx < chronological.length; idx++) {
+        candidate.push(chronological[idx]!)
       }
-      candidate.push(msg)
+    } else {
+      // Fold the effective newest completed pair to the front: a real marker
+      // renders as the "[Compacted summary of the prior conversation]"
+      // placeholder, its summary carries the actual text. A virtual pair is
+      // lifted the same way but its marker+note are dropped by the single
+      // virtual cut applied below. Both are skipped when the fold reaches
+      // their physical positions.
+      candidate.push(newestMarker, newestSummary)
+      const liftedMarker = newestMarker.info.id
+      const liftedSummary = newestSummary.info.id
+      // no_tail (guard-origin compaction): NOTHING pre-compaction is retained
+      // verbatim - the fold emits the lifted pair, then only the post-marker
+      // continuation. Anchored by the marker's PHYSICAL position in the walk:
+      // the marker+summary are skipped by id above, so an id-based boundary
+      // (boundary === liftedMarker) would never flip `started` - the post-pair
+      // region starts at the first message after the marker index instead.
+      // Distinct from boundary === undefined (the whole chain was retained).
+      const noTail = part?.no_tail === true
+      const markerIdx = noTail ? chronological.findIndex((m) => m.info.id === liftedMarker) : -1
+      const boundary = noTail ? undefined : part?.tail_start_id
+      // noTail: started stays false until the walk passes the marker's physical
+      // position (idx > markerIdx) - boundary === undefined would start the
+      // fold at message 0, which is the "whole chain retained" encoding, the
+      // OPPOSITE of no_tail.
+      let started = noTail ? false : boundary === undefined
+      for (let idx = 0; idx < chronological.length; idx++) {
+        const msg = chronological[idx]!
+        if (msg.info.id === liftedMarker || msg.info.id === liftedSummary) continue
+        if (!started) {
+          if (noTail ? idx > markerIdx : msg.info.id === boundary) started = true
+          else continue // everything before the boundary is folded into the summary
+        }
+        candidate.push(msg)
+      }
     }
   } else {
     // No completed pair: the whole chain is live, chronological verbatim.
@@ -848,6 +860,9 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   // history to the model, so re-insert it at the front (marker + summary).
   // Only the NEWEST real pair can be cut this way - older pairs sit below in
   // the retained region and are never dropped by the folding boundary.
+  // A clean_start marker deliberately excludes the pair too (no re-insert).
+  const cleanStart =
+    newestMarker?.parts.some((p): p is CompactionPart => p.type === "compaction" && p.clean_start === true) === true
   let realMarker: WithParts | undefined
   let realSummary: WithParts | undefined
   for (const msg of all) {
@@ -861,7 +876,7 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
     realSummary = summary
     break
   }
-  if (realMarker && !out.some((m) => m.info.id === realMarker!.info.id)) {
+  if (realMarker && !cleanStart && !out.some((m) => m.info.id === realMarker!.info.id)) {
     out.unshift(...(realSummary ? [realMarker, realSummary] : [realMarker]))
   }
 
