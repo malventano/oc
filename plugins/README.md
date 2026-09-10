@@ -5,12 +5,12 @@ before/after interception). Copy the files into your opencode plugin
 directory AND declare them in the config's `plugin` array, then restart
 opencode:
 
-    cp plugins/*.js plugins/*.ts ~/.config/opencode/plugins/
+    cp plugins/*.js ~/.config/opencode/plugins/
 
 (or `.opencode/plugins/` for project scope), then in
 `~/.config/opencode/config.json`:
 
-    "plugin": ["/root/.config/opencode/plugins/<file>.ts", ...]
+    "plugin": ["/root/.config/opencode/plugins/bash-file-op-guard.js", ...]
 
 **NOT auto-discovered - never was** (verified 2026-08-15 in
 `src/plugin/index.ts:179` + `src/config/config.ts:344`: the loader is
@@ -34,8 +34,13 @@ entry).
 
 | File | What it does |
 |------|--------------|
-| `loop-guard.ts` | **REMOVED (patch 0028)** — behavior built into the oc binary: `src/session/loop-guard.ts` + processor/prompt wiring; detects repetition on both channels (reasoning + output) and cuts the stream, showing a red error banner on the cut message ("Loop guard interrupted the response: <detail>" plus the full thinking-loop-redirect underneath) while delivering the redirect to the model as a request-only synthetic message (no visible user turn; the error-marking also drops the looped garbage from the model request). |
-| `time-context.js` | **REMOVED (patch 0027)** — behavior built into the oc binary: per-user-message local-ISO stamps + per-tool-output UTC stamps via `src/session/time-context.ts`; no plugin needed. |
-| `tool-refine.ts` | **REMOVED (patch 0036)** — the `pkill -f` guard was ported into the oc binary (shell tool: blocks commands matching `/pkill\s+.*-f/` with the safe-alternatives message). The plugin's remaining guardrail (`vllm-start` execution blocked without `--dry-run`) is environment-specific and lives only in the owner's local `~/.config/opencode/plugins/tool-refine.ts`, NOT in the repo. Prompt overlays for question/read/write/webfetch moved to the build's tool `*.txt` files (patch 0029). |
+| `bash-file-op-guard.js` | **CURRENT (0133/0151/0261/0342/0344)** - hook plugin, the ONE plugin this build needs. (a) Passive nudges (tool.execute.after) when a bash command does file work that the native Read/Edit/Write/Glob/Grep tools do (sed -i, perl -i, rm single-file, mv rename, touch, redirects/tee/heredocs, python/node writes, grep/wc/cat on files, dd of=) - appends a `<system-reminder>` pointing at the native tool. (b) HARD REJECT (tool.execute.before) of the `rg` replace-with-n foot-gun: `rg -rn` / `rg -r n` parse as `--replace n` (silently rewrites every match to `n`, exit 0), so the call is refused before the shell runs (anchored to command boundaries - start/`;`/`&`/`\|`/`&&`/`\|\|` - so prose mentioning the form, e.g. a commit message, is not blocked). Excluded contexts (ssh/remote, docker, git, build tools, tmux panes) are not nudged. Case table: oc-spec/11-bash-guards.md (workspace doc, not in this repo). Test: `node plugins/bash-file-op-guard.test.mjs` (130 pass / 0 fail). |
+
+(Former hook plugins - time-context, loop-guard, tool-refine - were ported
+into the binary and REMOVED from this directory; see the README's built-in
+tooling list. Nothing else is here.)
+
+The `.test.mjs` files are dev-only (run with `node`) - do NOT copy them into
+the plugin directory.
 
 Requires opencode v1.x. Type-only imports from `@opencode-ai/plugin`; no other dependencies.
