@@ -184,7 +184,7 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
     result,
   )
 TimeContext.stampToolOutput(result)
-TimeContext.stampSquashHint(result)
+TimeContext.stampShrinkHint(result)
   return result
 })
 

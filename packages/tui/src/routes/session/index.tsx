@@ -3150,9 +3150,10 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
           <Skill {...toolprops} />
         </Match>
         {/* 0325 rename squash-output -> shrink: old parts carry the prior
-            id, so BOTH names render through the same component. */}
+            id, so BOTH names render through the same component. The id
+            string is the only historical remnant - kept for old sessions. */}
         <Match when={display() === "squash-output" || display() === "shrink"}>
-          <SquashOutput {...toolprops} />
+          <ShrinkOutput {...toolprops} />
         </Match>
         <Match when={true}>
           <GenericTool {...toolprops} />
@@ -5227,7 +5228,7 @@ function TodoWrite(props: ToolProps) {
   )
 }
 
-function SquashOutput(props: ToolProps) {
+function ShrinkOutput(props: ToolProps) {
   const { theme } = useTheme()
   // Stream the model's summary argument like write/bash: the
   // tool-input-delta -> state.raw mechanism feeds the live body while
@@ -5257,13 +5258,13 @@ function SquashOutput(props: ToolProps) {
   const active = () => stream.streaming() || stream.status() === "running"
 
   const liveTitle = createMemo(() => {
-    const parts = ["Squashing output"]
+    const parts = ["Shrinking output"]
     if (summaryLen() > 0) parts.push(`${summaryLen().toLocaleString()} chars`)
     return `# ${parts.join(" · ")}`
   })
   const title = createMemo(() => {
     if (active()) return liveTitle()
-    const parts = [`Squashed ${count()} output${count() !== 1 ? "s" : ""}`]
+    const parts = [`Shrunk ${count()} output${count() !== 1 ? "s" : ""}`]
     if (maxTurnsBack() !== undefined) parts.push(`${maxTurnsBack()} turn${maxTurnsBack() !== 1 ? "s" : ""} back`)
     if (aggregateOriginal() !== undefined) {
       const total = summaryLen() * count()
@@ -5282,11 +5283,11 @@ function SquashOutput(props: ToolProps) {
   const completed = () => !stream.streaming()
 
   // 0320: ONE stable-height block for the WHOLE life - the previous
-  // Switch fell back to a bare single-line InlineTool ("Squashing
+  // Switch fell back to a bare single-line InlineTool ("Shrinking
   // output...") whenever stream.streaming() was false but the metadata
-  // (count()) had not landed yet - one frame between the 'squashing' and
-  // 'squashed' states, the block collapsed to a single line (no tool box)
-  // and the whole viewport jumped (the squash jump). The LiveToolStream
+  // (count()) had not landed yet - one frame between the 'shrinking' and
+  // 'shrunk' states, the block collapsed to a single line (no tool box)
+  // and the whole viewport jumped (the shrink jump). The LiveToolStream
   // box (0199 carry-over) is now the ONLY branch: streaming -> running ->
   // completed, never a bare line.
   return (

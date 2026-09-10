@@ -285,13 +285,13 @@ describe("stall-guard detect", () => {
   })
 
   test("let-me signature: ANY trailing-verb final intent sentence fires (0278)", () => {
-    // The missed 2026-09-06 stall: a long analysis closed with "Let me squash
+    // The missed 2026-09-06 stall: a long analysis closed with "Let me shrink
     // this output and build the decisive sim", finish=stop, no tool call.
-    // "squash"/"build" were not in the old verb list - the new detector keys
+    // "shrink"/"build" were not in the old verb list - the new detector keys
     // on the final-sentence STRUCTURE, not the verb.
     const hit = StallGuard.detect(
       "stop",
-      "Given the trace is large, let me instead test directly.\n\nLet me squash this output and build the decisive sim.",
+      "Given the trace is large, let me instead test directly.\n\nLet me shrink this output and build the decisive sim.",
       false,
     )
     expect(hit).not.toBeNull()
