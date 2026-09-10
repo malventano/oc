@@ -53,6 +53,7 @@ import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
 import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
+import { useTuiDimensions } from "../../util/terminal-dimensions"
 import { useSDK, setStreamBatchWindow, STREAM_BATCH_MIN_MS } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
@@ -2527,7 +2528,10 @@ function useFixedStreamHeight(
   // 0314: re-measure on a terminal resize too - the numeric height was locked
   // at the width it was first measured (the diff/stream slots kept their old
   // wrapped row count, so widening left a gap and narrowing clipped the text).
-  const resizeTrigger = useTerminalDimensions()
+  // 0343: reads the ONE shared resize signal (util/terminal-dimensions) - a
+  // StreamSegment mounts per bash slot (up to MAX_SLOTS), so a per-call
+  // useTerminalDimensions subscription multiplied renderer listeners.
+  const resizeTrigger = useTuiDimensions()
   let lastResizeW = 0
   // opts.released(): re-measure when the "released" (streaming->completed /
   // grow-only release) flag flips true. ROOT CAUSE of the "gutters but no
@@ -2722,7 +2726,8 @@ function useFixedStreamHeight(
 // is private on the Diff d.ts - reached via (el as any) at runtime (the
 // applyStickyStart precedent).
 function useDiffResizeRebuild() {
-  const dims = useTerminalDimensions()
+  // 0343: shared resize signal (one subscription for the whole TUI).
+  const dims = useTuiDimensions()
   const els = new Set<{ isDestroyed?: boolean; rebuildView?: () => void }>()
   let lastW = dims().width
   createEffect(() => {
@@ -2882,7 +2887,8 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   // the width; on a terminal resize the box kept its old height (widen ->
   // blank space, narrow -> wrapped text clipped). dims() re-runs the measure
   // on resize; the width is taken from the layout at that moment.
-  const dims = useTerminalDimensions()
+  // 0343: shared resize signal (one subscription for the whole TUI).
+  const dims = useTuiDimensions()
   let lastReasoningW = 0
   let lastDimsW = 0
   const liveW = () => {
@@ -4965,7 +4971,8 @@ function Edit(props: ToolProps) {
   // computed per diff entry at its site. `diff_style === "stacked"` still
   // forces unified. The width signal is read HERE (not per site) so the
   // choice re-evaluates on a terminal resize.
-  const diffDims = useTerminalDimensions()
+  // 0343: shared resize signal (one subscription for the whole TUI).
+  const diffDims = useTuiDimensions()
   const diffStacked = ctx.tui.diff_style === "stacked"
   // 0329: STREAMING latch is ONE-WAY - dual is where it starts; once the
   // live assessment says the content needs single, it latches single and
@@ -5145,7 +5152,8 @@ function ApplyPatch(props: ToolProps) {
   // default, single only for very narrow windows or when the content starts
   // wrapping. `diff_style === "stacked"` still forces unified. The width
   // signal is read here so the choice re-evaluates on a terminal resize.
-  const diffDims = useTerminalDimensions()
+  // 0343: shared resize signal (one subscription for the whole TUI).
+  const diffDims = useTuiDimensions()
   const diffStacked = ctx.tui.diff_style === "stacked"
   const diffPatchModeFor = (patch: string) => (diffStacked ? "unified" : patchDiffMode(patch, diffDims().width))
 
