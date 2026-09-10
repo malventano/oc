@@ -19,8 +19,13 @@
 
 // Class 20 foot-gun regex, shared by the reject hook and the (now-removed)
 // after-hook entry. Scoped to `-rn` / `-r n` (incl. quoted `"-rn"`): bare
-// `-r VALUE` and `--replace VALUE` are legit and stay silent.
-const RG_REPLACE_FOOTGUN = /\brg\s+(?:-(?!-rn|-r\s)|[^-\s])*?(?:-rn\b|-r\s+n\b)/
+// `-r VALUE` and `--replace VALUE` are legit and stay silent. 0344: anchored
+// to a COMMAND boundary (start, or after ; & | && ||) so prose that merely
+// mentions the form (a commit message, an echo) is not blocked - the 0342
+// context-free regex false-positived on `git commit -m "...rg -rn..."`.
+// Trade-off: quoted-command forms (`ssh host 'rg -rn ...'`) are no longer
+// gated - the boundary is the cost of quote-awareness.
+const RG_REPLACE_FOOTGUN = /(?:(?:^|&&|\|\||[;&|])\s*)\brg\s+(?:-(?!-rn|-r\s)|[^-\s])*?(?:-rn\b|-r\s+n\b)/
 
 const GUARDED = [
   // --- in-place mutations (edit tool OLD/NEW blocks) ---
@@ -50,6 +55,10 @@ const GUARDED = [
   { re: />>\s*(?!\/dev\/null|\/tmp\/opencode)[^\s|;]+/, hint: "append into a file - the edit tool's append mode (OLD with no lines) does this" },
   { re: />\s*(?!\/dev\/null|\/tmp\/opencode|&)[^\s|;]+\s*$/, hint: "redirect into a file - the write tool does this" },
   { re: />\s*(?!\/dev\/null|\/tmp\/opencode|&)[^\s|;]+(\s*<<\s*['\"]?(EOF|PY)['\"]?)?$/, hint: "redirect into a file - the write tool does this" },
+  // Heredoc write WITH a body: the anchored rules above only match when the
+  // redirect line ends the command, so `cat > f << EOF` + body slipped
+  // through (2026-09-16 session). Match the marker followed by anything.
+  { re: />\s*(?!\/dev\/null|\/tmp\/opencode|&)[^\s|;]+\s*<<\s*['\"]?(EOF|PY)['\"]?[\s\S]*$/, hint: "heredoc write into a file - the write tool does this" },
   // Script writes (python -/-c/heredoc, node/deno/tsx -e/-/eval): any
   // write-mode open() (w/a/x/r+/wb...), .write() family call, Path/fs/Deno
   // write or delete method, os./shutil. file op. Pure reads NEVER fire
@@ -106,7 +115,11 @@ export default {
       }
       if (READ_FILE.test(cmd)) hits.push("cat/head/tail on a file - the read tool (offset/limit) does this")
       if (!hits.length) return
-      output.output = `${output.output ?? ""}\n\n<system-reminder>Bash file-op guard: this command operates on files - the native Read/Edit/Write/Glob/Grep tools exist for that (${hits.join("; ")}).</system-reminder>`
+      // Firm wording (2026-09-16): the nudge fires at the moment the mistake is
+      // made, so it states the rule and the redo, not just the alternative.
+      // It stays a nudge (not a block) because rm/mv/cp/generated-content are
+      // legitimate bash work the tools cannot express.
+      output.output = `${output.output ?? ""}\n\n<system-reminder>Bash file-op guard: this command operates on files. NON-NEGOTIABLE (AGENTS.md "Editing approach"): file writes go through the write/edit tools - never bash heredocs, python3 -c, cat >, or sed -i. If this command authored a file, REDO it with the write/edit tool. Reads use the read tool (offset/limit); Glob/Grep for search. (${hits.join("; ")}).</system-reminder>`
     },
   }),
 }
