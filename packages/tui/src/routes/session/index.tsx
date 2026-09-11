@@ -3308,6 +3308,15 @@ function InlineTool(props: {
       onMouseUp={() => {
         if (renderer.getSelection()?.getSelectedText()) return
         if (failed()) {
+          // A failed part with an onClick (e.g. the Task line navigating to
+          // its subagent session) must still honor the click - the error text
+          // is already shown on the line and the session holds the full
+          // context (2026-09-11: aborted subagent lines were unclickable
+          // because failed() swallowed the click for error expansion).
+          if (props.onClick) {
+            props.onClick()
+            return
+          }
           setErrorExpanded((value) => !value)
           return
         }
