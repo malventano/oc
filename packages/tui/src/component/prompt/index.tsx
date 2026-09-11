@@ -1206,7 +1206,14 @@ export function Prompt(props: PromptProps) {
     }
     if (props.disabled) return false
     if (workspace.creating() || move.creating()) return false
-    if (auto()?.visible) return false
+    // 0349: an Enter delivered while the "/" command autocomplete is open
+    // (a send-keys batch "/restart" + Enter, or a fast typist) must still
+    // submit the typed command - the autocomplete's own Enter dismisses it
+    // first in the manual flow, but a same-tick Enter hits this gate before
+    // the dismiss lands, and the /restart is silently dropped. A
+    // "/"-prefixed draft is an explicit command, so submit it; mention/file
+    // autocompletes ("@" / paths) keep the gate (the user must finish them).
+    if (auto()?.visible && !store.prompt.input.trim().startsWith("/")) return false
     if (!store.prompt.input) {
       // Empty field with queued prompts: Enter interrupts the current turn
       // and injects the queue (abort with resume=true restarts the loop).
