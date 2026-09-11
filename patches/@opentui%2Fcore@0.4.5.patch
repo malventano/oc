@@ -191,17 +191,6 @@ index e5e5874..9be2b20 100644
            return;
          const styledText = new StyledText(chunks);
          this.textBuffer.setStyledText(styledText);
-+        {
-+          // 0322e: ALWAYS-ON apply-site probe (no env gate). cl = the content
-+          // snapshot this highlight colored; sl = the chunk text length
-+          // actually applied to the buffer. sl < cl = the applied styled text
-+          // lost content (stale/missing chunks) - the live symptom path for
-+          // the reasoning/answer mid-line cuts. Pushed to a global array; the
-+          // TUI part-trace flushes + logs it (never stderr).
-+          let __sl = 0;
-+          for (const __ch of chunks || []) __sl += (__ch.text && __ch.text.length) || 0;
-+          ((globalThis).__ocPartApplyEvents ??= []).push({ cl: content.length, sl: __sl, cc: content.slice(0, 32) });
-+        }
          this.setRenderedLineSources(renderedLineSources);
        } else {
          this.textBuffer.setText(content);
