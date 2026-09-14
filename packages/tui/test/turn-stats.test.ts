@@ -114,7 +114,36 @@ test("computeTurn: active turn picks in-flight steps after the last completed on
   expect(t.steps.map((s) => s.id)).toEqual(["asst-2", "asst-3"])
   expect(t.reasoning).toBe(70)
   expect(t.output).toBe(100)
-  expect(t.start).toBe(3000)
+  // The clock anchors on the FIRST step's claim time (4000), not the root
+  // user message's queue time (3000).
+  expect(t.start).toBe(4000)
+})
+
+test("computeTurn: queued prompt's wait stays out of the elapsed clock (0350)", () => {
+  // The prompt was submitted at 1000 but the busy session claimed it at 8000:
+  // the user message's created (1000) is the queue time, the first step's
+  // created (8000) is the claim time. The elapsed counter must start from 0
+  // at the claim, not from the queue.
+  const messages: Array<UserMessage | AssistantMessage> = [
+    user("user-1", 1000),
+    assistant({
+      parentID: "user-1",
+      id: "asst-1",
+      time: { created: 8000 },
+      tokens: { input: 200, output: 20, reasoning: 30, cache: { read: 0, write: 0 } },
+    }),
+  ]
+  const t = computeTurn(messages)
+  expect(t.start).toBe(8000)
+})
+
+test("computeTurn: no steps yet falls back to the root user's queue time", () => {
+  // A turn with no assistant child in the window (mid-prune edge): the queue
+  // time is the only anchor available.
+  const messages: Array<UserMessage | AssistantMessage> = [user("user-1", 3000)]
+  const t = computeTurn(messages)
+  expect(t.parentID).toBeUndefined()
+  expect(t.start).toBe(0)
 })
 
 test("computeTurn: earlier completed steps of the same turn still count", () => {
@@ -706,6 +735,38 @@ test("countTurnWalkParts: the root user message's created time anchors the clock
     st,
   )
   expect(st.start).toBe(500)
+})
+
+test("countTurnWalkParts: the earliest step's claim time wins the clock anchor (0350)", () => {
+  // Newest-first pages: page 1 holds the newest steps, page 2 the earlier
+  // ones (root included). The root's created (1000, queue time) is the
+  // fallback; the earliest step's created (8000, claim) must win - a queued
+  // prompt's wait stays out of the elapsed counter.
+  let st = countTurnWalkParts(
+    [{ info: { id: "s3", role: "assistant", parentID: "root", time: { created: 12000 } }, parts: [] }],
+    "root",
+    { tools: 0, reasoning: 0, output: 0, reachedRoot: false },
+  )
+  st = countTurnWalkParts(
+    [
+      { info: { id: "s1", role: "assistant", parentID: "root", time: { created: 8000 } }, parts: [toolPart("t1")] },
+      { info: { id: "root", role: "user", parentID: null, time: { created: 1000 } }, parts: [] },
+    ],
+    "root",
+    st,
+  )
+  expect(st.start).toBe(8000)
+  expect(st.stepStart).toBe(8000)
+  expect(st.reachedRoot).toBe(true)
+})
+
+test("countTurnWalkParts: no step timestamps falls back to the root's queue time", () => {
+  const items = [
+    { info: { id: "root", role: "user", parentID: null, time: { created: 1000 } }, parts: [] },
+    { info: { id: "s1", role: "assistant", parentID: "root" }, parts: [toolPart("t1")] },
+  ]
+  const r = countTurnWalkParts(items, "root", { tools: 0, reasoning: 0, output: 0, reachedRoot: false })
+  expect(r.start).toBe(1000)
 })
 
 test("countTurnWalkParts: a steps-only page (root on an older page) counts via the parentID filter", () => {

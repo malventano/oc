@@ -2214,17 +2214,27 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     if (steps.length === 0) return
     let acc = turnLiveCache.get(key)
     if (!acc) {
-      acc = newTurnLiveAccum(parentStartCache.get(key))
+      acc = newTurnLiveAccum()
       turnLiveCache.set(key, acc)
     }
-    // Seed the clock anchor while the parent is in the window (the store
-    // find), falling back to the module cache (survives the mid-turn prune
-    // and the walk's own seed) and then the cached walk result (the walked
-    // start is persisted to parentStartCache on completion, so a remount in
-    // the same process seeds the timer instantly - no second walk needed).
+    // Seed the clock anchor (0350): the turn's claim time - the earliest
+    // assistant step's created - so a prompt QUEUED while another turn ran
+    // does not carry its wait into the elapsed counter (the user message's
+    // created is stamped at queue/submit time; the step's at claim time).
+    // Priority: the DB walk's resolved anchor (a completed turn's walk sees
+    // ALL steps, in-window or not) > the earliest in-window step (the live
+    // turn's claim) > the root user message's created (the queue-time
+    // fallback for a turn with no step visible) > the module cache seed.
     if (acc.start === undefined) {
       const parent = messages().find((x) => x.role === "user" && x.id === props.message.parentID)
-      acc.start = parent?.time.created ?? parentStartCache.get(key) ?? turnDbCache.get(key)?.start
+      // Root in-window: steps[0] is the turn's TRUE first step (the store
+      // window is contiguous from the newest end), so its created is the
+      // claim time. Root pruned: the earliest in-window step may be mid-turn
+      // and would under-count - fall back to the walk's resolved anchor,
+      // then the fetched queue time (parentStartCache).
+      acc.start = parent
+        ? (turnDbCache.get(key)?.start ?? steps[0]?.time.created ?? parent.time.created)
+        : (turnDbCache.get(key)?.start ?? parentStartCache.get(key))
     }
     foldTurnSteps(acc, steps, (id) => sync.data.part[id])
     // ALWAYS a fresh snapshot reference (Solid memos compare by reference):
@@ -2236,12 +2246,19 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     // the copy cost is bounded to step completions - never per delta.
     return { ...acc }
   })
-  // The turn's start time (root user message's created): the in-memory start
-  // that lives next to the counters (seeded into the accumulator from the
-  // store while the parent is in the window, or from parentStartCache once
-  // pruned). Falls back to the DB-walked value for remounts after restart
-  // and long turns whose start the store window never had.
+  // The turn's start time (0350: the claim anchor - the earliest assistant
+  // step's created, so a queued prompt's wait stays out of the counter): the
+  // in-memory start that lives next to the counters (seeded into the
+  // accumulator from the store steps, or the walk result once it lands).
+  // Falls back to the DB-walked value for remounts after restart and long
+  // turns whose steps the store window never had.
   const userStart = createMemo(() => {
+    // The DB walk is authoritative once it lands: it sees ALL steps, so its
+    // stepStart is the true claim time even when the store pruned the early
+    // ones (restart mid-long-turn). The walk only exists for completed
+    // turns, so the live clock's path is untouched.
+    const walked = dbTurn()?.start
+    if (walked !== undefined) return walked
     const acc = turnAccum()
     if (acc?.start !== undefined) return acc.start
     return dbTurnStart()
