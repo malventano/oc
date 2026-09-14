@@ -5,7 +5,11 @@ export type TurnStats = {
    *  decision ALSO consults the session status to cover tool-execution gaps
    *  where no step is mid-stream). */
   active: boolean
-  /** The user message that started the turn (elapsed reference point). */
+  /** The turn's clock anchor: the FIRST assistant step's created time (the
+   *  claim time - when the loop picked the prompt up), falling back to the
+   *  root user message's created. A prompt queued while another turn runs
+   *  gets its queue wait OUT of the elapsed counter: the footer mounts when
+   *  the claim lands, and the counter starts at 0 there. */
   start: number
   /** The turn's assistant steps, in order (each LLM call = one step). */
   steps: AssistantMessage[]
@@ -47,7 +51,7 @@ export function computeTurn(
   const rootID = last.parentID
   const steps = messages.filter((m): m is AssistantMessage => isAssistant(m) && m.parentID === rootID)
   const root = messages.find((m) => m.role === "user" && m.id === rootID)
-  const start = root?.time.created ?? last.time.created
+  const start = steps[0]?.time.created ?? root?.time.created ?? last.time.created
 
   let reasoning = 0
   let output = 0
@@ -258,13 +262,17 @@ export function formatCount(num: number): string {
  * completed turn, resolved from the DB in ONE paginated pass (the store
  * window caps at 100 messages, so long turns' early steps and their root
  * prompt fall outside it). `tools` = tool-call parts, `reasoning`/`output` =
- * the assistant steps' real endpoint token totals, `start` = the root user
- * message's created time (the elapsed clock's anchor).
+ * the assistant steps' real endpoint token totals, `start` = the turn's clock
+ * anchor: the EARLIEST assistant step's created time (the claim time - when
+ * the loop picked the prompt up, so a queued prompt's wait stays out of the
+ * elapsed counter), falling back to the root user message's created.
  */
 export type TurnDbWalk = { tools: number; reasoning: number; output: number; start?: number }
 
-/** Per-page state of the turn DB walk across pages. */
-export type TurnWalkPageState = TurnDbWalk & { reachedRoot: boolean }
+/** Per-page state of the turn DB walk across pages. `stepStart` carries the
+ *  earliest assistant step's created time seen so far across pages (the walk's
+ *  primary anchor before the root's fallback is resolved). */
+export type TurnWalkPageState = TurnDbWalk & { reachedRoot: boolean; stepStart?: number }
 
 /**
  * Accumulate a turn's stats from one page of the messages API (chronological,
@@ -289,24 +297,30 @@ export function countTurnWalkParts(
   parentID: string,
   state: TurnWalkPageState,
 ): TurnWalkPageState {
-  let { tools, reachedRoot, start, reasoning, output } = state
+  let { tools, reachedRoot, start, stepStart, reasoning, output } = state
   for (const item of items) {
     if (item.info.id === parentID) {
       reachedRoot = true
-      // The turn's root user message anchors the elapsed clock. Capture its
-      // created time while the walk passes it - the store window (capped at
-      // 100) prunes the parent away on long turns, and the footer's elapsed
-      // reads it from here instead.
+      // The turn's root user message anchors the elapsed clock's FALLBACK (the
+      // queue time - used only when no claim step exists). Capture its created
+      // time while the walk passes it - the store window (capped at 100)
+      // prunes the parent away on long turns.
       start = item.info.time?.created ?? start
       continue
     }
     if (item.info.role === "assistant" && (reachedRoot || item.info.parentID === parentID)) {
+      // The EARLIEST step's created time is the clock's primary anchor (the
+      // claim time - when the loop picked the queued prompt up). The walk
+      // pages NEWEST-first across pages (each page chronological), so the
+      // first match is the newest step - min-accumulate to reach the claim.
+      const created = item.info.time?.created
+      if (created !== undefined && (stepStart === undefined || created < stepStart)) stepStart = created
       tools += item.parts.filter((p) => p.type === "tool").length
       reasoning += item.info.tokens?.reasoning ?? 0
       output += item.info.tokens?.output ?? 0
     }
   }
-  return { tools, reachedRoot, start, reasoning, output }
+  return { tools, reachedRoot, start: stepStart ?? start, stepStart, reasoning, output }
 }
 
 /**
