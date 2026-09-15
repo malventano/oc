@@ -1,8 +1,8 @@
+diff -ruN a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
 diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
-index 701d70d..adea59c 100644
 --- a/chunk-bun-t2myhmwd.js
 +++ b/chunk-bun-t2myhmwd.js
-@@ -8703,7 +8703,7 @@ class TreeSitterClient extends EventEmitter2 {
+@@ -8703,7 +8703,7 @@
          const callback = this.messageCallbacks.get(message.messageId);
          if (callback) {
            this.messageCallbacks.delete(message.messageId);
@@ -11,11 +11,11 @@ index 701d70d..adea59c 100644
          }
          return;
        }
+diff -ruN a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..9be2b20 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
-@@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
+@@ -226,6 +226,7 @@
    _position = {};
    _opacity = 1;
    _flexShrink = 1;
@@ -23,7 +23,7 @@ index e5e5874..9be2b20 100644
    _childrenInLayoutOrder = [];
    _childrenInZIndexOrder = [];
    needsZIndexSort = false;
-@@ -519,7 +520,7 @@ class Renderable extends BaseRenderable {
+@@ -519,7 +520,7 @@
      }
      this._width = value;
      this.yogaNode.setWidth(value);
@@ -32,7 +32,7 @@ index e5e5874..9be2b20 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -534,7 +535,7 @@ class Renderable extends BaseRenderable {
+@@ -534,7 +535,7 @@
      }
      this._height = value;
      this.yogaNode.setHeight(value);
@@ -41,7 +41,7 @@ index e5e5874..9be2b20 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -593,6 +594,7 @@ class Renderable extends BaseRenderable {
+@@ -593,6 +594,7 @@
        node.setFlexGrow(0);
      }
      if (options.flexShrink !== undefined) {
@@ -49,7 +49,7 @@ index e5e5874..9be2b20 100644
        this._flexShrink = options.flexShrink;
        node.setFlexShrink(options.flexShrink);
      } else {
-@@ -750,6 +752,7 @@ class Renderable extends BaseRenderable {
+@@ -750,6 +752,7 @@
    }
    set flexShrink(shrink) {
      const value = shrink == null ? 1 : shrink;
@@ -57,7 +57,7 @@ index e5e5874..9be2b20 100644
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2986,6 +2989,7 @@ class TextBufferRenderable extends Renderable {
+@@ -2986,6 +2989,7 @@
        this.requestRender();
      }
    }
@@ -65,7 +65,7 @@ index e5e5874..9be2b20 100644
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3155,6 +3159,20 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3155,6 +3159,20 @@
        this._highlightsDirty = true;
        this._highlightSnapshotId++;
        if (this._streaming && this._filetype && !this._drawUnstyledText) {
@@ -86,7 +86,7 @@ index e5e5874..9be2b20 100644
          this.requestRender();
          return;
        }
-@@ -3248,6 +3266,44 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3248,6 +3266,44 @@
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -131,7 +131,7 @@ index e5e5874..9be2b20 100644
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3366,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3310,7 +3366,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -143,7 +143,7 @@ index e5e5874..9be2b20 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3377,30 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,8 +3377,30 @@
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -175,7 +175,7 @@ index e5e5874..9be2b20 100644
      }
    }
    async startHighlight() {
-@@ -3329,7 +3410,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3329,7 +3410,10 @@
      if (!filetype)
        return;
      const isInitialContent = this._streaming && !this._hadInitialContent;
@@ -187,7 +187,7 @@ index e5e5874..9be2b20 100644
        this._hadInitialContent = true;
      }
      this._isHighlighting = true;
-@@ -3393,6 +3477,15 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3393,6 +3477,15 @@
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
@@ -203,11 +203,93 @@ index e5e5874..9be2b20 100644
        this.updateTextInfo();
        this.requestRender();
      } catch (error) {
+@@ -3928,6 +4021,19 @@
+ }
+ var canThrowAcrossNativeCallback = typeof process !== "undefined" && typeof process.versions === "object" && process.versions !== null && typeof process.versions.bun === "string";
+ 
++// oc feed watchdog (0357): a feed span's promise resolves ONLY via the raw
++// stdout write callback, and a silently lost completion (bun io_uring drop
++// class) latches feedIdleRenderScheduled forever - frozen TUI, no error, no
++// timeout (BUG_TUI_FEED_IDLE_RENDER_LATCH). Evidence goes to a JSONL file;
++// NEVER stderr (it would leak into the TUI input field).
++function ocFeedWatchdogLog(event, detail) {
++  try {
++    const fs = typeof process !== "undefined" && process.getBuiltinModule ? process.getBuiltinModule("node:fs") : null;
++    if (!fs) return;
++    fs.appendFileSync("/tmp/oc-feed-watchdog.log", JSON.stringify({ t: new Date().toISOString(), event, ...detail }) + "\n");
++  } catch {}
++}
++
+ class NativeSpanFeed {
+   static create(options) {
+     const lib = resolveRenderLib();
+@@ -7184,8 +7290,38 @@
+     this._feed = feed;
+     if (feed) {
+       this._detachFeed = feed.onData((bytes) => {
++        // oc 0357 watchdog: resolve even if the write callback never fires.
++        // A real completion is sub-ms (even under pty backpressure); 5s is
++        // orders of magnitude above any legitimate stall. A tmux flow-control
++        // pause CAN legitimately stall writes - force-resolving then just
++        // queues further spans into the write path until the pane unpauses
++        // (recoverable, bounded by write size). Late callback = no-op.
+         return new Promise((resolve) => {
+-          this.realStdoutWrite.call(this.stdout, bytes, () => resolve());
++          let settled = false;
++          const started = Date.now();
++          const finish = () => {
++            if (settled) return;
++            settled = true;
++            clearTimeout(slowTimer);
++            clearTimeout(forceTimer);
++            resolve();
++          };
++          const slowTimer = setTimeout(() => {
++            if (!settled)
++              ocFeedWatchdogLog("write-slow", { bytes: bytes.length, ms: Date.now() - started, pending: feed.pendingAsyncHandlers });
++          }, 1000);
++          const forceTimer = setTimeout(() => {
++            if (settled) return;
++            settled = true;
++            ocFeedWatchdogLog("write-lost-completion-force-resolve", { bytes: bytes.length, ms: Date.now() - started, pending: feed.pendingAsyncHandlers });
++            resolve();
++          }, 5000);
++          try {
++            this.realStdoutWrite.call(this.stdout, bytes, finish);
++          } catch (error) {
++            ocFeedWatchdogLog("write-throw", { bytes: bytes.length, error: String(error) });
++            finish();
++          }
+         });
+       });
+       this._detachFeedError = feed.onError((code) => {
+@@ -7460,7 +7596,21 @@
+     if (!feed || this.feedIdleRenderScheduled || this._isDestroyed)
+       return;
+     this.feedIdleRenderScheduled = true;
++    // oc 0357 backstop: if the feed-idle wait pends 10s, drop the latch and
++    // force a repaint attempt. If the feed is still genuinely backpressured,
++    // the native render skips and this reschedules - a 10s retry loop beats
++    // a permanent latch. Late idle resolution stays safe (flag re-checks).
++    const idleWatchdog = setTimeout(() => {
++      if (this._isDestroyed || !this.feedIdleRenderScheduled)
++        return;
++      ocFeedWatchdogLog("feed-idle-watchdog-fired", { pending: feed.pendingAsyncHandlers, pinned: feed.hasPinnedChunks(), draining: feed.draining });
++      this.feedIdleRenderScheduled = false;
++      this.ordinaryFrameWaitingForFeed = false;
++      this.ordinaryFrameWaitControlState = null;
++      this.requestRender();
++    }, 10000);
+     feed.idle().then(() => {
++      clearTimeout(idleWatchdog);
+       this.feedIdleRenderScheduled = false;
+       const ordinaryFrameWasWaiting = this.ordinaryFrameWaitingForFeed;
+       const ordinaryFrameWaitControlState = this.ordinaryFrameWaitControlState;
+diff -ruN a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
 diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
-index 4a2cb78..07da349 100644
 --- a/chunk-node-51kpf0mz.js
 +++ b/chunk-node-51kpf0mz.js
-@@ -225,6 +225,7 @@ class Renderable extends BaseRenderable {
+@@ -225,6 +225,7 @@
    _position = {};
    _opacity = 1;
    _flexShrink = 1;
@@ -215,7 +297,7 @@ index 4a2cb78..07da349 100644
    _childrenInLayoutOrder = [];
    _childrenInZIndexOrder = [];
    needsZIndexSort = false;
-@@ -518,7 +519,7 @@ class Renderable extends BaseRenderable {
+@@ -518,7 +519,7 @@
      }
      this._width = value;
      this.yogaNode.setWidth(value);
@@ -224,7 +306,7 @@ index 4a2cb78..07da349 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -533,7 +534,7 @@ class Renderable extends BaseRenderable {
+@@ -533,7 +534,7 @@
      }
      this._height = value;
      this.yogaNode.setHeight(value);
@@ -233,7 +315,7 @@ index 4a2cb78..07da349 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -592,6 +593,7 @@ class Renderable extends BaseRenderable {
+@@ -592,6 +593,7 @@
        node.setFlexGrow(0);
      }
      if (options.flexShrink !== undefined) {
@@ -241,7 +323,7 @@ index 4a2cb78..07da349 100644
        this._flexShrink = options.flexShrink;
        node.setFlexShrink(options.flexShrink);
      } else {
-@@ -749,6 +751,7 @@ class Renderable extends BaseRenderable {
+@@ -749,6 +751,7 @@
    }
    set flexShrink(shrink) {
      const value = shrink == null ? 1 : shrink;
@@ -249,7 +331,7 @@ index 4a2cb78..07da349 100644
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2985,6 +2988,7 @@ class TextBufferRenderable extends Renderable {
+@@ -2985,6 +2988,7 @@
        this.requestRender();
      }
    }
@@ -257,7 +339,7 @@ index 4a2cb78..07da349 100644
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3309,7 +3313,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3309,7 +3313,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -269,7 +351,7 @@ index 4a2cb78..07da349 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,7 +3325,16 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,7 +3325,16 @@
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
      } else {
@@ -287,11 +369,11 @@ index 4a2cb78..07da349 100644
      }
    }
    async startHighlight() {
+diff -ruN a/index.bun.js b/index.bun.js
 diff --git a/index.bun.js b/index.bun.js
-index 815856b..b4ad117 100644
 --- a/index.bun.js
 +++ b/index.bun.js
-@@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
+@@ -4799,6 +4799,15 @@
      });
      super.add(this.gutter);
      super.add(this.target);
@@ -307,7 +389,7 @@ index 815856b..b4ad117 100644
    }
    add(child) {
      if (!this.target && "lineInfo" in child && "lineCount" in child && "virtualLineCount" in child && "scrollY" in child) {
-@@ -4911,6 +4920,9 @@ class LineNumberRenderable extends Renderable {
+@@ -4911,6 +4920,9 @@
        this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
      }
    }
@@ -317,7 +399,7 @@ index 815856b..b4ad117 100644
    setLineColors(lineColors) {
      this._lineColorsGutter.clear();
      this._lineColorsContent.clear();
-@@ -5347,6 +5359,7 @@ class DiffRenderable extends Renderable {
+@@ -5347,6 +5359,7 @@
    _syntaxStyle;
    _wrapMode;
    _conceal;
@@ -325,7 +407,7 @@ index 815856b..b4ad117 100644
    _selectionBg;
    _selectionFg;
    _treeSitterClient;
-@@ -5388,6 +5401,11 @@ class DiffRenderable extends Renderable {
+@@ -5388,6 +5401,11 @@
      this._syntaxStyle = options.syntaxStyle;
      this._wrapMode = options.wrapMode;
      this._conceal = options.conceal ?? false;
@@ -337,7 +419,7 @@ index 815856b..b4ad117 100644
      this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined;
      this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined;
      this._treeSitterClient = options.treeSitterClient;
-@@ -5665,7 +5683,8 @@ class DiffRenderable extends Renderable {
+@@ -5665,7 +5683,8 @@
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -347,7 +429,7 @@ index 815856b..b4ad117 100644
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -5778,7 +5797,7 @@ class DiffRenderable extends Renderable {
+@@ -5778,7 +5797,7 @@
      }
      const content = contentLines.join(`
  `);
@@ -356,7 +438,7 @@ index 815856b..b4ad117 100644
      this.attachLineInfoListeners();
      this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set, "100%");
      if (this.rightSide && this.rightSideAdded) {
-@@ -5905,8 +5924,11 @@ class DiffRenderable extends Renderable {
+@@ -5905,8 +5924,11 @@
  `);
      const needsConsistentConcealing = (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype;
      const drawUnstyledText = !needsConsistentConcealing;
@@ -370,7 +452,7 @@ index 815856b..b4ad117 100644
      this.attachLineInfoListeners();
      let finalLeftLines;
      let finalRightLines;
-@@ -6054,8 +6076,8 @@ class DiffRenderable extends Renderable {
+@@ -6054,8 +6076,8 @@
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -381,7 +463,7 @@ index 815856b..b4ad117 100644
    }
    get diff() {
      return this._diff;
-@@ -6291,6 +6313,20 @@ class DiffRenderable extends Renderable {
+@@ -6291,6 +6313,20 @@
        this.rebuildView();
      }
    }
@@ -402,7 +484,7 @@ index 815856b..b4ad117 100644
    get fg() {
      return this._fg;
    }
-@@ -6314,6 +6350,9 @@ class DiffRenderable extends Renderable {
+@@ -6314,6 +6350,9 @@
      this.leftSide?.clearLineColor(line);
      this.rightSide?.clearLineColor(line);
    }
@@ -412,7 +494,7 @@ index 815856b..b4ad117 100644
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11436,6 +11475,39 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11436,6 +11475,39 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -452,7 +534,7 @@ index 815856b..b4ad117 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11696,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11624,6 +11696,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -460,7 +542,7 @@ index 815856b..b4ad117 100644
          this.updateStickyState();
        }
      });
-@@ -11929,12 +12002,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11929,12 +12002,122 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -583,7 +665,7 @@ index 815856b..b4ad117 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11950,7 +12133,31 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11950,7 +12133,31 @@
            if (this._stickyScrollTop) {
              this.scrollTop = 0;
            } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
@@ -616,7 +698,7 @@ index 815856b..b4ad117 100644
            }
            if (this._stickyScrollLeft) {
              this.scrollLeft = 0;
-@@ -11959,6 +12166,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11959,6 +12166,8 @@
            }
          }
        }
@@ -625,11 +707,11 @@ index 815856b..b4ad117 100644
      } finally {
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
+diff -ruN a/index.node.js b/index.node.js
 diff --git a/index.node.js b/index.node.js
-index 0ddf03b..34a3efa 100644
 --- a/index.node.js
 +++ b/index.node.js
-@@ -4910,6 +4910,9 @@ class LineNumberRenderable extends Renderable {
+@@ -4910,6 +4910,9 @@
        this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
      }
    }
@@ -639,7 +721,7 @@ index 0ddf03b..34a3efa 100644
    setLineColors(lineColors) {
      this._lineColorsGutter.clear();
      this._lineColorsContent.clear();
-@@ -5664,7 +5667,8 @@ class DiffRenderable extends Renderable {
+@@ -5664,7 +5667,8 @@
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -649,7 +731,7 @@ index 0ddf03b..34a3efa 100644
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -6053,8 +6057,8 @@ class DiffRenderable extends Renderable {
+@@ -6053,8 +6057,8 @@
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -660,7 +742,7 @@ index 0ddf03b..34a3efa 100644
    }
    get diff() {
      return this._diff;
-@@ -6313,6 +6317,9 @@ class DiffRenderable extends Renderable {
+@@ -6313,6 +6317,9 @@
      this.leftSide?.clearLineColor(line);
      this.rightSide?.clearLineColor(line);
    }
@@ -670,7 +752,7 @@ index 0ddf03b..34a3efa 100644
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11435,6 +11442,36 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11435,6 +11442,36 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -707,7 +789,7 @@ index 0ddf03b..34a3efa 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11660,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11623,6 +11660,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -715,7 +797,7 @@ index 0ddf03b..34a3efa 100644
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11966,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11928,12 +11966,122 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -838,7 +920,7 @@ index 0ddf03b..34a3efa 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12106,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11958,6 +12106,8 @@
            }
          }
        }
@@ -847,11 +929,11 @@ index 0ddf03b..34a3efa 100644
      } finally {
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
+diff -ruN a/parser.worker.js b/parser.worker.js
 diff --git a/parser.worker.js b/parser.worker.js
-index 1b7549e..9a91e12 100644
 --- a/parser.worker.js
 +++ b/parser.worker.js
-@@ -4019,7 +4019,7 @@ class ParserWorker {
+@@ -4019,7 +4019,7 @@
    getNodeText(node, content) {
      return content.substring(node.startIndex, node.endIndex);
    }
@@ -860,7 +942,7 @@ index 1b7549e..9a91e12 100644
      const injectionMatches = [];
      const injectionRanges = new Map;
      if (!parserState.queries.injections) {
-@@ -4030,6 +4030,14 @@ class ParserWorker {
+@@ -4030,6 +4030,14 @@
      const languageGroups = new Map;
      const injectionMapping = parserState.injectionMapping;
      for (const capture of injectionCaptures) {
@@ -875,7 +957,7 @@ index 1b7549e..9a91e12 100644
        const captureName = capture.name;
        if (captureName === "injection.content" || captureName.includes("injection")) {
          const nodeType = capture.node.type;
-@@ -4318,6 +4326,7 @@ class ParserWorker {
+@@ -4318,6 +4326,7 @@
      this.bufferParsers.delete(bufferId);
    }
    async handleOneShotHighlight(content, filetype, messageId) {
@@ -883,7 +965,7 @@ index 1b7549e..9a91e12 100644
      const reusableState = await this.getReusableParser(filetype);
      if (!reusableState) {
        postWorkerMessage({
-@@ -4330,7 +4339,56 @@ class ParserWorker {
+@@ -4330,7 +4339,56 @@
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
@@ -941,7 +1023,7 @@ index 1b7549e..9a91e12 100644
      if (!tree) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4341,30 +4399,80 @@ class ParserWorker {
+@@ -4341,30 +4399,80 @@
        return;
      }
      try {
@@ -1030,7 +1112,7 @@ index 1b7549e..9a91e12 100644
      }
    }
    async updateDataPath(dataPath) {
-@@ -4391,6 +4499,10 @@ class ParserWorker {
+@@ -4391,6 +4499,10 @@
        this.filetypeParserPromises.clear();
        this.reusableParsers.clear();
        this.reusableParserPromises.clear();
@@ -1041,7 +1123,7 @@ index 1b7549e..9a91e12 100644
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
-@@ -4509,7 +4621,21 @@ if (isWorkerRuntime) {
+@@ -4509,7 +4621,21 @@
            });
            break;
          case "ONESHOT_HIGHLIGHT":
@@ -1064,11 +1146,11 @@ index 1b7549e..9a91e12 100644
            break;
          case "UPDATE_DATA_PATH":
            try {
+diff -ruN a/renderables/Diff.d.ts b/renderables/Diff.d.ts
 diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
-index 62ce331..1e922c8 100644
 --- a/renderables/Diff.d.ts
 +++ b/renderables/Diff.d.ts
-@@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
+@@ -14,6 +14,7 @@
      syntaxStyle?: SyntaxStyle;
      wrapMode?: "word" | "char" | "none";
      conceal?: boolean;
@@ -1076,7 +1158,7 @@ index 62ce331..1e922c8 100644
      selectionBg?: string | RGBA;
      selectionFg?: string | RGBA;
      treeSitterClient?: TreeSitterClient;
-@@ -44,6 +45,7 @@ export declare class DiffRenderable extends Renderable {
+@@ -44,6 +45,7 @@
      private _syntaxStyle?;
      private _wrapMode?;
      private _conceal;
@@ -1084,7 +1166,7 @@ index 62ce331..1e922c8 100644
      private _selectionBg?;
      private _selectionFg?;
      private _treeSitterClient?;
-@@ -134,6 +136,8 @@ export declare class DiffRenderable extends Renderable {
+@@ -134,6 +136,8 @@
      set selectionFg(value: string | RGBA | undefined);
      get conceal(): boolean;
      set conceal(value: boolean);
