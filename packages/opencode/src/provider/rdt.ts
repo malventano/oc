@@ -557,8 +557,8 @@ export type RDTContext = {
   baseURL: string
   apiKey?: string
   /** providerOptions key under which the variant body is flattened (for
-   *  openai-compatible: model.providerID.split(".")[0]). Used to read
-   *  chat_template_kwargs.reasoning_effort from the merged variant body. */
+   *  openai-compatible: model.providerID.split(".")[0]). Used to read the
+   *  variant's chat_template_kwargs from the merged variant body. */
   providerKey: string
   headers?: Record<string, string | undefined>
 }
@@ -604,29 +604,19 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
     const state = getState(ctx.sessionID)
     const chainId = chainIdOf(inputMsgs, ctx.sessionID)
 
-    // Extract the effort/thinking from the variant's chat_template_kwargs
-    // (which reach us flattened under the provider key in providerOptions).
-    // Map to the responses `reasoning` field: the DSV4 encoder reads
-    // chat_template_kwargs.reasoning_effort as built by the responses
-    // protocol's `reasoning.effort` (oc-spec 17 §12.2a). Requires the P6
-    // fork enum patch for the "adaptive" value; standard levels pass as-is.
+    // Forward the variant's chat_template_kwargs verbatim, exactly as the
+    // chat-completions transport does (transform.ts providerOptions -> body).
+    // The responses request schema carries a top-level `chat_template_kwargs`
+    // field (responses/protocol.py) that the model's chat template reads
+    // directly - including DSV4.1's NUMERIC reasoning_effort (1-100). The
+    // former translation into the enum-gated `reasoning.effort` field coerced
+    // every non-enum value to "high" (all DSV4.1 levels ran high) and dropped
+    // the thinking:false gate. No allowlist here: completions does not gate
+    // these, so responses must not either.
     const providerOpts = options.providerOptions as Record<string, any> | undefined
-    const ctk = providerOpts?.[ctx.providerKey]?.chat_template_kwargs as
+    const chatTemplateKwargs = providerOpts?.[ctx.providerKey]?.chat_template_kwargs as
       | Record<string, any>
       | undefined
-    const effort = (ctk?.reasoning_effort as string | undefined) ?? "high"
-    const thinkingMode = ctk?.thinking_mode as string | undefined
-    // Responses accepts only the OpenAI standard enum. The custom "adaptive"
-    // level requires the P6 fork enum patch server-side, which is now live
-    // (vllm-start DSV4_REFF mount, applied 2026-08-18). Any future custom
-    // level still maps to "high" so the request never 400s.
-    const RESPONSES_EFFORT_ALLOWED = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "adaptive"])
-    const safeEffort = RESPONSES_EFFORT_ALLOWED.has(effort) ? effort : "high"
-    const reasonField: Record<string, unknown> | undefined =
-      (safeEffort !== "none" && (thinkingMode ?? "enabled") !== "disabled" && {
-        effort: safeEffort,
-      }) ||
-      undefined
 
     // Chain decision: valid if the server's chain (first hwm messages) is
     // byte-identical to ours, the model id matches, and the chain identity
@@ -690,7 +680,7 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         ...(previousResponseId !== undefined ? { previous_response_id: previousResponseId } : {}),
         ...(tools && tools.length > 0 ? { tools } : {}),
         ...(options.toolChoice ? { tool_choice: lowerToolChoice(options.toolChoice as never) } : {}),
-        ...(reasonField ? { reasoning: reasonField } : {}),
+        ...(chatTemplateKwargs ? { chat_template_kwargs: chatTemplateKwargs } : {}),
         stream: true,
         ...(options.maxOutputTokens != null ? { max_output_tokens: options.maxOutputTokens } : {}),
         ...(options.temperature != null ? { temperature: options.temperature } : {}),
