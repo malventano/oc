@@ -2246,6 +2246,21 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     // the copy cost is bounded to step completions - never per delta.
     return { ...acc }
   })
+  // The turn's full DB-walked stats (tools + reasoning/output tokens + root
+  // start). The LIVE turn counts from the store (the stream keeps it
+  // complete); completed turns are LOCKED to the DB via the walk - the store
+  // caps at 100 messages, so a long turn's early steps and its root prompt
+  // are pruned away, and the walk result must not depend on the store
+  // window. The signal seeds from the resolved cache so a remount never
+  // flashes the pruned store numbers; the plain effect (NO defer) runs the
+  // walk on mount for prior turns and on the live turn's completion.
+  // DECLARED BEFORE userStart (below): Solid createMemo getters evaluate
+  // eagerly at creation, and userStart's getter reads dbTurn - with dbTurn
+  // declared after, that first eager run hit the binding's temporal dead
+  // zone (ReferenceError on any session with prior turns = the 0351 crash).
+  const [dbTurn, setDbTurn] = createSignal<TurnDbWalk | undefined>(
+    parentKey() ? turnDbCache.get(parentKey()!) : undefined,
+  )
   // The turn's start time (0350: the claim anchor - the earliest assistant
   // step's created, so a queued prompt's wait stays out of the counter): the
   // in-memory start that lives next to the counters (seeded into the
@@ -2277,17 +2292,6 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     if (!start) return 0
     return props.message.time.completed - start
   })
-  // The turn's full DB-walked stats (tools + reasoning/output tokens + root
-  // start). The LIVE turn counts from the store (the stream keeps it
-  // complete); completed turns are LOCKED to the DB via the walk - the store
-  // caps at 100 messages, so a long turn's early steps and its root prompt
-  // are pruned away, and the walk result must not depend on the store
-  // window. The signal seeds from the resolved cache so a remount never
-  // flashes the pruned store numbers; the plain effect (NO defer) runs the
-  // walk on mount for prior turns and on the live turn's completion.
-  const [dbTurn, setDbTurn] = createSignal<TurnDbWalk | undefined>(
-    parentKey() ? turnDbCache.get(parentKey()!) : undefined,
-  )
   createEffect(() => {
     if (showLive()) return
     const parentID = props.message.parentID
