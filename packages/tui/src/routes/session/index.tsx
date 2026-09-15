@@ -3319,7 +3319,11 @@ function InlineTool(props: {
       pending={props.pending}
       failure={props.failure}
       spinner={props.spinner}
-      separate={props.separate}
+      // A failed call is its own visual unit: consecutive failed rows
+      // (e.g. the rg-guard reject firing several turns in a row) rendered
+      // as single-line rows with no sibling margin, so distinct errors
+      // visually merged into one stacked block. Force separation.
+      separate={props.separate || failed()}
       onMouseOver={() => clickable() && setHover(true)}
       onMouseOut={() => setHover(false)}
       onMouseUp={() => {
