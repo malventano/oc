@@ -92,6 +92,9 @@ function pastedFilepath(value: string, platform: string) {
 export type PromptRef = {
   focused: boolean
   current: PromptInfo
+  // Optional: TuiPromptRef (packages/plugin, the public plugin-facing shape)
+  // has no mode and must stay assignable to this type.
+  mode?: "normal" | "shell"
   set(prompt: PromptInfo): void
   reset(): void
   blur(): void
@@ -780,6 +783,9 @@ export function Prompt(props: PromptProps) {
     },
     get current() {
       return store.prompt
+    },
+    get mode() {
+      return store.mode
     },
     focus() {
       input.focus()
