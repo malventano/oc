@@ -62,6 +62,7 @@ import { DialogAlert } from "../../ui/dialog-alert"
 import { TodoItem } from "../../component/todo-item"
 import { DialogMessage } from "./dialog-message"
 import type { PromptInfo } from "../../component/prompt/history"
+import { usePromptHistory } from "../../prompt/history"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
@@ -242,6 +243,7 @@ export function Session() {
   const kv = useKV()
   const { theme } = useTheme()
   const promptRef = usePromptRef()
+  const promptHistory = usePromptHistory()
   const session = createMemo(() => sync.session.get(route.sessionID))
   const location = createMemo(() => {
     const current = session()
@@ -363,6 +365,21 @@ export function Session() {
         : expectedPromptAt(key)
     const same = cur.input === expected.input && cur.parts.length === expected.parts.length
     if (same) return
+    // Recall into the up-arrow history buffer (0355): walking away from a
+    // genuine draft via undo/redo must never lose it. The position stash
+    // below only resurfaces on a redo back to this exact spot (and dies with
+    // the process); history is durable and recallable from anywhere, the same
+    // guarantee Ctrl+C gives a drafted prompt. append dedups consecutive
+    // identical entries, so round trips that re-stash the same draft do not
+    // pollute.
+    promptHistory.append(
+      {
+        input: cur.input,
+        parts: cur.parts.map((p) => ({ ...p })),
+        mode: prompt.mode,
+      },
+      route.sessionID,
+    )
     // Never clobber an existing stash: the first stash of a position wins.
     if (draftStash.has(key)) return
     // Store a CLONE, not the live store.prompt proxy: an undo restore
