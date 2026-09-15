@@ -2577,6 +2577,9 @@ function useFixedStreamHeight(
   // resort. 0286c's writeback (setWrapWidth(140)) was the extend/snap bounce:
   // it drove the WRONG width into the buffer.
   let lastWidth = 0
+  // 0354: last content length seen - the shrink cap below applies only when the
+  // content string actually got shorter (see the bufferRows block).
+  let lastContentLen = 0
   const width = () => {
     try {
       const rw = typeof el?.width === "number" ? el.width : 0
@@ -2715,7 +2718,18 @@ function useFixedStreamHeight(
         // clips for the frame until the async apply catches up - better than
         // the box staying tall on stale content).
         const bufferRows = Math.max(0, c, vr)
+        // 0354: the shrink cap (0330) must fire ONLY on a real content shrink.
+        // `contentRows` is CHAR wrap (ceil(len/w)) while the buffer wraps WORD
+        // style, so char wrap is a LOWER bound - on every GROWING frame it sits
+        // below the buffer's row count and min() clipped the still-streaming
+        // partial rows, revealing the live diff one row at a time (the 0306
+        // by-line artifact, reintroduced here for the live diff only: the
+        // reasoning/tool streams use plain max and stayed smooth; completion
+        // flips `released` and takes the other branch, hence "back to normal").
+        // On growth trust the buffer; only when the content string itself got
+        // shorter does the cap follow it down (the 0330 re-align shrink).
         let contentRows = bufferRows
+        let shrank = false
         try {
           const cc = content()
           if (cc.length > 0) {
@@ -2723,8 +2737,10 @@ function useFixedStreamHeight(
             for (const line of cc.split("\n")) r += Math.max(1, Math.ceil(line.length / w))
             contentRows = r
           }
+          shrank = cc.length < lastContentLen
+          lastContentLen = cc.length
         } catch {}
-        setRows(Math.min(bufferRows, contentRows))
+        setRows(shrank ? Math.min(bufferRows, contentRows) : bufferRows)
       } catch {
         setRows(0)
       }
