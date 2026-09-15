@@ -1913,10 +1913,10 @@ it.instance(
       })
     // Rung 1: 1 -> 0 (floor at the marker - the compaction turn stays).
     expect(yield* runVirtual()).toBe("virtual_reduced")
-    // Rung 2 (lossy): summary-only - the compaction turn's work is folded.
+    // Rung 3 (lossy): summary-only - the compaction turn's work is folded.
     expect(yield* runVirtual()).toBe("virtual_reduced")
     expect(yield* noteOf()).toContain("Compaction summary only")
-    // Rung 3 (lossy): clean start - the marker+summary pair is excluded too.
+    // Rung 4 (lossy): clean start - the marker+summary pair is excluded too.
     expect(yield* runVirtual()).toBe("virtual_reduced")
     {
       const msgs = yield* ssn.messages({ sessionID: session.id })
