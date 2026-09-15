@@ -6,7 +6,7 @@
 // excluded. Pane/terminal output (tmux capture | grep) is not file work.
 //
 // ONE EXCEPTION - Class 20 (rg -rn / -r n): this is a HARD REJECT via
-// tool.execute.before (0262), not a passive nudge. The command is never
+// tool.execute.before (0342), not a passive nudge. The command is never
 // correct anywhere (rg recurses and line-numbers by default), so it must
 // not run: the mangled output ("n\nn" instead of matches, exit 0) would
 // otherwise land in the DB as reasoning churn. It is context-free - the
