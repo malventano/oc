@@ -17,6 +17,8 @@
     "upgrade-opentui": "bun run script/upgrade-opentui.ts",
     "postinstall": "bun run --cwd packages/core fix-node-pty",
     "prepare": "husky",
+    "check:patches": "bun script/check-patchfiles.mjs",
+    "verify:patches": "bun script/verify-patch-apply.mjs",
     "random": "echo 'Random script'",
     "sso": "aws sso login --sso-session=opencode --no-browser",
     "translate:app": "bun run script/translate-app.ts",

@@ -1,0 +1,14 @@
+# Guard the bun patchfiles: bun >= 1.4 validates hunk headers at patchfile
+# PARSE time and refuses `bun install` (hunk_header_integrity_check_failed),
+# which makes the fork unbuildable from a fresh clone. Local bun < 1.4 parses
+# leniently, so drift is invisible here (0348 incident). Only runs when a
+# patchfile is staged; the check itself is a fast read-only pass.
+staged=$(git diff --cached --name-only --diff-filter=ACM -- 'patches/*.patch')
+if [ -n "$staged" ]; then
+  bun script/check-patchfiles.mjs $staged || {
+    echo ""
+    echo "patchfile check failed - fix the hunk headers (or delete the degenerate"
+    echo "no-op hunk) before committing. See oc-spec/12 PATCHFILE INTEGRITY."
+    exit 1
+  }
+fi
