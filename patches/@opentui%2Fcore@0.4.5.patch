@@ -65,7 +65,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3155,6 +3159,20 @@
+@@ -3155,13 +3159,27 @@
        this._highlightsDirty = true;
        this._highlightSnapshotId++;
        if (this._streaming && this._filetype && !this._drawUnstyledText) {
@@ -86,6 +86,15 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
+       if (this._initialStyledText && this._drawUnstyledText) {
+         this.textBuffer.setStyledText(this._initialStyledText);
+-      } else {
+-        this.textBuffer.setText(value);
++      } else if (!(this._filetype && !this._drawUnstyledText && this._shouldRenderTextBuffer)) { // 0359: keep the painted (colored) buffer at the completion flip - raw-setting the new value paints the whole body the element fg until the async highlight lands (the write completion grey/white flash; 0338 gated only the streaming setter). Raw-set only when the buffer is void (fresh mount).
++        this.textBuffer.setText(value);
+       }
+       this.setRenderedLineSources(undefined);
+       this.updateTextInfo();
 @@ -3248,6 +3266,44 @@
        this._hadInitialContent = false;
        this._lastHighlights = [];
