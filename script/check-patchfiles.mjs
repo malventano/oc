@@ -71,6 +71,15 @@ for (const file of files) {
       }
       continue
     }
+    // A hunk header MUST start at column 0. A leading space (or any prefix)
+    // makes bun parse it as a BODY line of the previous hunk: the counts then
+    // break and bun refuses the whole install (hunk_header_integrity_check_failed)
+    // while GNU patch applies it happily - the 2026-09-16 leading-space incident,
+    // which this validator missed because no hunk was open at that line.
+    if (/^\s+@@ -\d/.test(line))
+      mismatch(
+        `hunk header must start at column 0 - leading whitespace makes bun parse it as a body line (hunk_header_integrity_check_failed): ${JSON.stringify(line.slice(0, 60))}`,
+      )
     if (!cur) {
       // Outside a hunk body: diff header lines and inter-file junk. Bun's
       // patcher ENOENTs when --- / +++ carry a tab+timestamp suffix
