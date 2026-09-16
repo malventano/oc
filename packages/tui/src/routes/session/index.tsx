@@ -4441,9 +4441,22 @@ function Write(props: ToolProps) {
         if (ft) return ft
       }
     }
+    // 0360: a path whose EXTENSION has not streamed yet resolves
+    // filetype "none" - a FALSE no-grammar signal (the model emits the
+    // filePath arg last for the dominant content-first order, so the
+    // incomplete path's extname is unknown). "none" is TRUTHY, so it used to
+    // latch and return, which (a) flipped the live fg to theme.text via
+    // isNoGrammar AND (b) made startHighlight return ZERO highlights - the
+    // core's else branch then raw-repainted the whole body the element fg
+    // (white) for the frames until the extension landed, then re-colored it
+    // = the remaining write flash. Treat "none" as NOT confident while
+    // streaming: fall through to the sniff and the latch, exactly like the
+    // low-content markdown default. The completed view still rebases on the
+    // real name, where a genuinely extensionless file resolves "none" (raw).
     const pathFt = p ? filetype(p) : undefined
+    const confident = pathFt && pathFt !== "none" ? pathFt : undefined
     const sniffed = coalesceFiletype(sniffFiletype(stream.display()))
-    const candidate = pathFt ?? sniffed
+    const candidate = confident ?? sniffed
     if (candidate) latched = candidate
     return latched ?? "markdown"
   })
