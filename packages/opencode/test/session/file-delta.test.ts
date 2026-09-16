@@ -35,7 +35,7 @@ function readPart(path: string, text: string, stat: FileStat, lineStart = 1, lin
   } as unknown as SessionV1.Part
 }
 
-function deltaPart(path: string, stat: FileStat | { deleted: true }): SessionV1.Part {
+function deltaPart(path: string, stat: FileStat | { deleted: true }, text?: string): SessionV1.Part {
   return {
     id: "p-delta",
     sessionID: "s",
@@ -43,7 +43,7 @@ function deltaPart(path: string, stat: FileStat | { deleted: true }): SessionV1.
     type: "text",
     text: "<system-reminder>file drift</system-reminder>",
     synthetic: true,
-    metadata: { fileDelta: { [path]: stat } },
+    metadata: { fileDelta: { [path]: text !== undefined ? { ...stat, text } : stat } },
   } as unknown as SessionV1.Part
 }
 
@@ -133,6 +133,15 @@ describe("file-delta.integrateFileReads", () => {
   test("a post-read delta replaces the reported stat", () => {
     const out = integrateFileReads([msg([readPart(FILE, "a\nb\nc", STAT_1)]), msg([deltaPart(FILE, STAT_2)])])
     expect(out.get(FILE)?.stat).toEqual(STAT_2)
+  })
+
+  test("a post-read delta advances the diff baseline to the reported window", () => {
+    const out = integrateFileReads([
+      msg([readPart(FILE, "a\nb\nc", STAT_1)]),
+      msg([deltaPart(FILE, STAT_2, "a\nB\nc")]),
+    ])
+    expect(out.get(FILE)?.stat).toEqual(STAT_2)
+    expect(out.get(FILE)?.oldText).toBe("a\nB\nc")
   })
 
   test("multiple deltas: last wins", () => {
@@ -233,7 +242,7 @@ describe("file-delta.computeFileDeltas", () => {
       disk(1786655410443, 10),
       async () => "a",
     )
-    expect(out).toEqual([{ path: FILE, kind: "changed", diff: { lines: ["- b", "- c"], truncated: false } }])
+    expect(out).toEqual([{ path: FILE, kind: "changed", diff: { lines: ["- b", "- c"], truncated: false }, text: "a" }])
   })
 
   test("a changed file yields a window diff", async () => {
@@ -250,7 +259,7 @@ describe("file-delta.computeFileDeltas", () => {
 
   test("a file that shrank is still a change", async () => {
     const out = await computeFileDeltas(new Map([[FILE, reconstructed(STAT_1)]]), disk(3000, 5), async () => "a")
-    expect(out).toEqual([{ path: FILE, kind: "changed", diff: { lines: ["- b", "- c"], truncated: false } }])
+    expect(out).toEqual([{ path: FILE, kind: "changed", diff: { lines: ["- b", "- c"], truncated: false }, text: "a" }])
   })
 
   test("deletion: reported once (not re-reported when the baseline is already deleted)", async () => {
@@ -294,6 +303,19 @@ describe("file-delta.computeFileDeltas", () => {
     )
     expect(out).toHaveLength(1)
     expect(out[0].kind).toBe("changed")
+  })
+
+  test("a second change diffs incrementally from the last reported window", async () => {
+    // The baseline was advanced to the window reported by the prior reminder,
+    // so the new diff carries only the new change.
+    const out = await computeFileDeltas(
+      new Map([[FILE, { ...reconstructed(STAT_2), oldText: "a\nB\nc" }]]),
+      disk(3000, 5),
+      async () => "a\nB\nC",
+    )
+    expect(out).toEqual([
+      { path: FILE, kind: "changed", diff: { lines: ["- c", "+ C"], truncated: false }, text: "a\nB\nC" },
+    ])
   })
 })
 

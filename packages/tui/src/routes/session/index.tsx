@@ -3096,8 +3096,14 @@ function ReasoningHeader(props: {
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+  // Synthetic parts are harness system reminders (epoch / skill / file deltas),
+  // not authored assistant content: they ride the wire for the model and are
+  // never rendered in the transcript. The user-message renderer has always
+  // filtered them; the file-delta reminder now anchors to the newest message
+  // (0358), which mid-turn is an ASSISTANT message - without this guard the
+  // whole drift reminder rendered as a markdown block in the TUI.
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={!props.part.synthetic && props.part.text.trim()}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
         <markdown
           syntaxStyle={syntax()}
