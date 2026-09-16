@@ -5,6 +5,7 @@ import * as NFS from "fs/promises"
 import { PartID, SessionID } from "./schema"
 import { Session } from "./session"
 import { isRealUser, lineDiff } from "./epoch"
+import { isAfter } from "./message-v2"
 import { InstanceState } from "@/effect/instance-state"
 
 /**
@@ -13,17 +14,33 @@ import { InstanceState } from "@/effect/instance-state"
  * A read tool part establishes the file's stat (mtimeMs + size) at read time
  * (recorded by the read tool's metadata). If the file changes on disk, the
  * content shown in the read output is stale - the model may edit or reason
- * against outdated lines. On each step-1 real user prompt the walk re-stats
- * every tracked path and, when the disk stat differs from the newest
- * recorded stat, appends a synthetic fileDelta part to the user message
- * showing the bounded window diff (old read window -> new window) so the
- * model re-reads instead of acting on stale content.
+ * against outdated lines. On every step the walk re-stats every tracked path
+ * and, when the disk stat differs from the newest recorded stat, appends a
+ * synthetic fileDelta part showing the bounded window diff (old reported window
+ * -> new window) so the model re-reads instead of acting on stale content.
+ *
+ * ANCHOR: the reminder rides the NEWEST message in the chain. At step 1 that
+ * is the turn's user prompt - the reminder lands WITH the prompt (the same
+ * shape as the epoch/skill deltas). At a later step it is the previous step's
+ * assistant message, which the server's chain does not yet hold (the RDT hwm is
+ * the last request's prompt length, and the assistant row was appended after
+ * it). Either way the part lands at or after the hwm, so the hashed prefix is
+ * untouched and the chain survives. Anchoring to the turn's user message on
+ * EVERY step instead put the part deep inside an already-hashed prefix (a
+ * mid-turn file change landed ~30K tokens back and re-prefilled the whole
+ * suffix after it - BUG_MODEL_SWITCH_PREFIX_MISS 2026-09-16).
+ *
+ * STACKING: the reminder metadata carries the window text it just reported, so
+ * the walk advances the baseline to it and the next delta is incremental from
+ * the last reported window (epoch and skill deltas stack the same way via their
+ * applied state). Without it every reminder re-diffed the original read window,
+ * repeating the earlier edits in each later diff.
  *
  * Parts are identified by metadata.fileDelta (distinct from the epoch's
  * metadata.epoch/epochDelta and skill-delta's metadata.skillDelta) so the
- * epoch's record scans and delta strips never touch them. Deltas ride user
- * messages and are lifecycle'd by message survival - filterCompacted needs
- * no fileDelta-aware rules.
+ * epoch's record scans and delta strips never touch them. Deltas ride the newest
+ * message and are lifecycle'd by message survival - filterCompacted needs no
+ * fileDelta-aware rules.
  *
  * Idempotency is chain-derived: the newest event per path wins among read
  * parts (read-time stat), fileDelta parts (last-reported stat), and session
@@ -55,11 +72,20 @@ export type ReconstructedRead = {
   oldText: string | null
 }
 
+/** Reported per-path state: the disk stat plus the window text the model was
+ *  shown (the next delta's baseline). Text is absent when the window could not
+ *  be read (generic "changed on disk" note) - the baseline then stays at the
+ *  prior reported window. */
+export type FileDeltaState = FileStat & { text?: string }
+
 export type FileDeltaEntry = {
   path: string
   kind: "changed" | "deleted"
-  /** Bounded window diff (old read window -> new window); undefined when too large to diff. */
+  /** Bounded window diff (old reported window -> new window); undefined when too large to diff. */
   diff?: { lines: string[]; truncated: boolean }
+  /** The new window text reported to the model (the next delta's baseline);
+   *  undefined when the window could not be read (generic note). */
+  text?: string
 }
 
 const MAX_DIFF_FILE_BYTES = 4 * 1024 * 1024 // mirror hashline-store snapshot cap: beyond this, no window diff
@@ -69,9 +95,10 @@ const MAX_REMIND_PATHS = 8
 
 /**
  * Ordered walk: read parts establish the baseline stat; later fileDelta parts
- * (last-reported) and session self-edit parts (post-edit stat) replace it.
- * Returns the reconstructed view per absolute path. A path whose read part
- * has no recorded stat (e.g. pre-0116 reads, directory reads) is not tracked.
+ * (last-reported stat + window) and session self-edit parts (post-edit stat)
+ * replace it. Returns the reconstructed view per absolute path. A path whose
+ * read part has no recorded stat (e.g. pre-0116 reads, directory reads) is not
+ * tracked.
  */
 export function integrateFileReads(msgs: SessionV1.WithParts[]): Map<string, ReconstructedRead> {
   const out = new Map<string, ReconstructedRead>()
@@ -93,14 +120,20 @@ export function integrateFileReads(msgs: SessionV1.WithParts[]): Map<string, Rec
           oldText: typeof display.text === "string" ? display.text : null,
         })
       } else if (part.type === "text" && part.synthetic && part.metadata?.fileDelta) {
-        const delta = part.metadata.fileDelta as Record<string, FileStat | { deleted?: boolean }>
+        const delta = part.metadata.fileDelta as Record<string, FileDeltaState | { deleted?: boolean }>
         for (const [filePath, entry] of Object.entries(delta)) {
           const cur = out.get(filePath)
           if (!cur) continue
           if (entry && "deleted" in entry && entry.deleted) {
             cur.stat = { deleted: true }
           } else if (isFileStat(entry)) {
-            cur.stat = entry
+            cur.stat = { mtimeMs: entry.mtimeMs, size: entry.size }
+            // Advance the diff baseline: this reminder reported the window at
+            // this point, so the next delta is incremental from it instead of
+            // re-diffing the original read window.
+            if (typeof (entry as { text?: unknown }).text === "string") {
+              cur.oldText = (entry as { text: string }).text
+            }
           }
         }
       } else if (
@@ -172,17 +205,21 @@ function readNewWindow(text: string, lineStart: number, lineEnd: number): string
   return out.join("\n")
 }
 
-/** Bounded window diff (old read window -> current window); undefined when too large/unreadable. */
+/** Bounded window diff (old reported window -> current window); undefined when
+ *  too large/unreadable. Also returns the new window text so the reminder can
+ *  report the baseline the next delta diffs from. */
 async function windowDiff(
   st: ReconstructedRead,
   disk: FileStat,
   readNew: (path: string) => Promise<string | undefined>,
-): Promise<{ lines: string[]; truncated: boolean } | undefined> {
+): Promise<{ diff?: { lines: string[]; truncated: boolean }; text?: string } | undefined> {
   if (disk.size > MAX_DIFF_FILE_BYTES || st.oldText === null) return undefined
   const text = await readNew(st.path)
   if (text === undefined) return undefined
-  const diff = lineDiff(st.oldText, readNewWindow(text, st.lineStart, st.lineEnd) ?? "")
-  return diff.lines.length > 0 || diff.truncated ? diff : undefined
+  const window = readNewWindow(text, st.lineStart, st.lineEnd) ?? ""
+  const diff = lineDiff(st.oldText, window)
+  if (diff.lines.length === 0 && !diff.truncated) return undefined
+  return { diff, text: window }
 }
 
 /**
@@ -207,7 +244,10 @@ export function computeFileDeltas(
       const disk = diskStats.get(path)
       if ("deleted" in st.stat) {
         // Recreated: the read window diffs against the recreated content.
-        if (disk) entries.push({ path, kind: "changed", diff: await windowDiff(st, disk, readNew) })
+        if (disk) {
+          const d = await windowDiff(st, disk, readNew)
+          entries.push({ path, kind: "changed", diff: d?.diff, text: d?.text })
+        }
         continue
       }
       if (!disk) {
@@ -222,7 +262,8 @@ export function computeFileDeltas(
       // the truncated disk stat (spurious drift after the 0120 rollout, one
       // prompt later). Sub-ms precision is noise either way.
       if (Math.trunc(disk.mtimeMs) === Math.trunc(st.stat.mtimeMs) && disk.size === st.stat.size) continue
-      entries.push({ path, kind: "changed", diff: await windowDiff(st, disk, readNew) })
+      const d = await windowDiff(st, disk, readNew)
+      entries.push({ path, kind: "changed", diff: d?.diff, text: d?.text })
     }
     return entries
   })()
@@ -259,14 +300,22 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
   // Loaded files are re-statted on EVERY step (mid-turn included): the stats
   // are one batched Effect.all, so staleness is caught while the model is
   // still working on the files instead of deferred to the next user prompt.
-  // Emission stays idempotent via the hasDelta check below (one reminder per
-  // message). Compaction turns and per-message system overrides bypass.
+  // Compaction turns and per-message system overrides bypass.
   if (input.userSystem || input.compactingPrompt || !isRealUser(input.user)) return
 
   const reconstructed = integrateFileReads(input.msgs)
   if (reconstructed.size === 0) return
 
-  const hasDelta = input.user.parts.some((p) => p.type === "text" && p.metadata?.fileDelta)
+  // The reminder rides the NEWEST message in the chain (created time, id
+  // tie-break - the array is reordered by compaction, so position is not
+  // time order). At step 1 that is the turn's user prompt, so the reminder
+  // lands WITH the prompt; at a later step it is the previous step's
+  // assistant message. Either way the part lands at or after the RDT hwm.
+  let anchor: SessionV1.WithParts | undefined
+  for (const m of input.msgs) if (!anchor || isAfter(m.info, anchor.info)) anchor = m
+  if (!anchor) return
+
+  const hasDelta = anchor.parts.some((p) => p.type === "text" && p.metadata?.fileDelta)
   if (hasDelta) return
 
   const instance = yield* InstanceState.context
@@ -298,9 +347,12 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
   const entries = yield* Effect.promise(() => computeFileDeltas(reconstructed, diskStats, readNew))
   if (entries.length === 0) return
 
-  const metadata: Record<string, FileStat | { deleted: true }> = {}
+  const metadata: Record<string, FileDeltaState | { deleted: true }> = {}
   for (const e of entries.slice(0, MAX_REMIND_PATHS)) {
-    metadata[e.path] = e.kind === "deleted" ? { deleted: true } : diskStats.get(e.path)!
+    metadata[e.path] =
+      e.kind === "deleted"
+        ? { deleted: true }
+        : { ...diskStats.get(e.path)!, ...(e.text !== undefined ? { text: e.text } : {}) }
   }
 
   const sessions = yield* Session.Service
@@ -313,14 +365,14 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
   })
   const part = yield* sessions.updatePart({
     id: PartID.ascending(),
-    messageID: input.user.info.id,
+    messageID: anchor.info.id,
     sessionID: input.sessionID,
     type: "text",
     text: buildFileDeltaText(rendered),
     synthetic: true,
     metadata: { fileDelta: metadata },
   })
-  input.user.parts.push(part)
+  anchor.parts.push(part)
 })
 
 export * as FileDelta from "./file-delta"
