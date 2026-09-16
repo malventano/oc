@@ -4,7 +4,7 @@ Custom opencode plugin tools used by the oc build. Copy the files into your open
 
     cp tools/*.js ~/.config/opencode/tools/
 
-# (or `.opencode/tools/` for project scope). Tools in the config directory are auto-discovered, no config entry needed. Retired 2026-08-11: `file_edit.js` (capabilities merged into the built-in hashline edit tool, patch 0026), the sessions trio `sessions_query.js`/`sessions_browse.js`/`sessions_manage.js` (capabilities merged into built-in tools, patch 0030), `void_output.js` + `squash_output.js` (redesigned as built-in `squash-output`, patch 0031), and `skill_metadata.js` (redesigned as built-in `skill-metadata`, patch 0034).
+# (or `.opencode/tools/` for project scope). Tools in the config directory are auto-discovered, no config entry needed. Retired 2026-08-11: `file_edit.js` (capabilities merged into the built-in edit tool, patch 0026; that hashline-era format was itself later replaced by the JSON ladder, patches 0124/0131/0301), the sessions trio `sessions_query.js`/`sessions_browse.js`/`sessions_manage.js` (capabilities merged into built-in tools, patch 0030), `void_output.js` + `squash_output.js` (redesigned as built-in `squash-output`, patch 0031), and `skill_metadata.js` (redesigned as built-in `skill-metadata`, patch 0034).
 
 | File | What it does |
 |------|--------------|

@@ -88,7 +88,7 @@ export type FileDeltaEntry = {
   text?: string
 }
 
-const MAX_DIFF_FILE_BYTES = 4 * 1024 * 1024 // mirror hashline-store snapshot cap: beyond this, no window diff
+const MAX_DIFF_FILE_BYTES = 4 * 1024 * 1024 // mirror snapshot cap: beyond this, no window diff
 const MAX_DIFF_WINDOW_BYTES = 50 * 1024 // mirror read.ts MAX_BYTES
 const MAX_DIFF_LINE_LENGTH = 2000 // mirror read.ts MAX_LINE_LENGTH
 const MAX_REMIND_PATHS = 8
