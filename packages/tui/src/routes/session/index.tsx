@@ -3280,7 +3280,7 @@ function GenericTool(props: ToolProps) {
     <Show
       when={props.output && ctx.showGenericToolOutput()}
       fallback={
-        <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
+        <InlineTool icon="⚙" pending="Writing command…" complete={true} part={props.part}>
           {live() ?? `${props.tool} ${input(props.input)}`}
         </InlineTool>
       }
@@ -3636,7 +3636,7 @@ function Shell(props: ToolProps) {
   return (
     <Show when={error()} fallback={
       <Show when={showBlock()} fallback={
-        <InlineTool icon="$" pending="Writing command..." complete={command()} part={props.part}>
+        <InlineTool icon="$" pending="Writing command…" complete={command()} part={props.part}>
           {command()}
         </InlineTool>
       }>
@@ -3680,7 +3680,7 @@ function Shell(props: ToolProps) {
       </LiveToolStream>
       </Show>
     }>
-      <InlineTool icon="$" pending="Writing command..." failure={error()} complete={false} part={props.part}>
+      <InlineTool icon="$" pending="Writing command…" failure={error()} complete={false} part={props.part}>
         {command()}
       </InlineTool>
     </Show>
@@ -4450,7 +4450,7 @@ function Write(props: ToolProps) {
   return (
     <Switch>
       <Match when={status() === "error"}>
-        <InlineTool icon="←" pending="Preparing write..." complete={path()} part={props.part}>
+        <InlineTool icon="←" pending="Preparing write…" complete={path()} part={props.part}>
           Write {pathFormatter.format(path())}
         </InlineTool>
       </Match>
@@ -4497,7 +4497,7 @@ function Write(props: ToolProps) {
 function Glob(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
+    <InlineTool icon="✱" pending="Finding files…" complete={stringValue(props.input.pattern)} part={props.part}>
       Glob "{stringValue(props.input.pattern)}"{" "}
       <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
       <Show when={numberValue(props.metadata.count)}>
@@ -4522,7 +4522,7 @@ function Read(props: ToolProps) {
     <>
       <InlineTool
         icon="→"
-        pending="Reading file..."
+        pending="Reading file…"
         complete={stringValue(props.input.filePath)}
         spinner={isRunning()}
         part={props.part}
@@ -4545,7 +4545,7 @@ function Read(props: ToolProps) {
 function Grep(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
+    <InlineTool icon="✱" pending="Searching content…" complete={stringValue(props.input.pattern)} part={props.part}>
       Grep "{stringValue(props.input.pattern)}"{" "}
       <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
       <Show when={numberValue(props.metadata.matches)}>
@@ -4557,7 +4557,7 @@ function Grep(props: ToolProps) {
 
 function WebFetch(props: ToolProps) {
   return (
-    <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
+    <InlineTool icon="%" pending="Fetching from the web…" complete={stringValue(props.input.url)} part={props.part}>
       WebFetch {stringValue(props.input.url)}
     </InlineTool>
   )
@@ -4565,7 +4565,7 @@ function WebFetch(props: ToolProps) {
 
 function WebSearch(props: ToolProps) {
   return (
-    <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
+    <InlineTool icon="◈" pending="Searching web…" complete={stringValue(props.input.query)} part={props.part}>
       {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
       <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
     </InlineTool>
@@ -4655,7 +4655,7 @@ function Task(props: ToolProps) {
       color={retry() ? theme.error : undefined}
       spinner={isRunning()}
       complete={stringValue(props.input.description)}
-      pending="Delegating..."
+      pending="Delegating…"
       part={props.part}
       onClick={() => {
         if (sessionID()) {
@@ -5203,7 +5203,7 @@ function Edit(props: ToolProps) {
         />
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit..." complete={title()} part={props.part}>
+        <InlineTool icon="←" pending="Preparing edit…" complete={title()} part={props.part}>
           {title()}
         </InlineTool>
       </Match>
@@ -5286,7 +5286,7 @@ function ApplyPatch(props: ToolProps) {
         </For>
       </Match>
       <Match when={true}>
-        <InlineTool icon="%" pending="Preparing patch..." failure="Patch failed" complete={false} part={props.part}>
+        <InlineTool icon="%" pending="Preparing patch…" failure="Patch failed" complete={false} part={props.part}>
           Patch
         </InlineTool>
       </Match>
@@ -5308,7 +5308,7 @@ function TodoWrite(props: ToolProps) {
       <Match when={true}>
         <InlineTool
           icon="⚙"
-          pending="Updating todos..."
+          pending="Updating todos…"
           failure="Todo update failed"
           complete={false}
           part={props.part}
@@ -5417,7 +5417,7 @@ function Question(props: ToolProps) {
   // SEPARATELY as the question_answers user message's "# Questions" body
   // (undoable boundary), not inside the tool call.
   return (
-    <InlineTool icon="→" pending="Asking questions..." complete={count()} part={props.part}>
+    <InlineTool icon="→" pending="Asking questions…" complete={count()} part={props.part}>
       Asked {count()} question{count() !== 1 ? "s" : ""}
     </InlineTool>
   )
@@ -5425,7 +5425,7 @@ function Question(props: ToolProps) {
 
 function Skill(props: ToolProps) {
   return (
-    <InlineTool icon="→" pending="Loading skill..." complete={stringValue(props.input.name)} part={props.part}>
+    <InlineTool icon="→" pending="Loading skill…" complete={stringValue(props.input.name)} part={props.part}>
       Skill "{stringValue(props.input.name)}"
     </InlineTool>
   )

@@ -2049,9 +2049,6 @@ export type Config = {
     continue_loop_on_deny?: boolean
     mcp_timeout?: number
     policies?: Array<ConfigV2ExperimentalPolicy>
-    hashline_autocorrect?: boolean
-    hashline_seen_lines?: boolean
-    hashline_indent_hint?: boolean
   }
 }
 
