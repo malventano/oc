@@ -72,3 +72,42 @@ test("completion flip keeps the colored buffer (no raw setText)", async () => {
     setup.renderer.destroy()
   }
 })
+
+// Regression guard for the fresh-mount blank body (patch 0361).
+//
+// A completed block loaded from the session DB mounts with content ALREADY final
+// and `streaming === false`. The solid adapter constructs the element with
+// `{ id }` only and applies `content` through the setter, so the constructor's
+// content branch (which sets `_shouldRenderTextBuffer` from the filetype) never
+// runs - the field initializer leaves it `true` ("the buffer will be rendered by
+// the highlight"). The 0359 gate on `set content` then sees
+// `_filetype && !_drawUnstyledText && _shouldRenderTextBuffer` = true and
+// SKIPS the raw paint, so the body depends entirely on the async highlight:
+// if that highlight is superseded or dropped the buffer stays void while
+// `updateTextInfo` still numbers every row = gutters with a blank body.
+test("fresh mount paints the content before the async highlight lands", async () => {
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const sitter = new MockTreeSitterClient()
+  const syntax = SyntaxStyle.fromStyles({
+    default: { fg: "#ffffff" },
+    keyword: { fg: "#ff0000" },
+  })
+
+  const code = new CodeRenderable(setup.renderer, {
+    id: "code",
+    filetype: "python",
+    streaming: false,
+    drawUnstyledText: false,
+    syntaxStyle: syntax,
+    treeSitterClient: sitter,
+  })
+  setup.renderer.root.add(code)
+
+  try {
+    code.content = FULL
+    await setup.flush()
+    expect((code as any).textBuffer.getPlainText()).toBe(FULL)
+  } finally {
+    setup.renderer.destroy()
+  }
+})
