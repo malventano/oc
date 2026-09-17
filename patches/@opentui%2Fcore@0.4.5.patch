@@ -90,7 +90,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.textBuffer.setStyledText(this._initialStyledText);
 -      } else {
 -        this.textBuffer.setText(value);
-+      } else if (!(this._filetype && !this._drawUnstyledText && this._shouldRenderTextBuffer)) { // 0359: keep the painted (colored) buffer at the completion flip - raw-setting the new value paints the whole body the element fg until the async highlight lands (the write completion grey/white flash; 0338 gated only the streaming setter). Raw-set only when the buffer is void (fresh mount).
++      } else if (!(this._filetype && !this._drawUnstyledText && this._shouldRenderTextBuffer && (() => { try { return this.textBuffer.getPlainText().length > 0 } catch { return false } })())) { // 0359: keep the painted (colored) buffer at the completion flip (raw-setting paints the body the element fg until the async highlight lands - the write completion flash). 0361: the skip requires a NON-EMPTY buffer. A fresh mount (a completed block loaded from the DB) has a VOID buffer, so it raw-paints instead of staying blank behind a props-driven gutter until an async highlight a historical (off-screen) block never runs.
 +        this.textBuffer.setText(value);
        }
        this.setRenderedLineSources(undefined);
