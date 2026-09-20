@@ -12,7 +12,9 @@
 //
 // v1 scope (deliberate): chain state is in-memory per session (a process
 // restart loses it -> one full-send, which is the fallback path anyway);
-// undo always full-sends (it rewrites the list -> hash mismatch); no DB
+// undo always full-sends (SessionRevert invalidates the chain explicitly - a
+// rewritten list can reproduce byte-identical input, so the prefix hash alone
+// cannot see it); no DB
 // migration, no SSC coupling, no anchor table. Failure ladder: an expired
 // previous_response_id (4xx) clears the chain and retries the same turn once
 // full; persistent failures disable delta for the session.
@@ -90,6 +92,20 @@ type RequestDebug = {
 const lastRequests = new Map<string, RequestDebug>()
 export const _testState = (sessionID: string): ChainState | undefined => states.get(sessionID)
 export const _testLastRequest = (sessionID: string): RequestDebug | undefined => lastRequests.get(sessionID)
+/** Seed a chain for tests that assert invalidation without a live request. */
+export const _testSetState = (sessionID: string, overrides: Partial<ChainState> = {}): void => {
+  setState(sessionID, {
+    responseId: "test-response",
+    hwm: 0,
+    prefixHash: "",
+    advanceBy: 1,
+    chainId: "",
+    modelID: "",
+    failures: 0,
+    disabled: false,
+    ...overrides,
+  })
+}
 
 // Env-gated JSONL debug trail (RDT_DEBUG_FILE=/path). Writes one compact
 // RequestDebug per request; used for headless verification (oc run).
@@ -116,6 +132,16 @@ export const enabled = (info: Provider.Info): boolean =>
 const getState = (sessionID: string) => states.get(sessionID)
 const setState = (sessionID: string, state: ChainState) => states.set(sessionID, state)
 const clearState = (sessionID: string) => states.delete(sessionID)
+
+// Out-of-band list rewrite invalidation (undo/redo/cleanup). The prefix hash
+// cannot detect a rewrite that reconstructs the SAME bytes: undoing to before
+// a compaction and re-compacting reproduces the first compaction's exact
+// input, so canChain would accept the stale response_id and the server would
+// prepend its prior summary output to the context (the model then continues
+// the old summary instead of producing a fresh one). SessionRevert calls this
+// on every revert/unrevert/cleanup - the spec's "undo always full-sends" rule,
+// enforced explicitly rather than inferred from the hash.
+export const invalidate = (sessionID: string) => clearState(sessionID)
 
 // ---------------------------------------------------------------------------
 // Content hashing (the lean prefix validator)

@@ -10,6 +10,7 @@ import { Session } from "@/session/session"
 
 import { SessionRevert } from "../../src/session/revert"
 import { MessageV2 } from "../../src/session/message-v2"
+import { RDT } from "../../src/provider/rdt"
 import { Snapshot } from "../../src/snapshot"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { provideTmpdirInstance } from "../fixture/fixture"
@@ -676,6 +677,42 @@ describe("revert + compact workflow", () => {
           })
           expect((yield* session.get(sid)).revert).toBeUndefined()
           expect(yield* read(path.join(dir, "a.txt"))).toBe("a3")
+        }),
+      { git: true },
+    ),
+  )
+
+  it.live(
+    "revert and unrevert invalidate the responses delta chain",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+
+          const info = yield* session.create({})
+          const sid = info.id
+
+          const u1 = yield* user(sid)
+          yield* text(sid, u1.id, "hello")
+          const a1 = yield* assistant(sid, u1.id, dir)
+          yield* text(sid, a1.id, "hi back")
+
+          // A responses-transport chain exists from a prior turn.
+          RDT._testSetState(sid, { responseId: "resp_1", chainId: "chain_1" })
+          expect(RDT._testState(sid)).toBeDefined()
+
+          // Undo to before the turn: the list is rewritten, so the chain that
+          // described it must not survive. A re-compaction reproduces the exact
+          // same input bytes, so the prefix hash would otherwise accept the
+          // stale response id and chain onto the prior summary output.
+          yield* revert.revert({ sessionID: sid, messageID: u1.id })
+          expect(RDT._testState(sid)).toBeUndefined()
+
+          // Redo rewrites the list again: the chain stays invalidated.
+          RDT._testSetState(sid, { responseId: "resp_2", chainId: "chain_2" })
+          yield* revert.unrevert({ sessionID: sid })
+          expect(RDT._testState(sid)).toBeUndefined()
         }),
       { git: true },
     ),
