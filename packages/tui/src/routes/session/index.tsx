@@ -2820,6 +2820,23 @@ function useDiffResizeRebuild() {
 const DIFF_MIN_COL_W = 32
 const DIFF_WRAP_LIMIT = 2
 const DIFF_COL_OVERHEAD = 10
+// The diff box's horizontal chrome: BlockTool's left border (1) +
+// paddingLeft 2 + paddingRight 2 + the inner <box paddingLeft={1}> around
+// the <diff>. The width fed to diffMode/patchDiffMode MUST be the DIFF BOX
+// width, not the terminal width: ctx.width is the message column (terminal
+// - sidebar - the message padding 4) and the diff is inset a further
+// DIFF_BOX_CHROME inside the tool block. Using the terminal width
+// overestimates colW by (sidebar + DIFF_BOX_CHROME) / 2, so wrapped
+// lines that only barely overflow are never counted and the split view
+// never flips to single (the 2026-09-20 "lots of wraps, stayed split" bug).
+const DIFF_BOX_CHROME = 6
+// The column-width estimate can still be a couple of cols OPTIMISTIC at the
+// boundary (the diff element's own scrollbar/viewport padding is not in
+// ctx.width), so a line within DIFF_WRAP_MARGIN of the column width counts
+// as wrapping. A wrap is exactly what this trigger exists to catch, so erring a
+// couple of cols toward unified is the safe side (2026-09-20: a 67-68 char
+// line in a 69-col column rendered wrapped but was not counted).
+const DIFF_WRAP_MARGIN = 2
 // Number of lines that need more than one row at the given width.
 function wrapLineCount(text: string, width: number): number {
   let count = 0
@@ -2828,10 +2845,13 @@ function wrapLineCount(text: string, width: number): number {
   }
   return count
 }
-function diffMode(oldText: string, newText: string, width: number): "split" | "unified" {
+export function diffMode(oldText: string, newText: string, width: number): "split" | "unified" {
   const colW = Math.floor(width / 2) - DIFF_COL_OVERHEAD
   if (colW < DIFF_MIN_COL_W) return "unified"
-  const wrapped = Math.max(wrapLineCount(oldText, colW), wrapLineCount(newText, colW))
+  const wrapped = Math.max(
+    wrapLineCount(oldText, colW - DIFF_WRAP_MARGIN),
+    wrapLineCount(newText, colW - DIFF_WRAP_MARGIN),
+  )
   return wrapped > DIFF_WRAP_LIMIT ? "unified" : "split"
 }
 // Split a patch body into old (context + -) and new (context + +) line
@@ -2863,7 +2883,7 @@ function patchOldNew(patch: string): { old: string; new: string; changed: string
   }
   return { old: oldText, new: newText, changed: changedText }
 }
-function patchDiffMode(patch: string, width: number): "split" | "unified" {
+export function patchDiffMode(patch: string, width: number): "split" | "unified" {
   // 0332: completed-only change-density heuristic - dual side-by-side renders
   // BOTH columns over the whole (hunk) text; when the diff is change-sparse in
   // RENDERED ROWS (a one-row change against a block that wraps to dozens of
@@ -5055,10 +5075,11 @@ function Edit(props: ToolProps) {
 
   // 0329: the split/unified choice is now content-aware (see diffView) and
   // computed per diff entry at its site. `diff_style === "stacked"` still
-  // forces unified. The width signal is read HERE (not per site) so the
-  // choice re-evaluates on a terminal resize.
-  // 0343: shared resize signal (one subscription for the whole TUI).
-  const diffDims = useTuiDimensions()
+  // forces unified. The width is read HERE (not per site) so the choice
+  // re-evaluates on a terminal resize AND on a sidebar toggle.
+  // The DIFF BOX width - ctx.width (the message column) minus the block
+  // chrome - NOT the terminal width (the 2026-09-20 missed-wrap bug).
+  const diffWidth = () => Math.max(1, ctx.width - DIFF_BOX_CHROME)
   const diffStacked = ctx.tui.diff_style === "stacked"
   // 0329: STREAMING latch is ONE-WAY - dual is where it starts; once the
   // live assessment says the content needs single, it latches single and
@@ -5068,7 +5089,7 @@ function Edit(props: ToolProps) {
   // enough for dual, it flips back to it there.
   const [streamLatch, setStreamLatch] = createSignal<"split" | "unified">("split")
   createEffect(() => {
-    if (diffMode(oldBody(), newBody(), diffDims().width) === "unified") {
+    if (diffMode(oldBody(), newBody(), diffWidth()) === "unified") {
       setStreamLatch("unified")
     }
     // Completion (or the swap to the static diff) releases the latch - the
@@ -5077,7 +5098,7 @@ function Edit(props: ToolProps) {
       setStreamLatch("split")
     }
   })
-  const diffPatchModeFor = (patch: string) => (diffStacked ? "unified" : patchDiffMode(patch, diffDims().width))
+  const diffPatchModeFor = (patch: string) => (diffStacked ? "unified" : patchDiffMode(patch, diffWidth()))
 
   // 0323: the JSON edit streams its args as first-class JSON keys, so the
   // live body IS the two diff columns (oldString/newString) and the target
@@ -5237,11 +5258,12 @@ function ApplyPatch(props: ToolProps) {
   // 0329: dual/single is now per-diff (see diffMode) - two columns is the
   // default, single only for very narrow windows or when the content starts
   // wrapping. `diff_style === "stacked"` still forces unified. The width
-  // signal is read here so the choice re-evaluates on a terminal resize.
-  // 0343: shared resize signal (one subscription for the whole TUI).
-  const diffDims = useTuiDimensions()
+  // is read here so the choice re-evaluates on a terminal resize and on a
+  // sidebar toggle. The DIFF BOX width - ctx.width (the message column)
+  // minus the block chrome - NOT the terminal width (2026-09-20 bug).
+  const diffWidth = () => Math.max(1, ctx.width - DIFF_BOX_CHROME)
   const diffStacked = ctx.tui.diff_style === "stacked"
-  const diffPatchModeFor = (patch: string) => (diffStacked ? "unified" : patchDiffMode(patch, diffDims().width))
+  const diffPatchModeFor = (patch: string) => (diffStacked ? "unified" : patchDiffMode(patch, diffWidth()))
 
   function Diff(p: { diff: string; filePath: string }) {
     return (
