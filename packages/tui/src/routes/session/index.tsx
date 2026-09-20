@@ -3286,14 +3286,15 @@ function GenericTool(props: ToolProps) {
   })
   // Stream the composing tool call into the grey inline text (no block): the
   // model's JSON args arrive in state.raw as a stream, so while pending we
-  // show the live extracted body ("sessions-query SELECT ...") growing next
-  // to the icon instead of the single composed [op=...] listing snapping in
-  // at completion. The bodyKey is per-tool (the arg carrying the prose);
-  // tools without one fall back to the previous composed listing.
+  // show the live body next to the icon instead of the single composed listing
+  // snapping in at completion. Tools with a prose body key (sessions-query SQL,
+  // ...) show that body; every other tool (tmux, plugin tools, ...) grows the
+  // same [key=value, ...] listing the completed line renders, built from the
+  // partially streamed JSON.
   const stream = useToolStream(props, { bodyKey: TEXT_BODY_KEY[props.tool] ?? "", title: () => undefined })
   const live = createMemo(() => {
     if (!stream.streaming()) return undefined
-    const body = stream.display()
+    const body = TEXT_BODY_KEY[props.tool] ? stream.display() : streamedJsonInput(stream.raw())
     return body ? `${props.tool} ${body}` : undefined
   })
   return (
@@ -3720,65 +3721,143 @@ function streamedJsonValue(raw: string, key: string): string | undefined {
   let i = start + marker.length
   while (i < raw.length && /\s/.test(raw[i]!)) i++
   if (raw[i] !== '"') return undefined
-  const tail = raw.slice(i + 1)
+  return readJsonString(raw, i).value
+}
+
+// Read a JSON string literal starting at `start` (the opening quote). Returns
+// the unescaped value and the index just past the closing quote; an
+// unterminated string (still generating) returns the partial value with end at
+// the raw's end. The value ENDS at the first unescaped closing quote -
+// without this the extraction kept reading into the trailing JSON args ("...",
+// "filePath": "...}") and the live title/filetype got a garbage path:
+// filetype() resolved no extension and the write streamed WHITE text
+// (markdown content reverting to plain the moment the filePath arg landed,
+// snapping back at completion - 2026-08-17). Escaped quotes (\" and \u0022)
+// are consumed by the escape branch and stay part of the value.
+function readJsonString(raw: string, start: number): { value: string; end: number } {
   let out = ""
-  for (let j = 0; j < tail.length; j++) {
-    const c = tail[j]!
-    // The value ENDS at the first unescaped closing quote - without this
-    // the extraction kept reading into the trailing JSON args ("...", 
-    // "filePath": "...}") and the live title/filetype got a garbage path:
-    // filetype() resolved no extension and the write streamed WHITE text
-    // (markdown content reverting to plain the moment the filePath arg
-    // landed, snapping back at completion - 2026-08-17). Escaped quotes
-    // (\" and \u0022) are consumed by the escape branch below and stay
-    // part of the value.
-    if (c === '"') break
-    if (c !== "\\" || j + 1 >= tail.length) {
+  let i = start + 1
+  while (i < raw.length) {
+    const c = raw[i]!
+    if (c === '"') return { value: out, end: i + 1 }
+    if (c !== "\\" || i + 1 >= raw.length) {
       out += c
+      i++
       continue
     }
-    const n = tail[j + 1]!
+    const n = raw[i + 1]!
     switch (n) {
       case "n":
         out += "\n"
+        i += 2
         break
       case "t":
         out += "\t"
+        i += 2
         break
       case "r":
         out += "\r"
+        i += 2
         break
       case '"':
         out += '"'
+        i += 2
         break
       case "\\":
         out += "\\"
+        i += 2
         break
       case "/":
         out += "/"
+        i += 2
         break
       case "b":
         out += "\b"
+        i += 2
         break
       case "f":
         out += "\f"
+        i += 2
         break
       case "u": {
-        const hex = tail.slice(j + 2, j + 6)
+        const hex = raw.slice(i + 2, i + 6)
         if (hex.length === 4 && /^[0-9a-fA-F]{4}$/.test(hex)) {
           out += String.fromCharCode(parseInt(hex, 16))
-          j += 4
+          i += 6
         } else {
           out += "\\u"
+          i += 1
         }
         break
       }
       default:
         out += n
+        i += 2
     }
-    j++
   }
-  return out
+  return { value: out, end: raw.length }
+}
+
+// Read a top-level JSON value at `start` for the generic streaming listing: a
+// string via readJsonString, or a primitive token (number/boolean/null). An
+// object/array returns undefined so the caller's brace tracking enters it.
+function readJsonValue(raw: string, start: number): { value: string; end: number } | undefined {
+  const c = raw[start]
+  if (c === '"') return readJsonString(raw, start)
+  if (c === undefined || c === "{" || c === "[" || c === "}" || c === "]" || c === ",") return undefined
+  let end = start
+  while (end < raw.length && !/[,\}\]]/.test(raw[end]!)) end++
+  const token = raw.slice(start, end).trim()
+  return token.length > 0 ? { value: token, end } : undefined
+}
+
+// Streaming counterpart to input() for the generic (non-block) tool line: render
+// the top-level PRIMITIVE args of a partially streamed JSON tool input as the
+// same [key=value, ...] listing the completed line shows, so every tool call
+// grows its args next to the icon instead of snapping in at completion (tmux,
+// plugin tools, ...). The last pair may be mid-stream (an unterminated string
+// or a partial token) and is included as-is - that is the growth. Nested objects
+// and arrays are skipped: input() lists primitives only, and their contents
+// stream inside their own braces.
+export function streamedJsonInput(raw: string): string | undefined {
+  const parts: string[] = []
+  let i = 0
+  let depth = 0
+  while (i < raw.length) {
+    const c = raw[i]!
+    if (c === "{" || c === "[") {
+      depth++
+      i++
+      continue
+    }
+    if (c === "}" || c === "]") {
+      depth--
+      i++
+      continue
+    }
+    if (c !== '"') {
+      i++
+      continue
+    }
+    const str = readJsonString(raw, i)
+    if (depth !== 1) {
+      i = str.end
+      continue
+    }
+    let j = str.end
+    while (j < raw.length && /\s/.test(raw[j]!)) j++
+    if (raw[j] !== ":") {
+      i = str.end
+      continue
+    }
+    i = j + 1
+    while (i < raw.length && /\s/.test(raw[i]!)) i++
+    const value = readJsonValue(raw, i)
+    if (!value) continue
+    parts.push(`${str.value}=${value.value}`)
+    i = value.end
+  }
+  return parts.length > 0 ? `[${parts.join(", ")}]` : undefined
 }
 
 // Shared live-streaming view for tool calls: while the model generates a
@@ -3808,6 +3887,7 @@ function useToolStream(
   return {
     status,
     streaming,
+    raw,
     display,
     livePath,
     showContent: createMemo(() => display().length > 0),
