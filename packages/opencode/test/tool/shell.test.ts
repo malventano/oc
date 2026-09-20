@@ -181,6 +181,25 @@ const mustTruncate = (result: {
 }
 
 describe("tool.shell", () => {
+  each("captures a fast command's output on every run", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        // Regression: exitCode resolves on "exit", which can precede the stdio
+        // drain, so a fast command's output was intermittently lost (empty
+        // output under load). The tool now gives the output consumer a bounded
+        // window to land it before the scope closes.
+        for (let i = 0; i < 25; i++) {
+          const result = yield* run({
+            command: "echo fast-output",
+          })
+          expect(result.metadata.exit).toBe(0)
+          expect(result.metadata.output).toContain("fast-output")
+        }
+      }),
+    ),
+  )
+
   each("basic", () =>
     runIn(
       projectRoot,

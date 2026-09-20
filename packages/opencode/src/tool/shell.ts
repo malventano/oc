@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Deferred, Effect, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -482,6 +482,7 @@ export const ShellTool = Tool.define(
         Effect.gen(function* () {
           yield* Effect.addFinalizer(closeSink)
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+          const drained = yield* Deferred.make<void>()
 
           yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
@@ -527,7 +528,7 @@ export const ShellTool = Tool.define(
                   output: last,
                 },
               })
-            }),
+            }).pipe(Effect.ensuring(Deferred.succeed(drained, undefined).pipe(Effect.ignore))),
           )
 
           const abort = Effect.callback<void>((resume) => {
@@ -553,6 +554,12 @@ export const ShellTool = Tool.define(
             expired = true
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
           }
+
+          // exitCode resolves on "exit", which can precede the stdio drain
+          // (cross-spawn-spawner.ts): give the forked consumer a bounded
+          // window to land what the process already wrote, or a fast command's
+          // output is lost when this scope closes.
+          yield* Deferred.await(drained).pipe(Effect.timeout("250 millis"), Effect.ignore)
 
           return exit.kind === "exit" ? exit.code : null
         }),
