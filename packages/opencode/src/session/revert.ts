@@ -10,6 +10,7 @@ import { MessageV2 } from "./message-v2"
 import { SessionID, MessageID, PartID } from "./schema"
 import { SessionRunState } from "./run-state"
 import { SessionSummary } from "./summary"
+import { RDT } from "@/provider/rdt"
 
 export const RevertInput = Schema.Struct({
   sessionID: SessionID,
@@ -144,6 +145,9 @@ const layer = Layer.effect(
           files: diffs.length,
         },
       })
+      // The undo rewrote the message list; the responses-transport chain state
+      // from before the undo must not survive (see RDT.invalidate).
+      RDT.invalidate(input.sessionID)
       return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       } finally {
         inflight.delete(input.sessionID)
@@ -158,6 +162,7 @@ const layer = Layer.effect(
       if (!session.revert) return session
       if (session.revert.snapshot) yield* snap.restore(session.revert.snapshot)
       yield* sessions.clearRevert(input.sessionID)
+      RDT.invalidate(input.sessionID)
       return yield* sessions.get(input.sessionID).pipe(Effect.orDie)
     })
 
@@ -199,6 +204,8 @@ const layer = Layer.effect(
         }
       }
       yield* sessions.clearRevert(sessionID)
+      // The undone messages are gone from the DB; drop the chain built on them.
+      RDT.invalidate(sessionID)
     })
 
     return Service.of({ revert, unrevert, cleanup, awaitInFlight })
