@@ -88,6 +88,8 @@ type RequestDebug = {
   msgLen?: number
   /** Per-message digest of the chained delta window: "role:contentBytes:r<reasoningBytes>". */
   windowDigest?: string[]
+  /** Sampling params actually placed on the wire (spec 17 12.2a parity). */
+  sampling?: Record<string, unknown>
 }
 const lastRequests = new Map<string, RequestDebug>()
 export const _testState = (sessionID: string): ChainState | undefined => states.get(sessionID)
@@ -640,9 +642,37 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
     // the thinking:false gate. No allowlist here: completions does not gate
     // these, so responses must not either.
     const providerOpts = options.providerOptions as Record<string, any> | undefined
-    const chatTemplateKwargs = providerOpts?.[ctx.providerKey]?.chat_template_kwargs as
+    const providerBlock = providerOpts?.[ctx.providerKey] as Record<string, any> | undefined
+    const chatTemplateKwargs = providerBlock?.chat_template_kwargs as
       | Record<string, any>
       | undefined
+
+    // Sampling params (spec 17 section 12.2a parity rule): the chat-completions
+    // transport spreads the flattened model/variant options onto the request body
+    // (AI SDK openai-compatible: standardized fields, then
+    // providerOptions[key]), so a model-configured temperature/top_p/
+    // repetition_penalty applies there. The responses transport builds the body
+    // itself, so it must forward the same fields or they are silently dropped
+    // (this is what dropped DSV4.1's repetition_penalty=1.05). Call options
+    // (agent override) go first, then the provider block, matching the
+    // chat-completions spread order.
+    const sampling: Record<string, unknown> = {}
+    if (options.temperature != null) sampling.temperature = options.temperature
+    if (options.topP != null) sampling.top_p = options.topP
+    if (options.topK != null) sampling.top_k = options.topK
+    if (options.seed != null) sampling.seed = options.seed
+    for (const key of [
+      "temperature",
+      "top_p",
+      "top_k",
+      "repetition_penalty",
+      "presence_penalty",
+      "frequency_penalty",
+      "seed",
+    ] as const) {
+      const value = providerBlock?.[key]
+      if (value != null) sampling[key] = value
+    }
 
     // Chain decision: valid if the server's chain (first hwm messages) is
     // byte-identical to ours, the model id matches, and the chain identity
@@ -707,10 +737,9 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         ...(tools && tools.length > 0 ? { tools } : {}),
         ...(options.toolChoice ? { tool_choice: lowerToolChoice(options.toolChoice as never) } : {}),
         ...(chatTemplateKwargs ? { chat_template_kwargs: chatTemplateKwargs } : {}),
+        ...sampling,
         stream: true,
         ...(options.maxOutputTokens != null ? { max_output_tokens: options.maxOutputTokens } : {}),
-        ...(options.temperature != null ? { temperature: options.temperature } : {}),
-        ...(options.topP != null ? { top_p: options.topP } : {}),
         store: true,
       }
       return body
@@ -775,6 +804,7 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         hwm: state?.hwm,
         msgLen: inputMsgs.length,
         windowDigest,
+        sampling,
       })
 
       let res: Response
