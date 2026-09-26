@@ -264,8 +264,8 @@ test("pendingTally: fresh session before the first report - anchored 0, only the
   // the display is just the just-submitted prompt + what streams. It is only a
   // ~2s window - the first step-finish adopts the real wire input (next test).
   const parts: Record<string, Part[]> = {
-    "user-0": [textPart("find the fineweb session")], // 24 chars -> 6
-    "asst-1": [textPart("y".repeat(80))], // 80 chars -> 20
+    "user-0": [textPart("find the fineweb session")], // 24 chars -> 8
+    "asst-1": [textPart("y".repeat(80))], // 80 chars -> 27
   }
   const messages: Array<UserMessage | AssistantMessage> = [
     user("user-0", 1000),
@@ -279,8 +279,8 @@ test("pendingTally: fresh session before the first report - anchored 0, only the
   const t = computeTurn(messages)
   const p = pendingTally(messages, t, (id) => parts[id])
   expect(p.anchored).toBe(0)
-  expect(p.inputPending).toBe(6)
-  expect(p.streamedPending).toBe(20)
+  expect(p.inputPending).toBe(8)
+  expect(p.streamedPending).toBe(27)
 })
 
 test("pendingTally: the first step-finish report becomes the anchor (exact wire input)", () => {
@@ -330,13 +330,13 @@ test("pendingTally: mid-turn tool gap - the anchor step's output + tool result a
   const t = computeTurn(messages)
   const p = pendingTally(messages, t, (id) => parts[id])
   expect(p.anchored).toBe(200)
-  // output + reasoning + the completed tool output (800 chars / 4 = 200).
-  expect(p.inputPending).toBe(20 + 30 + 200)
+  // output + reasoning + the completed tool output (800 chars / 3 = 267).
+  expect(p.inputPending).toBe(20 + 30 + 267)
   expect(p.streamedPending).toBe(0)
 })
 
 test("pendingTally: prior-turn anchor - only the new prompt is pending", () => {
-  const parts: Record<string, Part[]> = { "user-1": [textPart("continue")] } // 8 chars -> 2
+  const parts: Record<string, Part[]> = { "user-1": [textPart("continue")] } // 8 chars -> 3
   const messages: Array<UserMessage | AssistantMessage> = [
     user("user-0", 1000),
     assistant({
@@ -356,7 +356,7 @@ test("pendingTally: prior-turn anchor - only the new prompt is pending", () => {
   const t = computeTurn(messages)
   const p = pendingTally(messages, t, (id) => parts[id])
   expect(p.anchored).toBe(100)
-  expect(p.inputPending).toBe(2)
+  expect(p.inputPending).toBe(3)
   expect(p.streamedPending).toBe(0) // asst-1 has no streamed parts yet
 })
 
@@ -428,7 +428,7 @@ test("estimateStepTokens: real endpoint tokens win when present", () => {
   expect(est).toEqual({ reasoning: 30, output: 20 })
 })
 
-test("estimateStepTokens: in-flight step estimates from streamed chars (4 chars/token)", () => {
+test("estimateStepTokens: in-flight step estimates from streamed chars (3 chars/token)", () => {
   const step = assistant({
     parentID: "user-1",
     id: "asst-2",
@@ -440,7 +440,7 @@ test("estimateStepTokens: in-flight step estimates from streamed chars (4 chars/
     textPart("y".repeat(160)),
     { ...toolPart("tool-1"), messageID: "asst-2", state: { status: "pending", input: {}, raw: "z".repeat(160) } },
   ])
-  expect(est).toEqual({ reasoning: 200, output: 80 })
+  expect(est).toEqual({ reasoning: 267, output: 107 })
 })
 
 test("turnLiveTokens: mixes real tokens (completed) + estimates (in-flight)", () => {
@@ -462,11 +462,11 @@ test("turnLiveTokens: mixes real tokens (completed) + estimates (in-flight)", ()
   ]
   const t = computeTurn(messages)
   const live = turnLiveTokens(t, (id) => parts[id])
-  // asst-2 real (30/20) + asst-3 estimated from textPart (0/100).
-  expect(live).toEqual({ reasoning: 30, output: 120 })
+  // asst-2 real (30/20) + asst-3 estimated from textPart (0/133).
+  expect(live).toEqual({ reasoning: 30, output: 153 })
 })
 
-test("toolResultTokens: counts completed tool outputs (4 chars/token)", () => {
+test("toolResultTokens: counts completed tool outputs (3 chars/token)", () => {
   const parts: Record<string, Part[]> = {
     "asst-2": [
       {
@@ -489,7 +489,7 @@ test("toolResultTokens: counts completed tool outputs (4 chars/token)", () => {
     ],
   }
   const step = assistant({ parentID: "user-1", id: "asst-2", time: { created: 4000 } })
-  expect(toolResultTokens([step], (id) => parts[id])).toBe(200)
+  expect(toolResultTokens([step], (id) => parts[id])).toBe(267)
   expect(toolResultTokens([step])).toBe(0)
 })
 
@@ -528,19 +528,19 @@ test("streamedChars: counts reasoning + text + the tool-call payload (any stream
 test("streamRateFor: rate from streamed chars (4 chars/token), EMA-smoothed toward the raw window rate", () => {
   expect(streamRateFor("t-rate", "step-a", 40, 1000)).toBe(0) // episode reset: frozen
   expect(streamRateFor("t-rate", "step-a", 440, 1100)).toBe(0) // anchor sample: no delta, still frozen
-  // the second chunk measures a real rate and snaps to the raw 1000 tok/s
+  // the second chunk measures a real rate and snaps to the raw ~1333 tok/s
   const v = streamRateFor("t-rate", "step-a", 1240, 1300)
-  expect(v).toBeCloseTo(1000, 1)
+  expect(v).toBeCloseTo(1333.3, 1)
   // a constant-rate stream stays there (alpha chases, raw is flat)
   const v2 = streamRateFor("t-rate", "step-a", 1640, 1400)
-  expect(v2).toBeCloseTo(1000, 1)
+  expect(v2).toBeCloseTo(1333.3, 1)
 })
 
 test("streamRateFor: freezes when chars stop growing (tool-call / TTFT stall)", () => {
   streamRateFor("t-freeze", "step-a", 40, 1000)
   streamRateFor("t-freeze", "step-a", 440, 1100) // anchor sample
-  const v = streamRateFor("t-freeze", "step-a", 840, 1200) // raw 1000, snaps
-  expect(v).toBe(1000)
+  const v = streamRateFor("t-freeze", "step-a", 840, 1200) // raw ~1333, snaps
+  expect(v).toBeCloseTo(1333.3, 1)
   // stall: chars unchanged for 2s - the smoothed value must not move
   expect(streamRateFor("t-freeze", "step-a", 840, 1500)).toBe(v)
   expect(streamRateFor("t-freeze", "step-a", 840, 3100)).toBe(v)
@@ -549,68 +549,68 @@ test("streamRateFor: freezes when chars stop growing (tool-call / TTFT stall)", 
 test("streamRateFor: the EMA spans the whole turn and is shared across the turn's footers", () => {
   streamRateFor("t-turn", "step-a", 40, 1000)
   streamRateFor("t-turn", "step-a", 440, 1100) // anchor
-  expect(streamRateFor("t-turn", "step-a", 1240, 1300)).toBeCloseTo(1000, 1) // raw 1000, snaps
+  expect(streamRateFor("t-turn", "step-a", 1240, 1300)).toBeCloseTo(1333.3, 1) // raw ~1333, snaps
   // step B's footer (a DIFFERENT caller, same turn key) - the EPISODE key changed
   // (a new in-flight step) -> the EMA holds the frozen value through the change
-  expect(streamRateFor("t-turn", "step-b", 1640, 1400)).toBe(1000) // episode change: frozen
-  expect(streamRateFor("t-turn", "step-b", 2040, 1500)).toBe(1000) // anchor
-  expect(streamRateFor("t-turn", "step-b", 2440, 1600)).toBeCloseTo(1000, 1) // same raw rate
+  expect(streamRateFor("t-turn", "step-b", 1640, 1400)).toBeCloseTo(1333.3, 1) // episode change: frozen
+  expect(streamRateFor("t-turn", "step-b", 2040, 1500)).toBeCloseTo(1333.3, 1) // anchor
+  expect(streamRateFor("t-turn", "step-b", 2440, 1600)).toBeCloseTo(1333.3, 1) // same raw rate
   // a NEW turn starts a fresh window and EMA
   expect(streamRateFor("t-turn2", "step-a", 40, 2000)).toBe(0)
   expect(streamRateFor("t-turn2", "step-a", 240, 2100)).toBe(0) // anchor
-  expect(streamRateFor("t-turn2", "step-a", 440, 2200)).toBeCloseTo(500, 1) // raw 500, snaps
+  expect(streamRateFor("t-turn2", "step-a", 440, 2200)).toBeCloseTo(666.7, 1) // raw ~666.7, snaps
 })
 
 test("streamRateFor: rolling 1s window - stale samples age out, EMA governs the display", () => {
   streamRateFor("t-roll", "step-a", 0, 0) // episode anchor
-  streamRateFor("t-roll", "step-a", 800, 1000) // raw 200, snaps
-  streamRateFor("t-roll", "step-a", 1600, 2000) // steady 200
-  const v = streamRateFor("t-roll", "step-a", 2400, 2200) // accelerated to raw 1000 tok/s
-  expect(v).toBeCloseTo(589.27, 2)
-  const v2 = streamRateFor("t-roll", "step-a", 3200, 2400) // raw 1000, converging
-  expect(v2).toBeCloseTo(789.12, 2)
+  streamRateFor("t-roll", "step-a", 800, 1000) // raw ~266.7, snaps
+  streamRateFor("t-roll", "step-a", 1600, 2000) // steady ~266.7
+  const v = streamRateFor("t-roll", "step-a", 2400, 2200) // accelerated to raw ~1333 tok/s
+  expect(v).toBeCloseTo(785.69, 2)
+  const v2 = streamRateFor("t-roll", "step-a", 3200, 2400) // raw ~1333, converging
+  expect(v2).toBeCloseTo(1052.16, 2)
 })
 
 test("streamRateFor: a delivery after a stall is a NEW EPISODE - the EMA freezes through it", () => {
   streamRateFor("t-burst1", "step-a", 40, 1900)
   streamRateFor("t-burst1", "step-a", 200, 2000) // anchor
-  streamRateFor("t-burst1", "step-a", 400, 2100) // raw 500, snaps
+  streamRateFor("t-burst1", "step-a", 400, 2100) // raw ~666.7, snaps
   // the step completes, the tool runs, then a delivery lands (step-b):
   // the episode change freezes the EMA at the pre-stall value - no dilution, no drop
-  expect(streamRateFor("t-burst1", "step-b", 1200, 3000)).toBe(500)
+  expect(streamRateFor("t-burst1", "step-b", 1200, 3000)).toBeCloseTo(666.7, 1)
   // 0233 defers the anchor to the FIRST GROWTH chunk (BUG_TUI_LIVE_RATE_TTFT_DIP):
   // a change-seeded anchor would divide the resumption's first delta by
   // TTFT + stream time and plunge toward 0. The change keeps the window empty,
   // so the first post-change growth anchors (holds the frozen value) and the
   // SECOND one measures the resume from its own clean inter-chunk time.
-  expect(streamRateFor("t-burst1", "step-b", 2000, 3200)).toBe(500) // first growth anchors, frozen
-  // second growth measures: raw (2600-2000)/0.2s/4 = 750, alpha 0.487 from the
-  // frozen 500 -> 621.8. No 2-sample blind spot after a tool gap (the
+  expect(streamRateFor("t-burst1", "step-b", 2000, 3200)).toBeCloseTo(666.7, 1) // first growth anchors, frozen
+  // second growth measures: raw (2600-2000)/0.2s/3 = ~1000, alpha 0.487 from the
+  // frozen ~666.7 -> ~829. No 2-sample blind spot after a tool gap (the
   // BUG_FOOTER_LIVE_STATS_STALE fix) - the EMA resumes immediately.
-  expect(streamRateFor("t-burst1", "step-b", 2600, 3400)).toBeCloseTo(621.6, 0)
+  expect(streamRateFor("t-burst1", "step-b", 2600, 3400)).toBeCloseTo(829, 0)
   // the next chunk converges toward the raw rate
   const v2 = streamRateFor("t-burst1", "step-b", 3000, 3600)
-  expect(v2).toBeGreaterThan(621.8)
-  expect(v2).toBeLessThan(750)
+  expect(v2).toBeGreaterThan(829)
+  expect(v2).toBeLessThan(1000)
 })
 
 test("streamRateFor: an episode change holds the frozen value through ANY gap length", () => {
   streamRateFor("t-burst3", "step-a", 40, 1900)
   streamRateFor("t-burst3", "step-a", 200, 2000) // anchor
-  streamRateFor("t-burst3", "step-a", 400, 2100) // raw 500, snaps
+  streamRateFor("t-burst3", "step-a", 400, 2100) // raw ~666.7, snaps
   // 3s later (any gap length - the trigger is the episode change, not time)
-  expect(streamRateFor("t-burst3", "step-b", 1200, 5000)).toBe(500)
+  expect(streamRateFor("t-burst3", "step-b", 1200, 5000)).toBeCloseTo(666.7, 1)
 })
 
 test("streamRateFor: a gap between streams freezes the EMA (no drop to 0 on resume)", () => {
   streamRateFor("t-gap", "step-a", 40, 0)
   streamRateFor("t-gap", "step-a", 240, 500) // anchor
-  streamRateFor("t-gap", "step-a", 440, 1000) // raw 100, snaps
-  expect(streamRateFor("t-gap", "step-a", 440, 1500)).toBe(100) // stall within the step: frozen
+  streamRateFor("t-gap", "step-a", 440, 1000) // raw ~133.3, snaps
+  expect(streamRateFor("t-gap", "step-a", 440, 1500)).toBeCloseTo(133.3, 1) // stall within the step: frozen
   // the step ends, the tool runs, then step-b streams: episode change -> frozen
-  expect(streamRateFor("t-gap", "step-b", 540, 3500)).toBe(100) // NOT dragged toward ~0
+  expect(streamRateFor("t-gap", "step-b", 540, 3500)).toBeCloseTo(133.3, 1) // NOT dragged toward ~0
   // the episode-change anchor makes the FIRST growth chunk measure: raw
-  // (940-540)/1s/4 = 100 tok/s, resumes immediately (was 2-sample frozen)
+  // (940-540)/1s/3 = ~133.3 tok/s, resumes immediately (was 2-sample frozen)
   const tracking = streamRateFor("t-gap", "step-b", 940, 3700)
   expect(tracking).toBeGreaterThan(0)
   expect(tracking).toBeLessThan(500)
@@ -621,33 +621,33 @@ test("streamRateFor: a gap between streams freezes the EMA (no drop to 0 on resu
 })
 
 test("streamRateFor: a chunked tool-call delivery bounces between chunks but tracks the chunks", () => {
-  // chunks of 50 tokens (200 chars) each, 500ms apart: delivered at 100 tok/s
+  // chunks of 50 tokens (200 chars) each, 500ms apart: delivered at ~133 tok/s
   streamRateFor("t-chunk", "step-a", 40, 0)
   streamRateFor("t-chunk", "step-a", 240, 500) // anchor
-  const c1 = streamRateFor("t-chunk", "step-a", 440, 1000) // raw 100, snaps
-  expect(c1).toBeCloseTo(100, 1)
-  // a 600ms gap then the next chunk: raw dips to ~83, EMA to ~86
+  const c1 = streamRateFor("t-chunk", "step-a", 440, 1000) // raw ~133.3, snaps
+  expect(c1).toBeCloseTo(133.3, 1)
+  // a 600ms gap then the next chunk: raw dips to ~111, EMA to ~114
   const c3 = streamRateFor("t-chunk", "step-a", 640, 1600)
-  expect(c3).toBeCloseTo(85.6, 1)
+  expect(c3).toBeCloseTo(114.1, 1)
   expect(c3).toBeGreaterThan(0)
 })
 
 test("streamRateFor: the EMA damps a single chunk spike and recovers as it ages out", () => {
   streamRateFor("t-spike", "step-a", 40, 0)
-  streamRateFor("t-spike", "step-a", 240, 500) // raw 100, snaps
-  streamRateFor("t-spike", "step-a", 440, 1000) // raw 100
-  // a 50ms spike of 800 chars: the window raw jumps to ~454 tok/s (spike spans
-  // the 550ms window), but the EMA moves only ~15% of the way -> ~154
+  streamRateFor("t-spike", "step-a", 240, 500) // raw ~133.3, snaps
+  streamRateFor("t-spike", "step-a", 440, 1000) // raw ~133.3
+  // a 50ms spike of 800 chars: the window raw jumps to ~605 tok/s (spike spans
+  // the 550ms window), but the EMA moves only ~15% of the way -> ~206
   const spiked = streamRateFor("t-spike", "step-a", 1240, 1050)
-  expect(spiked).toBeCloseTo(154.4, 1)
-  expect(spiked).toBeLessThan(300) // damped, nowhere near the raw spike
+  expect(spiked).toBeCloseTo(205.9, 1)
+  expect(spiked).toBeLessThan(400) // damped, nowhere near the raw spike
   // the spike stays in the 1s window, so the display keeps converging upward
   const followup = streamRateFor("t-spike", "step-a", 1440, 1150)
-  expect(followup).toBeCloseTo(241.5, 1)
-  // once the spike ages out (>1s later) the window raw returns to ~100 and the
+  expect(followup).toBeCloseTo(322, 1)
+  // once the spike ages out (>1s later) the window raw returns to ~133 and the
   // display settles back toward it (alpha ~= 0.96 over the long gap)
   const settled = streamRateFor("t-spike", "step-a", 1840, 2150)
-  expect(settled).toBeCloseTo(105.0, 1)
+  expect(settled).toBeCloseTo(140, 0)
 })
 
 test("countTurnWalkParts: counts the steps AFTER the root user message (chronological page)", () => {
@@ -674,20 +674,20 @@ test("streamRateFor: a stall re-anchors the window so the resume does not measur
   // The stall re-anchor resets the window when >1s passes since the last
   // measured growth, so the resume measures from the resume.
   streamRateFor("t-stall", "step-a", 0, 0)
-  streamRateFor("t-stall", "step-a", 800, 1000) // raw 200, snaps
-  streamRateFor("t-stall", "step-a", 1600, 2000) // steady 200
-  expect(streamRateFor("t-stall", "step-a", 1600, 3000)).toBe(200) // frozen, no growth
+  streamRateFor("t-stall", "step-a", 800, 1000) // raw ~266.7, snaps
+  streamRateFor("t-stall", "step-a", 1600, 2000) // steady ~266.7
+  expect(streamRateFor("t-stall", "step-a", 1600, 3000)).toBeCloseTo(266.7, 1) // frozen, no growth
   // tool executes - chars frozen for 4s (the real stall): no re-anchor yet
-  expect(streamRateFor("t-stall", "step-a", 1600, 7000)).toBe(200)
-  // resume: first growth NOW arrives after a >1s stall -> re-anchor, holds 200
+  expect(streamRateFor("t-stall", "step-a", 1600, 7000)).toBeCloseTo(266.7, 1)
+  // resume: first growth NOW arrives after a >1s stall -> re-anchor, holds ~266.7
   // (no dt across the 4s gap -> no drag toward 0)
-  expect(streamRateFor("t-stall", "step-a", 2400, 7500)).toBe(200)
+  expect(streamRateFor("t-stall", "step-a", 2400, 7500)).toBeCloseTo(266.7, 1)
   // the next chunk measures the actual resume rate from the re-anchor
   const resumed = streamRateFor("t-stall", "step-a", 3200, 8000)
-  // the resume measures the true post-gap rate (~400 here: 800 chars/0.5s/4)
+  // the resume measures the true post-gap rate (~533 here: 800 chars/0.5s/3)
   // instead of being dragged toward 0 by a dt spanning the tool call - any
-  // value well above 0 and near the real 400 proves the gap was excluded.
-  expect(resumed).toBeCloseTo(362.2, 1)
+  // value well above 0 and near the real ~533 proves the gap was excluded.
+  expect(resumed).toBeCloseTo(482.9, 0)
 })
 
 test("streamRateFor: persistent sparse growth (large-prefill starvation) tracks the slow rate instead of freezing (0253)", () => {
@@ -699,24 +699,24 @@ test("streamRateFor: persistent sparse growth (large-prefill starvation) tracks 
   // is now one-shot: only the FIRST >1s gap pauses; a second consecutive
   // sparse growth measures the inter-chunk delta, the true throughput.
   streamRateFor("t-prefill", "step-a", 0, 0)
-  streamRateFor("t-prefill", "step-a", 800, 1000) // raw 200, snaps
-  streamRateFor("t-prefill", "step-a", 1600, 2000) // steady 200
-  expect(streamRateFor("t-prefill", "step-a", 1600, 3000)).toBe(200) // frozen, no growth
+  streamRateFor("t-prefill", "step-a", 800, 1000) // raw ~266.7, snaps
+  streamRateFor("t-prefill", "step-a", 1600, 2000) // steady ~266.7
+  expect(streamRateFor("t-prefill", "step-a", 1600, 3000)).toBeCloseTo(266.7, 1) // frozen, no growth
   // prefill begins: 4.5s without growth, then a trickle chunk.
-  expect(streamRateFor("t-prefill", "step-a", 1600, 7000)).toBe(200) // no growth, still frozen
-  expect(streamRateFor("t-prefill", "step-a", 1800, 8500)).toBe(200)
+  expect(streamRateFor("t-prefill", "step-a", 1600, 7000)).toBeCloseTo(266.7, 1) // no growth, still frozen
+  expect(streamRateFor("t-prefill", "step-a", 1800, 8500)).toBeCloseTo(266.7, 1)
   // the FIRST post-gap chunk is a PAUSE: it re-anchors and holds (0225
   // semantics preserved - a resume after one stall does not divide across it)
   // prefill continues: growth stays sparse (every chunk >1s). These are NOT
-  // pauses - the inter-chunk delta (160 chars / 4s / 4 = 10 tok/s here) is
+  // pauses - the inter-chunk delta (160 chars / 4s / 3 = ~13.3 tok/s here) is
   // the stream's true slow throughput and must drag the display down.
-  expect(streamRateFor("t-prefill", "step-a", 1960, 12500)).toBeCloseTo(10, 1)
+  expect(streamRateFor("t-prefill", "step-a", 1960, 12500)).toBeCloseTo(13.3, 1)
   const s2 = streamRateFor("t-prefill", "step-a", 2120, 16500)
-  expect(s2).toBeCloseTo(10, 1) // still sparse, still tracking the slow rate
-  expect(s2).toBeLessThan(200) // NOT frozen at the stale fast value
+  expect(s2).toBeCloseTo(13.3, 1) // still sparse, still tracking the slow rate
+  expect(s2).toBeLessThan(266) // NOT frozen at the stale fast value
   // prefill ends: sub-second delivery resumes and the value climbs back up.
   const up = streamRateFor("t-prefill", "step-a", 2320, 16600)
-  expect(up).toBeGreaterThan(10)
+  expect(up).toBeGreaterThan(13.3)
 })
 
 test("countTurnWalkParts: the root user message's created time anchors the clock even when found on an older page", () => {
@@ -885,9 +885,9 @@ test("turnLiveFromAccum: folded real values + in-flight estimate", () => {
     time: { created: 5000 },
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   })
-  // 160 chars / 4 = 40 output for the in-flight step.
+  // 160 chars / 3 = 53 output for the in-flight step.
   const live = turnLiveFromAccum(acc, inFlight, (id) => [textPart("y".repeat(160))])
-  expect(live).toEqual({ reasoning: 30, output: 60 })
+  expect(live).toEqual({ reasoning: 30, output: 73 })
   // No in-flight step: just the folded values.
   expect(turnLiveFromAccum(acc, undefined, (id) => [])).toEqual({ reasoning: 30, output: 20 })
   // No accumulator yet: zero base.

@@ -259,10 +259,11 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
 
           const lines = results
             .map((r) => {
-              // ~4 chars/token - the same divisor as the time-context hint
-              // (time-context.ts Math.round(len/4)) and the TUI title, so
-              // both surfaces agree.
-              const tokensSaved = Math.round((r.originalLen - params.summary.length) / 4)
+              // ~3 chars/token - the same divisor as the time-context hint
+              // (time-context.ts Math.round(len/3)) and the TUI title, so
+              // both surfaces agree (display divisor derived from session
+              // history against provider-reported tokens, 2026-09-26).
+              const tokensSaved = Math.round((r.originalLen - params.summary.length) / 3)
               return `Shrank ${r.tool} output (${r.originalLen} chars → ${params.summary.length} char summary) = ~${tokensSaved.toLocaleString()} tokens saved`
             })
             .join("\n")

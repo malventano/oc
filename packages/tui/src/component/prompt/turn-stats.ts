@@ -25,9 +25,13 @@ export type TurnStats = {
 const isAssistant = (m: UserMessage | AssistantMessage): m is AssistantMessage => m.role === "assistant"
 const isToolPart = (p: Part) => p.type === "tool"
 
-// Rough chars-per-token for the live estimate: real endpoint tokens replace it
-// at step end, so this only needs to make the counter tick up as text streams.
-const CHARS_PER_TOKEN = 4
+// Empirical chars-per-token for the live estimate, derived from session
+// history against provider-reported tokens (2026-09-26: ~350K assistant
+// messages across the fleet, per-model medians 2.5-3.5 - Qwen densest ~2.5,
+// GLM loosest ~3.4). 3.0 centers the fleet error; real endpoint tokens
+// replace it at step end, so this only needs to make the counter tick up as
+// text streams.
+const CHARS_PER_TOKEN = 3
 
 /**
  * The last agent turn, rooted at the newest assistant message's parent user
@@ -450,7 +454,7 @@ const streamRateStates = new Map<string, StreamRateState>()
 
 /**
  * Streaming tokens/s for a turn: a rolling 1-second window over the turn's
- * streamed text chars (4 chars/token), sampled ONLY when the char count
+ * streamed text chars (3 chars/token), sampled ONLY when the char count
  * grows - i.e. while text is actually arriving. Between samples the last
  * computed rate is returned unchanged, so the display FREEZES during
  * tool-call and TTFT stalls (no output arriving) instead of decaying. The
