@@ -22,6 +22,7 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 
 import { Provider } from "@/provider/provider"
+import { ProviderTransform } from "@/provider/transform"
 import * as SessionProcessorModule from "../../src/session/processor"
 import { ProviderTest } from "../fake/provider"
 import { testEffect } from "../lib/effect"
@@ -2880,4 +2881,38 @@ describe("hasAbortedCompaction", () => {
     ]
     expect(hasAbortedCompaction(messages)).toBe(false)
   })
+})
+
+describe("0368 model-switch window clamp", () => {
+  // The 2026-09-26 shape: DSV4.1-Flash (context 1,048,576, output 262,144)
+  // carried a ~231K context into big-pickle (context 200,000, input 160,000,
+  // output 32,000). The output budget clamped to 0, the AI SDK rejected the
+  // request, the compaction summary failed with the same error, and the
+  // errored summary then suppressed every later auto-compaction.
+  const shrinkModel = () => createModel({ context: 200_000, output: 32_000, input: 160_000 })
+
+  test("maxOutputTokens floors at 1 instead of 0 when the context exceeds the window", () => {
+    expect(ProviderTransform.maxOutputTokens(shrinkModel(), undefined, 231_000)).toBe(1)
+  })
+
+  test("maxOutputTokens still caps to the output limit when there is room", () => {
+    expect(ProviderTransform.maxOutputTokens(shrinkModel(), undefined, 100_000)).toBe(32_000)
+  })
+
+  test("maxOutputTokens passes through when the model has no context limit", () => {
+    const noContext = { ...shrinkModel(), limit: { context: 0, input: undefined, output: 32_000 } }
+    expect(ProviderTransform.maxOutputTokens(noContext as Provider.Model, undefined, 231_000)).toBe(32_000)
+  })
+
+  it.effect("method picks legacy when the inject summary turn has no room", () =>
+    Effect.gen(function* () {
+      const compaction = yield* SessionCompaction.Service
+      // Carried context past the new window: the inject budget bottoms out.
+      expect(compaction.method({ model: shrinkModel(), contextTokens: 231_000 })).toBe("legacy")
+      // Just under the window margin: the budget is below the inject minimum.
+      expect(compaction.method({ model: shrinkModel(), contextTokens: 189_500 })).toBe("legacy")
+      // Roomy context: the inject method still fits.
+      expect(compaction.method({ model: shrinkModel(), contextTokens: 100_000 })).toBe("inject")
+    }),
+  )
 })
