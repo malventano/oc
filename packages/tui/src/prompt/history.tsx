@@ -76,7 +76,11 @@ export type HistoryMove =
  * From there: up to refer to prior prompts, back down to the draft, one
  * more down reaches the cleared field (Ctrl+C's end state), and up-arrow
  * on the empty field recalls the draft. Browsing with an edited field
- * still refuses, and down-arrow never stashes.
+ * still refuses. Down-arrow on a fresh draft mirrors Ctrl+C (0375): the
+ * draft is stashed with the same dedup/trim guards and the field clears -
+ * the draft becomes the newest history entry, so up-arrow recalls it.
+ * Down mid-browse never stashes (the walk to the cleared field is
+ * unchanged).
  */
 export function moveHistory(
   state: HistoryBrowse,
@@ -95,6 +99,20 @@ export function moveHistory(
     return {
       browse: { index, history },
       item: history.at(index)!,
+      appended: duplicate ? undefined : draft,
+      trimmed: !duplicate && state.history.length >= MAX_HISTORY_ENTRIES,
+    }
+  }
+  if (direction === 1 && draft && state.index === 0) {
+    // 0375: down-arrow on a fresh draft = Ctrl+C's end state reached in one
+    // keypress: the draft is stashed (dedup-guarded, trimmed at the limit)
+    // and the field clears. index stays 0 (not browsing); the stashed draft
+    // is the newest entry, so up-arrow immediately recalls it.
+    const duplicate = isDuplicateEntry(state.history.at(-1), draft)
+    const history = duplicate ? state.history : [...state.history, draft].slice(-MAX_HISTORY_ENTRIES)
+    return {
+      browse: { index: 0, history },
+      item: { input: "", parts: [] },
       appended: duplicate ? undefined : draft,
       trimmed: !duplicate && state.history.length >= MAX_HISTORY_ENTRIES,
     }
