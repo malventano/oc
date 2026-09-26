@@ -10,13 +10,15 @@ import z from "zod"
 // Pane guard: never pipe a pane command's output to tail/head - the pane is
 // where output is meant to be seen (full output stays visible); the run/poll/
 // capture `lines` parameter limits what the agent receives without hiding
-// anything in the pane. Appends a reminder to the run result when detected.
+// anything in the pane. REJECTS the command before execution (2026-09-26:
+// the old append-a-reminder nudge was ignored twice in one session).
 const PANE_GUARD_PIPE = /\|\s*(?:tail|head)\b/
 
-function paneGuardReminder(command) {
-  return PANE_GUARD_PIPE.test(command)
-    ? "\n\n<system-reminder>tmux pane guard: this command pipes its output to tail/head - the pane is where the full output is meant to be seen. Use the run/poll/capture `lines` parameter (10-200) to limit what the agent receives; the pane keeps everything.</system-reminder>"
-    : ""
+function paneGuardReject(command) {
+  if (!PANE_GUARD_PIPE.test(command)) return
+  throw new Error(
+    "tmux pane guard: pane commands must not pipe through tail/head - the pipe buffers output until it closes and hides it from the visible pane. Correct method: drop the pipe and set the `lines` parameter (10-200) on run/poll to limit what the tool returns (the pane still shows everything), or use capture with `match` to return only the matching lines.",
+  )
 }
 
 function runTmux(args) {
@@ -332,7 +334,7 @@ REQUIRED vs OPTIONAL args differ per op:
 
 Operations:
 - manage: Pane lifecycle (list/spawn/kill/kill-all). Requires action. kill requires paneId+confirm="yes". kill-all requires confirm="yes". spawn's layout param applies a select-layout (e.g. 'even-vertical' = the 50/50 debug split) and exempts the pane from the width realign.
-- run: Run command with exit code tracking. DEFAULT (wait=true): blocks until complete, returns {status, exitCode, elapsed, lastLines}. Set wait=false to overlap a long-running command with independent work in the same turn (file writes, reads, searches), then poll for the result. Use wait=true when no parallel work exists. NEVER pipe the command's output to tail/head (the pane shows the full output; the lines param limits what you receive instead - the pane guard flags it).
+- run: Run command with exit code tracking. DEFAULT (wait=true): blocks until complete, returns {status, exitCode, elapsed, lastLines}. Set wait=false to overlap a long-running command with independent work in the same turn (file writes, reads, searches), then poll for the result. Use wait=true when no parallel work exists. NEVER pipe the command's output to tail/head (the pane shows the full output; the lines param limits what you receive instead - the pane guard REJECTS such commands before execution).
 - keys: Send raw keys (Ctrl+C, password, y/n) to interactive session. NOT for commands. Special-key tokens and leader sequences ('C-x u', 'C-x r') send as raw keys; other strings send as literal text + Enter; enter=false sends literal text without Enter.
 - poll: Wait for command sent via run to complete. Requires paneId and suffix returned by run.
 - capture: Capture pane scrollback (match = return only the matching lines; ansi = raw escapes).
@@ -345,7 +347,7 @@ Operations:
 Status codes (poll/run wait=true): complete, error, abnormal, stuck, input-needed, timeout, cancelled.
 Wait status codes: ready, stuck, input-needed, timeout, cancelled.
 
-Safety: Use this tool's run (bash -c wrapper isolates child processes). Do not use tail/head in pane run commands (never pipe \`cmd 2>&1 | tail -N\`) - the pane is where output is meant to be seen (that's the point of running work in a pane); piping to tail/head hides it from the visible pane and buffers until close. To limit what you receive, set the \`lines\` parameter on run/poll/capture (10-200); it only affects your view, never the visible pane.
+Safety: Use this tool's run (bash -c wrapper isolates child processes). Do not use tail/head in pane run commands (never pipe \`cmd 2>&1 | tail -N\`) - the pane is where output is meant to be seen (that's the point of running work in a pane); piping to tail/head hides it from the visible pane and buffers until close, and the pane guard REJECTS such commands with a nudge to the correct method. To limit what you receive, set the \`lines\` parameter on run/poll/capture (10-200); it only affects your view, never the visible pane.
 
 DONE marker format: bash -c '<command>' ; echo "DONE_<suffix>=\$?"
 Subshell wrapper prevents destructive commands (exit, kill \$\$) from killing pane.
@@ -534,18 +536,18 @@ USAGE NOTES:
       }
 
       freshPanes.delete(args.paneId)
+      paneGuardReject(args.command)
       const suffix = args.suffix || uniqueSuffix()
       const cmd = `bash -c '${args.command.replace(/'/g, "'\\''")}' ; echo "DONE_${suffix}=$?"`
       await runTmux(["send-keys", "-t", args.paneId, cmd, "Enter"])
       pendingPanes.set(args.paneId, suffix)
 
-      const guard = paneGuardReminder(args.command)
       if (args.wait !== false) {
         const timeoutSeconds = Math.min(args.timeoutSeconds ?? 600, 3600)
         const result = await pollForDone(args.paneId, suffix, timeoutSeconds, abort, args.lines)
         return {
           title: `run ${result.status}`,
-          output: JSON.stringify(result, null, 2) + guard,
+          output: JSON.stringify(result, null, 2),
           metadata: result,
         }
       } else {
@@ -555,7 +557,7 @@ USAGE NOTES:
             suffix,
             pollCommand: `poll with paneId=${args.paneId} suffix=${suffix}`,
             info: "Background mode (wait=false). You MUST call poll next with paneId and this suffix to get the result - do NOT end your turn without polling.",
-          }, null, 2) + guard,
+          }, null, 2),
           metadata: { suffix, background: true },
         }
       }
