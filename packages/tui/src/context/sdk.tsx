@@ -1,6 +1,7 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { appendFileSync } from "node:fs"
 import { createSimpleContext } from "./helper"
 import { batch, createSignal, onCleanup, onMount } from "solid-js"
 
@@ -92,6 +93,52 @@ export function getStreamDeltaMs(now: number): number {
   return lastDeltaAt === 0 ? Number.POSITIVE_INFINITY : now - lastDeltaAt
 }
 
+// Resilient event-stream consumption loop (0367). Fault-isolates each event's
+// handling and never stops permanently: a throwing handler is reported and the
+// stream continues, a stream failure is reported and reconnected with
+// exponential backoff, and the only permanent stop is an aborted signal. The
+// caller owns the per-cycle drain (`onCycleEnd`, the batching flush) and the
+// trace sink. Exported for the regression test.
+export function consumeEventStream<T>(input: {
+  connect: (signal: AbortSignal) => Promise<AsyncIterable<T>>
+  onEvent: (event: T) => void
+  onCycleEnd?: () => void
+  onTrace: (kind: "handler" | "stream" | "loop", error: unknown, event?: T) => void
+  signal: AbortSignal
+  retryDelay?: number
+  maxRetryDelay?: number
+  sleep?: (ms: number) => Promise<void>
+}): Promise<void> {
+  const retryDelay = input.retryDelay ?? 1000
+  const maxRetryDelay = input.maxRetryDelay ?? 30000
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  return (async () => {
+    let attempt = 0
+    while (true) {
+      if (input.signal.aborted) break
+      try {
+        const stream = await input.connect(input.signal)
+        for await (const event of stream) {
+          if (input.signal.aborted) break
+          try {
+            input.onEvent(event)
+          } catch (error) {
+            input.onTrace("handler", error, event)
+          }
+        }
+        input.onCycleEnd?.()
+        attempt += 1
+      } catch (error) {
+        input.onTrace("stream", error)
+        attempt += 1
+      }
+      if (input.signal.aborted) break
+      const backoff = Math.min(retryDelay * 2 ** (attempt - 1), maxRetryDelay)
+      await sleep(backoff)
+    }
+  })().catch((error) => input.onTrace("loop", error))
+}
+
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
@@ -163,17 +210,39 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       flush()
     }
 
+    // 0367: fault-isolation trail for the event stream. A file (JSONL), never
+    // stderr - a stderr write from the TUI lands in the user's input field.
+    function traceStream(kind: string, error: unknown, event?: GlobalEvent) {
+      try {
+        appendFileSync(
+          "/tmp/oc-event-stream.log",
+          JSON.stringify({
+            at: new Date().toISOString(),
+            kind,
+            type: event?.payload?.type,
+            error:
+              error instanceof Error
+                ? { name: error.name, message: error.message, stack: error.stack }
+                : String(error),
+          }) + "\n",
+        )
+      } catch {}
+    }
+
     function startSSE() {
       sse?.abort()
       const ctrl = new AbortController()
       sse = ctrl
-      ;(async () => {
-        let attempt = 0
-        while (true) {
-          if (abort.signal.aborted || ctrl.signal.aborted) break
-
+      // 0367: resilient consumption. A single throwing event handler used to
+      // kill the client's event stream permanently (the throw propagated out of
+      // the consumption loop into a bare swallow, with no reconnect), leaving
+      // the store stale and the live footer stuck busy after the server had
+      // completed the turn (BUG_TUI_EVENT_STREAM_DEATH).
+      void consumeEventStream({
+        signal: ctrl.signal,
+        connect: async (signal) => {
           const events = await sdk.global.event({
-            signal: ctrl.signal,
+            signal,
             sseMaxRetryAttempts: 0,
           })
 
@@ -183,21 +252,17 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
             await sdk.sync.start().catch(() => {})
           }
 
-          for await (const event of events.stream) {
-            if (ctrl.signal.aborted) break
-            handleEvent(event)
-          }
-
+          return events.stream
+        },
+        onEvent: handleEvent,
+        onCycleEnd: () => {
           if (timer) clearTimeout(timer)
           if (queue.length > 0) flush()
-          attempt += 1
-          if (abort.signal.aborted || ctrl.signal.aborted) break
-
-          // Exponential backoff
-          const backoff = Math.min(retryDelay * 2 ** (attempt - 1), maxRetryDelay)
-          await new Promise((resolve) => setTimeout(resolve, backoff))
-        }
-      })().catch(() => {})
+        },
+        onTrace: traceStream,
+        retryDelay,
+        maxRetryDelay,
+      })
     }
 
     onMount(async () => {
