@@ -384,6 +384,9 @@ export const {
         case "message.removed": {
           touchMessage(event.properties.sessionID, event.properties.messageID)
           const messages = store.message[event.properties.sessionID]
+          // 0367: a removal for a message this client never saw would throw
+          // here (undefined array) and take the whole event stream down.
+          if (!messages) break
           const index = messages.findIndex((message) => message.id === event.properties.messageID)
           if (index !== -1) {
             setStore(
@@ -448,8 +451,13 @@ export const {
               // streamed tool-call JSON); plain fields hit the top level.
               const segments = event.properties.field.split(".")
               let target: Record<string, unknown> = draft[result.index]
+              // 0367: a dotted field whose nested object is absent (a delta
+              // for a shape this part does not carry) would throw on the
+              // property write and take the whole event stream down.
               for (let i = 0; i < segments.length - 1; i++) {
-                target = target[segments[i]!] as Record<string, unknown>
+                const next = target[segments[i]!]
+                if (next === null || typeof next !== "object") return
+                target = next as Record<string, unknown>
               }
               const last = segments[segments.length - 1]!
               const existing = target[last] as string | undefined
@@ -475,6 +483,9 @@ export const {
         case "message.part.removed": {
           touchPart(event.properties.sessionID, event.properties.partID)
           const parts = store.part[event.properties.messageID]
+          // 0367: a removal for a part this client never saw would throw
+          // here (undefined array) and take the whole event stream down.
+          if (!parts) break
           const result = search(parts, event.properties.partID, (part) => part.id)
           if (result.found) {
             setStore(
