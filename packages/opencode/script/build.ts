@@ -49,10 +49,6 @@ const createEmbeddedWebUIBundle = async () => {
 }
 
 const embeddedFileMap = skipEmbedWebUi ? null : await createEmbeddedWebUIBundle()
-// 0371: make the artifact self-describing - a binary with the pinned web UI
-// embedded reports it in `oc --version` so builds with and without the UI
-// are distinguishable from the binary alone.
-const binaryVersion = embeddedFileMap ? `${Script.version}+webui` : Script.version
 const treeSitterWorker = await Bun.file(fileURLToPath(import.meta.resolve("@opentui/core/parser.worker"))).text()
 
 const allTargets: {
@@ -196,7 +192,7 @@ for (const item of targets) {
     ],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
-      OPENCODE_VERSION: `'${binaryVersion}'`,
+      OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
       OPENCODE_WORKER_PATH: workerPath,
