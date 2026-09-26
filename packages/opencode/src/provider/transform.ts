@@ -1491,7 +1491,11 @@ export function maxOutputTokens(
   // endpoint margin at the tail.
   if (!model.limit.context || currentContextTokens <= 0) return max
   const margin = Math.floor(model.limit.context * 0.05)
-  return Math.max(0, Math.min(max, model.limit.context - margin - currentContextTokens))
+  // 0368: floor at 1. 0 is never a valid request (the AI SDK rejects
+  // maxOutputTokens < 1 outright), so a clamp that bottoms out must be
+  // treated as "no room" by the CALLER (the compaction gate switches to the
+  // legacy method) rather than shipped as an invalid budget.
+  return Math.max(1, Math.min(max, model.limit.context - margin - currentContextTokens))
 }
 
 type JsonRecord = Record<string, unknown>

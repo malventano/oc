@@ -16,6 +16,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { Effect, Layer, Context } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { isOverflow as overflow, usable } from "./overflow"
+import { ProviderTransform } from "@/provider/transform"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -325,6 +326,13 @@ export interface Interface {
     tokens: SessionV1.Assistant["tokens"]
     model: Provider.Model
   }) => Effect.Effect<boolean>
+  // 0368: which compaction method fits the ACTIVE model. "inject" runs the
+  // summary as a full-chain turn and needs output room inside the model's
+  // window; "legacy" (head-trim + replay) is required when that room is gone.
+  readonly method: (input: {
+    model: Provider.Model
+    contextTokens: number
+  }) => "inject" | "legacy"
   readonly prune: (input: { sessionID: SessionID }) => Effect.Effect<void>
   readonly process: (input: {
     parentID: MessageID
@@ -386,6 +394,20 @@ const layer = Layer.effect(
         outputTokenMax: flags.outputTokenMax,
       })
     })
+
+    // 0368: room test for the inject method. The inject summary turn is a
+    // full-chain request, so it needs output room inside the ACTIVE model's
+    // window on top of the carried-over context. Below this budget the request
+    // cannot both carry the head and write a summary, so the legacy method
+    // (head-trim + replay) is required. This is the shrink-switch case:
+    // switching to a smaller-window model leaves the carried context past the
+    // room, the inject budget bottoms out at the maxOutputTokens clamp, and
+    // the summary turn 400s (BUG_MODEL_SWITCH_WINDOW_CLAMP).
+    const COMPACT_INJECT_MIN_BUDGET = 1000
+    const method = (input: { model: Provider.Model; contextTokens: number }) => {
+      const budget = ProviderTransform.maxOutputTokens(input.model, flags.outputTokenMax, input.contextTokens)
+      return budget < COMPACT_INJECT_MIN_BUDGET ? ("legacy" as const) : ("inject" as const)
+    }
 
     const estimate = Effect.fn("SessionCompaction.estimate")(function* (input: {
       messages: SessionV1.WithParts[]
@@ -575,7 +597,66 @@ const layer = Layer.effect(
       )
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-TimeContext.stampUserMessages(msgs)
+      TimeContext.stampUserMessages(msgs)
+      // 0368: hard bound on the summary conversation. The legacy summary turn
+      // is a bare request (prompt + conversation + output budget), so the
+      // conversation must fit the ACTIVE model's window with room to write the
+      // summary. Without this bound the head was UNBOUNDED (everything before
+      // the preserved tail, or the whole history when no turn fit the tail
+      // budget), so a model switch to a smaller window still overflowed the
+      // summary turn (BUG_MODEL_SWITCH_WINDOW_CLAMP).
+      //
+      // The margin is PROPORTIONAL (20% of the headroom, 2K floor), not a
+      // fixed 2K: Token.estimate is chars/4 and tool-call JSON tokenizes
+      // ~20-30% denser than that. Live shrink switch 2026-09-26: the trim
+      // kept 106K estimated that the provider counted as 129.5K - it fit the
+      // 140K usable by ~10K on luck alone.
+      const headroom = Math.max(
+        0,
+        usable({ cfg, model }) - ProviderTransform.maxOutputTokens(model, flags.outputTokenMax),
+      )
+      const conversationBudget = Math.max(0, headroom - Math.max(2000, Math.floor(headroom * 0.2)))
+      let trimmedHead = false
+      const fits = (items: typeof msgs) => {
+        const text = items.map(serialize).filter(Boolean).join("\n\n")
+        return Token.estimate(text) <= conversationBudget
+      }
+      // Newest-fits-first: keep the newest suffix of the head whose serialized
+      // size fits the budget. Message-atomic, so no turn-boundary special case;
+      // a single oversized message cannot strand the selection (it is shrunk
+      // below instead).
+      if (!fits(msgs)) {
+        let total = 0
+        let keepFrom = msgs.length
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const size = Token.estimate(msgs.slice(i).map(serialize).filter(Boolean).join("\n\n"))
+          if (size > conversationBudget) break
+          total = size
+          keepFrom = i
+        }
+        if (keepFrom < msgs.length) {
+          trimmedHead = true
+          msgs.splice(0, keepFrom)
+        }
+        // Degenerate: the newest message alone exceeds the budget. Strip its
+        // tool outputs (the bulk of any single message) and keep it, so the
+        // summary still has the newest turn rather than nothing.
+        if (keepFrom === msgs.length && msgs.length > 0) {
+          const last = msgs.at(-1)!
+          const stripped = structuredClone(last)
+          stripped.parts = stripped.parts.map((part) =>
+            part.type === "tool" && part.state?.status === "completed"
+              ? { ...part, state: { ...part.state, output: (part.state.output ?? "").slice(0, 2000) } }
+              : part,
+          )
+          if (Token.estimate([stripped].map(serialize).filter(Boolean).join("\n\n")) < Token.estimate(
+            [last].map(serialize).filter(Boolean).join("\n\n"),
+          )) {
+            trimmedHead = true
+            msgs.splice(0, msgs.length, stripped)
+          }
+        }
+      }
       const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
       const nextPrompt =
         compacting.prompt ??
@@ -584,6 +665,14 @@ TimeContext.stampUserMessages(msgs)
             previousSummary,
             context: [conversation],
           }),
+          // 0368: say the loss out loud. A silent truncation is what made the
+          // post-switch continuations "behave odd" - the model continued as if
+          // nothing were missing.
+          ...(trimmedHead
+            ? [
+                "The conversation above was truncated to fit this model's context window: only the newest messages were included, older content was dropped and is unavailable. Do not assume continuity with anything not present.",
+              ]
+            : []),
           ...compacting.context,
         ]
           .filter(Boolean)
@@ -648,10 +737,15 @@ TimeContext.stampUserMessages(msgs)
           },
         ],
         model,
-        // Same remaining-budget cap as the main turn: the trimmed head
-        // still sits near the trigger threshold, so the summary request
-        // must not ask for the full output limit.
-        currentContextTokens: lastFinished?.info.tokens?.total,
+        // 0368: cap on the summary request's OWN size, not the pre-trim
+        // context total. After the head trim the request is much smaller than
+        // the carried-over context, so clamping on the pre-trim total returned
+        // 0 and the summary turn 400'd (BUG_MODEL_SWITCH_WINDOW_CLAMP).
+        currentContextTokens: Token.estimate(
+          [nextPrompt, ...(compacting.prompt ? ["The following is the conversation history:", conversation] : [])]
+            .filter(Boolean)
+            .join("\n\n"),
+        ),
       })
 
       if (result === "compact") {
@@ -1133,6 +1227,7 @@ TimeContext.stampUserMessages(msgs)
 
     return Service.of({
       isOverflow,
+      method,
       prune,
       process: processCompaction,
       create,

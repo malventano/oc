@@ -1395,10 +1395,28 @@ const layer = Layer.effect(
             !compactingPrompt &&
             !hasAbortedCompaction(msgs) &&
             lastFinished &&
-            lastFinished.summary !== true &&
+            // 0368: an ERRORED summary (summary:1 with 0 tokens - the
+            // maxOutputTokens=0 failure after a model switch to a smaller
+            // window) must not count as "a compaction just ran". It blocked
+            // every later auto-compaction and the turn ran on the
+            // pre-compaction tail with no summary at all
+            // (BUG_MODEL_SWITCH_WINDOW_CLAMP).
+            !(lastFinished.summary === true && !lastFinished.error) &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
-            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+            // 0368: room-based method choice. The inject method runs the
+            // summary as a full-chain turn, so it needs output room inside the
+            // ACTIVE model's window; a model switch to a smaller window leaves
+            // the carried-over context past that room and the summary turn
+            // 400s. Take the legacy method (head-trim + replay) when there is
+            // no room, so the first post-switch compaction actually succeeds.
+            yield* compaction.create({
+              sessionID,
+              agent: lastUser.agent,
+              model: lastUser.model,
+              auto: true,
+              overflow: compaction.method({ model, contextTokens: lastFinished.tokens.total ?? 0 }) === "legacy",
+            })
             continue
           }
 
