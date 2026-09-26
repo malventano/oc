@@ -470,13 +470,25 @@ const layer = Layer.effect(
             )
           deps.push(dep)
 
-          result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
+          // 0374 boot: the four directory scans are independent - run them
+          // concurrently (spec 02 epoch pattern: parallel reads/checks). The
+          // merges below stay in deterministic order, so config override
+          // semantics are unchanged.
+          const [command, agent, agentMode, pluginList] = yield* Effect.all(
+            [
+              Effect.promise(() => ConfigCommand.load(dir)),
+              Effect.promise(() => ConfigAgent.load(dir)),
+              Effect.promise(() => ConfigAgent.loadMode(dir)),
+              Effect.promise(() => ConfigPlugin.load(dir)),
+            ],
+            { concurrency: 4 },
+          )
+          result.command = mergeDeep(result.command ?? {}, command)
+          result.agent = mergeDeep(result.agent ?? {}, agent)
+          result.agent = mergeDeep(result.agent ?? {}, agentMode)
           // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
           // returns normalized Specs and we only need to attach origin metadata here.
-          const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
-          yield* mergePluginOrigins(dir, list)
+          yield* mergePluginOrigins(dir, pluginList)
         }
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {
@@ -613,7 +625,12 @@ const layer = Layer.effect(
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("Config.state")(function* (ctx) {
-        return yield* loadInstanceState(ctx).pipe(Effect.orDie)
+        // 0374 boot: duration log for startup attribution (config load is on
+        // the TUI's blocking bootstrap path).
+        const started = Date.now()
+        const config = yield* loadInstanceState(ctx).pipe(Effect.orDie)
+        yield* Effect.logInfo("config loaded", { ms: Date.now() - started, directory: ctx.directory })
+        return config
       }),
     )
 
