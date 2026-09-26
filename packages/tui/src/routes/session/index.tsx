@@ -461,6 +461,14 @@ export function Session() {
 
   createEffect(() => {
     const sessionID = route.sessionID
+    // 0373: with fast boot (0372 default) this route mounts immediately with
+    // the -c placeholder sessionID "dummy" (app.tsx initialRoute) BEFORE the
+    // continue-navigation resolves the real id - the session.get below then
+    // rejects with the SessionID schema error ("Expected a string starting
+    // with ses, got dummy") and toasts on EVERY resume startup. The spinner
+    // gate used to delay this mount past the navigation, hiding the bug.
+    // Skip placeholder ids; the effect re-runs when the real session lands.
+    if (!sessionID.startsWith("ses")) return
     void (async () => {
       const previousWorkspace = untrack(() => project.workspace.current())
       const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
