@@ -5480,9 +5480,10 @@ function ShrinkOutput(props: ToolProps) {
           ? `${results().map((r) => r.originalLen.toLocaleString()).join("+")}=${aggregateOriginal()!.toLocaleString()} → ${summaryLen().toLocaleString()}×${count()}=${total.toLocaleString()}`
           : `${aggregateOriginal()!.toLocaleString()} → ${summaryLen().toLocaleString()}`
       parts.push(`${sizes} chars`)
-      // ~4 chars/token - same divisor as the tool's output line and the
-      // time-context hint, so the two agree.
-      parts.push(`~${Math.round((aggregateOriginal()! - summaryLen()) / 4).toLocaleString()} tokens saved`)
+      // ~3 chars/token - same divisor as the tool's output line and the
+      // time-context hint, so the two agree (display divisor derived from
+      // session history against provider-reported tokens, 2026-09-26).
+      parts.push(`~${Math.round((aggregateOriginal()! - summaryLen()) / 3).toLocaleString()} tokens saved`)
     }
     return `# ${parts.join(" · ")}`
   })

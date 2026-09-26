@@ -29,9 +29,11 @@ export function stampToolOutput(output: { output?: string; [key: string]: unknow
   output.output += `\n\n<system-reminder>${isoZ(Date.now())}</system-reminder>`
 }
 
-/** Threshold for the shrink hint: ~6.4K tokens at ~4 chars/token - the
- * truncation ceiling (50 KiB, truncate.ts) caps in-chain outputs, so the
- * hint targets the top of that band (~0.6% of a 1M-token window). */
+/** Threshold for the shrink hint: 25.6K raw chars. The truncation ceiling
+ * (50 KiB, truncate.ts) caps in-chain outputs, so the hint targets the top
+ * of that band (~8.5K tokens at the 3 chars/token display divisor). The
+ * char threshold is unchanged from the 4 chars/token era, so hint
+ * frequency is identical; only the displayed estimate is denser. */
 export const SHRINK_HINT_MIN_CHARS = 25_600
 
 /**
@@ -47,7 +49,7 @@ export function stampShrinkHint(output: { output?: string; [key: string]: unknow
   if (output.output.includes("Very large tool output")) return
   const len = output.output.length
   if (len < SHRINK_HINT_MIN_CHARS) return
-  const tokens = Math.round(len / 4)
+  const tokens = Math.round(len / 3)
   output.output += `\n\n<system-reminder>Very large tool output (${len} chars, ~${tokens} tokens). If you won't reference it again, call shrink NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it.</system-reminder>`
 }
 
