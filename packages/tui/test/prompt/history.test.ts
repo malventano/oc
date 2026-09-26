@@ -92,8 +92,60 @@ describe("moveHistory: draft stash on up-arrow (0370)", () => {
     expect(recall?.item).toEqual(entry("d"))
   })
 
-  test("down-arrow with a fresh draft still refuses (unchanged)", () => {
-    expect(moveHistory(browse([entry("a")]), 1, "d", entry("d"))).toBeUndefined()
+  test("down-arrow on a fresh draft stashes it and clears the field (0375)", () => {
+    const r = moveHistory(browse([entry("a"), entry("b")]), 1, "draft text", entry("draft text"))
+    expect(r?.browse).toEqual({
+      index: 0,
+      history: [entry("a"), entry("b"), entry("draft text")],
+    })
+    expect(r?.item).toEqual({ input: "", parts: [] })
+    expect(r?.appended).toEqual(entry("draft text"))
+    expect(r?.trimmed).toBe(false)
+  })
+
+  test("down-arrow stash dedups against the newest entry and still clears", () => {
+    const r = moveHistory(browse([entry("a"), entry("draft text")]), 1, "draft text", entry("draft text"))
+    expect(r?.browse).toEqual({ index: 0, history: [entry("a"), entry("draft text")] })
+    expect(r?.item).toEqual({ input: "", parts: [] })
+    expect(r?.appended).toBeUndefined()
+  })
+
+  test("down-arrow stash trims at the retention limit", () => {
+    const full = Array.from({ length: MAX_HISTORY_ENTRIES }, (_, i) => entry(String(i)))
+    const r = moveHistory(browse(full), 1, "d", entry("d"))
+    expect(r?.browse.history).toHaveLength(MAX_HISTORY_ENTRIES)
+    expect(r?.browse.history.at(-1)).toEqual(entry("d"))
+    expect(r?.browse.history[0]?.input).toBe("1")
+    expect(r?.item).toEqual({ input: "", parts: [] })
+    expect(r?.trimmed).toBe(true)
+  })
+
+  test("down-arrow mid-browse walks without stashing (unchanged)", () => {
+    // Browsing at the second-oldest entry: the field holds a history entry
+    // (input non-empty), so a passing draft must be ignored - index != 0.
+    const r = moveHistory(browse([entry("a"), entry("b")], -2), 1, "a", entry("a"))
+    expect(r?.item).toEqual(entry("b"))
+    expect(r?.appended).toBeUndefined()
+  })
+
+  test("down-arrow stash into an empty history creates the first entry", () => {
+    const r = moveHistory(browse([]), 1, "d", entry("d"))
+    expect(r?.browse).toEqual({ index: 0, history: [entry("d")] })
+    expect(r?.item).toEqual({ input: "", parts: [] })
+    expect(r?.appended).toEqual(entry("d"))
+  })
+
+  test("down-arrow stash then up-arrow recalls the draft", () => {
+    const cleared = moveHistory(browse([entry("a")]), 1, "d", entry("d"))!
+    expect(cleared.item).toEqual({ input: "", parts: [] })
+    const recall = moveHistory(cleared.browse, -1, "")
+    expect(recall?.item).toEqual(entry("d"))
+  })
+
+  test("no draft on down-arrow: the walk is unchanged", () => {
+    const r = moveHistory(browse([entry("a"), entry("b")], -2), 1, "a")
+    expect(r?.item).toEqual(entry("b"))
+    expect(moveHistory(browse([entry("a")], -1), 1, "a")?.item).toEqual({ input: "", parts: [] })
   })
 
   test("browsing with an edited field still refuses, and does not stash (unchanged)", () => {

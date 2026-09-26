@@ -1135,7 +1135,20 @@ export function Prompt(props: PromptProps) {
               return false
             }
 
-            const item = history.move(1, input.plainText)
+            // 0375: down-arrow on a fresh draft mirrors Ctrl+C: the draft is
+            // stashed durably into the session history (dedup-guarded) and
+            // the field clears; up-arrow immediately recalls it. Fires ONLY
+            // when the cursor is already at the end of the last line (the
+            // guard above moves the cursor line-down first and returns);
+            // while browsing, the field holds a history entry and the draft
+            // rides along unused (moveHistory ignores it unless the prompt
+            // is not mid-browse); the walk down to the cleared field is
+            // unchanged.
+            const draft =
+              input.plainText.trim() !== "" || store.prompt.parts.length > 0
+                ? { ...store.prompt, mode: store.mode }
+                : undefined
+            const item = history.move(1, input.plainText, draft)
             if (!item) return false
             input.setText(item.input)
             setStore("prompt", item)
