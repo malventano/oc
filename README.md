@@ -1,6 +1,6 @@
 # oc: Custom Build of opencode
 
-This repository is **oc**, a custom fork of [opencode](https://github.com/anomalyco/opencode) maintained for personal use. It tracks upstream opencode (currently based on the `v1.18.27` tag) and is rebased onto new upstream releases as they land. There is no prebuilt binary and no published package: installing `opencode` from npm/bun gets the stock upstream build with none of these changes. The repo contains everything needed to build the patched version (full source + `bun.lock`; `dist/` and `node_modules/` are generated, not stored).
+This repository is **oc**, a custom fork of [opencode](https://github.com/anomalyco/opencode) maintained for personal use. It tracks upstream opencode (currently based on the `v1.18.31` tag) and is rebased onto new upstream releases as they land. There is no prebuilt binary and no published package: installing `opencode` from npm/bun gets the stock upstream build with none of these changes. The repo contains everything needed to build the patched version (full source + `bun.lock`; `dist/` and `node_modules/` are generated, not stored).
 
 ## Build
 
@@ -9,14 +9,14 @@ Requires only `bun`:
     git clone https://github.com/malventano/oc && cd oc
     bun install
     cd packages/opencode
-    OPENCODE_VERSION=1.18.27-oc bun run script/build.ts --single --skip-install --skip-embed-web-ui
+    OPENCODE_VERSION=1.18.31-oc-0371 bun run script/build.ts --single --skip-install
     cp dist/opencode-linux-x64/bin/oc /usr/local/bin/oc
 
 - **`bun install` at the repo root is REQUIRED, and it applies the `patchedDependencies`**: the build bundles the **patched** `@opentui/core` (`patches/@opentui%2Fcore@0.4.5.patch`), plus the other patched deps (solid-js, effect, ai-sdk providers, tanstack, etc.). The opentui patch is load-bearing - it carries the render fixes (0196 drawUnstyledText diff setter, 0338 the completion-flip raw sync gated to the void buffer - the white-flash fix on longer writes, 0201 scroll height-delta anchor). A build run with `--skip-install` WITHOUT a prior `bun install` would bundle STOCK opentui and silently lose those fixes. `--skip-install` is only a speedup for the *artifact* step; it skips the extra cross-platform `bun install @opentui/core@...` in build.ts, not the root `bun install` that applies the patch.
-- `--skip-embed-web-ui` is required: v1.18.5+ app Rollup cannot resolve `@opencode-ai/client/promise` (upstream dep issue, not ours); plain `bun run build` fails on it.
+- **The web UI is embedded in the binary by default** (2026-09-26, patch 0371): the build runs the `packages/app` vite build (~15s) and bakes the pinned web UI into the binary, so `oc serve` web mode is self-contained (works offline) and version-locked to the base tag instead of proxying the moving live frontend at `app.opencode.ai`. A binary with the UI embedded self-reports it: `oc --version` carries a `+webui` suffix (e.g. `1.18.31-oc-0371+webui`). Pass `--skip-embed-web-ui` ONLY if a base regen breaks the `packages/app` build (Rollup resolution failure was the v1.18.5-7 reason) - such a binary reports no suffix.
 - **Changing an `@opentui` patch does not re-patch an existing install.** Bun keys the patched store on the package *version*, not the patch *content*, so after updating an opentui patch you must `rm -rf node_modules/.bun/@opentui+core* node_modules/.bun/@opentui+solid* node_modules/@opentui/core node_modules/@opentui/solid && bun install` to force re-apply. Otherwise an old checkout keeps its old store while a fresh clone gets the new one - the classic "works here, fails on a fresh clone" split (2026-09-09 incident: stale hunk offsets mangle `parser.worker.js`, see bugs/BUG_OPENTUI_PATCH_OFFSETS.md).
 - **Committed `@opentui` patches must have ZERO-offset hunks.** Bun applies hunks at the literal declared line numbers, while `git apply` context-matches and *tolerates* offsets (reporting `Hunk #N succeeded at M (offset K)`) - so `git apply --check` passing does NOT mean bun will produce a valid file. Verify with `git apply -v` (fail on any `offset`/`fuzz` line) and `node --check node_modules/.bun/@opentui+core@0.4.5*/node_modules/@opentui/core/parser.worker.js` after `bun install`.
-- Keep the `-oc` suffix in `OPENCODE_VERSION`: the autoupdate-disable patch (and `oc upgrade` message) key off it. Any `<tag>-oc` version works; `1.18.27-oc` matches this base (the build in this repo is `1.18.27-oc-0338`).
+- Keep the `-oc` suffix in `OPENCODE_VERSION`: the autoupdate-disable patch (and `oc upgrade` message) key off it. Any `<tag>-oc` version works; `1.18.31-oc` matches this base (the build in this repo is `1.18.31-oc-0371+webui`).
 - `OPENCODE_VERSION` also pins the channel to `latest`, which keeps the session DB at the standard `~/.local/share/opencode/opencode.db` (shared with stock opencode). Building WITHOUT it puts the branch name in the channel and the DB becomes `opencode-<branch>.db` (e.g. `opencode-main.db`): a separate empty database, so no existing sessions appear and new ones land in the wrong file.
 - The built binary is `dist/opencode-linux-x64/bin/oc` (named `oc`, unlike upstream's `opencode`).
 
@@ -25,6 +25,7 @@ Requires only `bun`:
 ### Build & identity
 - Built artifact named `oc`; CLI rebranded (OC logo, `oc` command name, oc-specific tips)
 - **Auto-update disabled**: custom builds never query the upstream release channel (no npm/GitHub fetch at startup, no auto-replace of the binary); `oc upgrade` prints "custom build, update from its source repo" and exits
+- **Web UI embedded, version self-described** (0371): builds bake the pinned `packages/app` web UI into the binary and suffix `oc --version` with `+webui`, so web mode is offline-capable and version-locked to the base tag; a binary without the embed reports no suffix
 
 ### Compaction & KV-cache efficiency
 - **Inject-method compaction**: the `/compact` summary turn runs as a normal turn with the summary prompt injected as the final user message, keeping the request chain byte-identical to the cached prefix; the summary turn hits ~98% of the KV prefix cache instead of a full miss
