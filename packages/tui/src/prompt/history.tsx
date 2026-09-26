@@ -47,6 +47,71 @@ export function isDuplicateEntry(previous: PromptInfo | undefined, next: PromptI
   return JSON.stringify(previous) === JSON.stringify(next)
 }
 
+export type HistoryBrowse = {
+  index: number
+  history: PromptInfo[]
+}
+
+export type HistoryMove =
+  | {
+      browse: HistoryBrowse
+      item: PromptInfo
+      /** The entry the move APPENDED to history (the 0370 draft stash) - the
+       *  caller persists it. Undefined when nothing was appended. */
+      appended?: PromptInfo
+      /** True when the append pushed the list past MAX_HISTORY_ENTRIES and
+       *  the file must be rewritten instead of appended to. */
+      trimmed?: boolean
+    }
+  | undefined
+
+/**
+ * Pure history-browse step (0370): the up-arrow binding passes the field's
+ * current draft; when one exists and the prompt is NOT already mid-browse,
+ * the draft is stashed exactly like Ctrl+C (append, dedup-guarded against
+ * the newest entry, trimmed at MAX_HISTORY_ENTRIES) and browse enters at
+ * the PRIOR entry (the pre-stash newest) so the same keypress visibly
+ * walks into history - the stashed draft sits one down-arrow away. With no
+ * prior entry (the draft is the only one) it lands on the draft itself.
+ * From there: up to refer to prior prompts, back down to the draft, one
+ * more down reaches the cleared field (Ctrl+C's end state), and up-arrow
+ * on the empty field recalls the draft. Browsing with an edited field
+ * still refuses, and down-arrow never stashes.
+ */
+export function moveHistory(
+  state: HistoryBrowse,
+  direction: 1 | -1,
+  input: string,
+  draft?: PromptInfo,
+): HistoryMove {
+  if (direction === -1 && draft && state.index === 0) {
+    const duplicate = isDuplicateEntry(state.history.at(-1), draft)
+    const history = duplicate ? state.history : [...state.history, draft].slice(-MAX_HISTORY_ENTRIES)
+    // Amended per live test: the stash keypress lands on the PRIOR entry
+    // (the pre-stash newest) so the field visibly moves into history on the
+    // same keypress; the stashed draft sits one down-arrow away. With no
+    // prior entry (the draft is the only one), land on the draft itself.
+    const index = history.length >= 2 ? -2 : -1
+    return {
+      browse: { index, history },
+      item: history.at(index)!,
+      appended: duplicate ? undefined : draft,
+      trimmed: !duplicate && state.history.length >= MAX_HISTORY_ENTRIES,
+    }
+  }
+  if (!state.history.length) return undefined
+  const current = state.history.at(state.index)
+  if (!current) return undefined
+  if (current.input !== input && input.length) return undefined
+  const next = state.index + direction
+  if (Math.abs(next) > state.history.length) return undefined
+  if (next > 0) return undefined
+  return {
+    browse: { index: next, history: state.history },
+    item: next === 0 ? { input: "", parts: [] } : state.history.at(next)!,
+  }
+}
+
 export const { use: usePromptHistory, provider: PromptHistoryProvider } = createSimpleContext({
   name: "PromptHistory",
   init: () => {
@@ -83,21 +148,22 @@ export const { use: usePromptHistory, provider: PromptHistoryProvider } = create
     })
 
     return {
-      move(direction: 1 | -1, input: string) {
-        if (!store.history.length) return undefined
-        const current = store.history.at(store.index)
-        if (!current) return undefined
-        if (current.input !== input && input.length) return
-        setStore(
-          produce((draft) => {
-            const next = store.index + direction
-            if (Math.abs(next) > store.history.length) return
-            if (next > 0) return
-            draft.index = next
-          }),
-        )
-        if (store.index === 0) return { input: "", parts: [] }
-        return store.history.at(store.index)
+      move(direction: 1 | -1, input: string, draft?: PromptInfo) {
+        const result = moveHistory({ index: store.index, history: store.history }, direction, input, draft)
+        if (!result) return undefined
+        setStore("index", result.browse.index)
+        setStore("history", result.browse.history)
+        if (result.appended) {
+          // The 0370 draft stash appended an entry: persist it with the same
+          // file logic as append() (rewrite on trim, else append). No
+          // sessionID override - the stash always runs inside an active
+          // session route, so keyFor() is already the right bucket.
+          const file = fileFor(keyFor())
+          if (result.trimmed)
+            writeText(file, store.history.map((line) => JSON.stringify(line)).join("\n") + "\n").catch(() => {})
+          else appendText(file, JSON.stringify(result.appended) + "\n").catch(() => {})
+        }
+        return result.item
       },
       append(item: PromptInfo, sessionID?: string) {
         const entry = structuredClone(unwrap(item))
