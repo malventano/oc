@@ -362,7 +362,15 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       yield* Effect.tryPromise(async () => {
         // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
         void renderer.getPalette({ size: 16 }).catch(() => undefined)
-        const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
+        // 0372 startup: the theme-mode wait is a hard gate in front of render().
+        // Terminals that never answer the OSC 10/11 background query (tmux
+        // passthrough off, non-ANSI terminals) paid the FULL timeout before the
+        // first frame. The resolved mode only matters for the `system` theme
+        // (theme.tsx falls back to props.mode otherwise), so keep the long
+        // window only when the user actually selected system, and give a real
+        // terminal's fast reply (<50ms) a 100ms window in every other case.
+        const themeWaitMs = input.config.theme === "system" ? 1000 : 100
+        const mode = (await renderer.waitForThemeMode(themeWaitMs)) ?? "dark"
         if (renderer.isDestroyed) return
 
         await render(() => {

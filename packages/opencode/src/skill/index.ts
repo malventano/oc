@@ -197,56 +197,76 @@ const discoverSkills = Effect.fnUntraced(function* (
   directory: string,
   worktree: string,
 ) {
+  const started = Date.now()
   const state: ScanState = { matches: new Set(), dirs: new Set(), specs: [] }
 
-  const externalDirs: string[] = []
+  // 0374 boot: every scan root is independent, so compute the root list first
+  // (cheap isDir / up-walk checks, parallelized per group) and then run the
+  // glob scans concurrently (spec 02 epoch pattern: parallel reads/checks).
+  // matches/dirs are Sets (order-free); specs keep their deterministic order
+  // so the refresh bookkeeping is unchanged.
+  const specs: ScanSpec[] = []
   if (!disableExternalSkills) {
+    const externalDirs: string[] = []
     if (!disableClaudeCodeSkills) externalDirs.push(CLAUDE_EXTERNAL_DIR)
     externalDirs.push(AGENTS_EXTERNAL_DIR)
 
-    for (const dir of externalDirs) {
-      const root = path.join(global.home, dir)
-      if (!(yield* fsys.isDir(root))) continue
-      state.specs.push({ root, pattern: EXTERNAL_SKILL_PATTERN, opts: { dot: true, scope: "global" } })
-      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
-    }
+    const globalRoots = yield* Effect.all(
+      externalDirs.map((dir) => {
+        const root = path.join(global.home, dir)
+        return fsys.isDir(root).pipe(
+          Effect.map((ok): ScanSpec | undefined => (ok ? { root, pattern: EXTERNAL_SKILL_PATTERN, opts: { dot: true, scope: "global" } } : undefined)),
+        )
+      }),
+      { concurrency: 8 },
+    )
+    for (const spec of globalRoots) if (spec) specs.push(spec)
 
     const upDirs = yield* fsys
       .up({ targets: externalDirs, start: directory, stop: worktree })
       .pipe(Effect.catch(() => Effect.succeed([] as string[])))
 
     for (const root of upDirs) {
-      state.specs.push({ root, pattern: EXTERNAL_SKILL_PATTERN, opts: { dot: true, scope: "project" } })
-      yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
+      specs.push({ root, pattern: EXTERNAL_SKILL_PATTERN, opts: { dot: true, scope: "project" } })
     }
   }
 
   const configDirs = yield* config.directories()
   for (const dir of configDirs) {
-    state.specs.push({ root: dir, pattern: OPENCODE_SKILL_PATTERN })
-    yield* scan(state, dir, OPENCODE_SKILL_PATTERN)
+    specs.push({ root: dir, pattern: OPENCODE_SKILL_PATTERN })
   }
 
   const cfg = yield* config.get()
-  for (const item of cfg.skills?.paths ?? []) {
-    const expanded = item.startsWith("~/") ? path.join(global.home, item.slice(2)) : item
-    const dir = path.isAbsolute(expanded) ? expanded : path.join(directory, expanded)
-    if (!(yield* fsys.isDir(dir))) {
-      yield* Effect.logWarning("skill path not found", { path: dir })
-      continue
-    }
+  const pathRoots = yield* Effect.all(
+    (cfg.skills?.paths ?? []).map((item) => {
+      const expanded = item.startsWith("~/") ? path.join(global.home, item.slice(2)) : item
+      const dir = path.isAbsolute(expanded) ? expanded : path.join(directory, expanded)
+      return fsys.isDir(dir).pipe(
+        Effect.map((ok): ScanSpec | undefined => (ok ? { root: dir, pattern: SKILL_PATTERN } : undefined)),
+        Effect.tap((ok) => (ok ? Effect.void : Effect.logWarning("skill path not found", { path: dir }))),
+      )
+    }),
+    { concurrency: 8 },
+  )
+  for (const spec of pathRoots) if (spec) specs.push(spec)
 
-    state.specs.push({ root: dir, pattern: SKILL_PATTERN })
-    yield* scan(state, dir, SKILL_PATTERN)
-  }
+  const pulledGroups = yield* Effect.forEach(
+    cfg.skills?.urls ?? [],
+    (url) =>
+      discovery.pull(url).pipe(
+        Effect.map((pulledDirs) => pulledDirs.map((dir): ScanSpec => ({ root: dir, pattern: SKILL_PATTERN }))),
+      ),
+    { concurrency: 8 },
+  )
+  for (const group of pulledGroups) specs.push(...group)
 
-  for (const url of cfg.skills?.urls ?? []) {
-    const pulledDirs = yield* discovery.pull(url)
-    for (const dir of pulledDirs) {
-      state.specs.push({ root: dir, pattern: SKILL_PATTERN })
-      yield* scan(state, dir, SKILL_PATTERN)
-    }
-  }
+  state.specs = specs
+  yield* Effect.forEach(specs, (spec) => scan(state, spec.root, spec.pattern, spec.opts), {
+    concurrency: "unbounded",
+    discard: true,
+  })
+
+  yield* Effect.logInfo("skill discover", { ms: Date.now() - started, roots: specs.length })
 
   return {
     matches: Array.from(state.matches),
@@ -260,12 +280,13 @@ const loadSkills = Effect.fnUntraced(function* (
   discovered: DiscoveryState,
   events: EventV2Bridge.Service["Service"],
 ) {
+  const started = Date.now()
   yield* Effect.forEach(discovered.matches, (match) => add(state, match, events), {
     concurrency: "unbounded",
     discard: true,
   })
 
-  yield* Effect.logInfo("init", { count: Object.keys(state.skills).length })
+  yield* Effect.logInfo("init", { count: Object.keys(state.skills).length, ms: Date.now() - started })
 })
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Skill") {}
