@@ -1,14 +1,25 @@
 # Tools
 
-Custom opencode plugin tools used by the oc build. Copy the files into your opencode tools directory and restart opencode to load them:
+Custom opencode plugin tools used by the oc build.
+
+**The repo copies are the source of truth** (this is what gh serves); the
+copies in `~/.config/opencode/tools/` are DEPLOYED runtime copies. Edit the
+repo file first, then deploy, then verify they are byte-identical:
 
     cp tools/*.js ~/.config/opencode/tools/
+    diff -q tools/*.js ~/.config/opencode/tools/
+
+Never edit only the deployed copy - that change never reaches gh and the
+next repo deploy silently reverts it (2026-09-26: the tmux pane-guard
+hardening landed deployed-only and left this repo stale until caught).
+Before editing, `diff -q` the pair to catch existing drift; reconcile
+before touching either side. Restart opencode after deploying to load.
 
 # (or `.opencode/tools/` for project scope). Tools in the config directory are auto-discovered, no config entry needed. Retired 2026-08-11: `file_edit.js` (capabilities merged into the built-in edit tool, patch 0026; that hashline-era format was itself later replaced by the JSON ladder, patches 0124/0131/0301), the sessions trio `sessions_query.js`/`sessions_browse.js`/`sessions_manage.js` (capabilities merged into built-in tools, patch 0030), `void_output.js` + `squash_output.js` (redesigned as built-in `squash-output`, patch 0031), and `skill_metadata.js` (redesigned as built-in `skill-metadata`, patch 0034).
 
 | File | What it does |
 |------|--------------|
-| `tmux.js` | tmux pane lifecycle: 10 ops (manage/run/keys/poll/capture/wait/waitFor/probe/style/log), keys fixes (single specials, leader sequences, enter:false), spawn layout param, pane guard (reminder on `\| tail`/`\| head` pipes - use the `lines` param instead). Works only when opencode runs inside tmux (`TMUX_PANE` set); errors cleanly otherwise. |
+| `tmux.js` | tmux pane lifecycle: 10 ops (manage/run/keys/poll/capture/wait/waitFor/probe/style/log), keys fixes (single specials, leader sequences, enter:false), spawn layout param, pane guard (REJECTS `\| tail`/`\| head` pipes before execution - use the `lines` param instead; fail-closed since 2026-09-26). Works only when opencode runs inside tmux (`TMUX_PANE` set); errors cleanly otherwise. |
 
 Prerequisites:
 - Runtime is Bun (bundled with opencode). `bun:sqlite` and node builtins work as-is.
