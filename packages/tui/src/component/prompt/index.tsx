@@ -1086,7 +1086,20 @@ export function Prompt(props: PromptProps) {
               return false
             }
 
-            const item = history.move(-1, input.plainText)
+            // 0370: up-arrow on a fresh draft stashes it exactly like Ctrl+C
+            // (durable, dedup-guarded) and enters history browse at the
+            // PRIOR entry (the pre-stash newest) so the same keypress
+            // visibly walks into history - the stashed draft sits one
+            // down-arrow away. Up to refer to prior prompts, back down to
+            // the draft, one more down reaches the cleared field, up-arrow
+            // restores it. While already browsing, the field holds a history
+            // entry and the draft rides along unused (moveHistory ignores it
+            // unless the prompt is not mid-browse).
+            const draft =
+              input.plainText.trim() !== "" || store.prompt.parts.length > 0
+                ? { ...store.prompt, mode: store.mode }
+                : undefined
+            const item = history.move(-1, input.plainText, draft)
             if (!item) return false
             input.setText(item.input)
             setStore("prompt", item)
