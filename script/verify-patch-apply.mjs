@@ -14,7 +14,7 @@
 // patchfile no longer matches the registry tarball (a rebase re-port is needed).
 // Run after ANY patchfile edit and before pushing a patchfile change:
 //   bun script/verify-patch-apply.mjs [patchfile...]
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
+import { cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -74,10 +74,22 @@ for (const file of files) {
     continue
   }
   const fuzz = log.split("\n").filter((l) => /offset|fuzz|FAILED|malformed/.test(l))
-  const diff = spawnSync("diff", ["-rq", work, target], { encoding: "utf8" })
+  // Resolve the symlink: the raw target path contains "/node_modules/", and
+  // the old `!l.includes("/node_modules/")` drift filter matched that prefix,
+  // silently dropping EVERY drift line - a stock (unpatched) store passed as
+  // byte-identical and shipped in the 0374/0375 builds (0357's feed watchdog
+  // absent from the binary; BUG_TUI_FEED_IDLE_RENDER_LATCH repro 2). Only
+  // ignore nested node_modules INSIDE the package relative path.
+  const targetReal = realpathSync(target)
+  const diff = spawnSync("diff", ["-rq", work, targetReal], { encoding: "utf8" })
   const drift = (diff.stdout ?? "")
     .split("\n")
-    .filter((l) => l.trim() && !l.includes(".bun-tag-") && !l.includes("/node_modules/"))
+    .filter((l) => l.trim() && !l.includes(".bun-tag-"))
+    .filter((l) => {
+      const at = l.indexOf(targetReal)
+      if (at === -1) return true
+      return !l.slice(at + targetReal.length).includes("/node_modules/")
+    })
   if (drift.length || fuzz.length) {
     failed = true
     console.error(`${file}: ${fuzz.length ? "FUZZ/OFFSET: " + fuzz.join(" | ") + " " : ""}${drift.length} drift line(s) vs node_modules/${name}`)
