@@ -2063,6 +2063,87 @@ it.instance(
   )
 
 it.instance(
+    "finalize mirrors a reasoning-only summary into a text part (0377)",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createCompactionMarker(session.id)
+      const all = yield* ssn.messages({ sessionID: session.id })
+      const markerId = all.at(-1)!.info.id
+      // Summary turn that wrapped the ENTIRE summary in its thinking block
+      // (GLM-5.3-Flash live 2026-09-27: output:1, reasoning:4877 tokens):
+      // reasoning part only, no text part. finalize must mirror the reasoning
+      // text into a text part so the summary is first-class content.
+      const summary = yield* SessionNs.Service.use((svc) =>
+        Effect.gen(function* () {
+          const msg = yield* svc.updateMessage({
+            id: MessageID.ascending(),
+            role: "assistant",
+            sessionID: session.id,
+            mode: "compaction",
+            agent: "compaction",
+            path: { cwd: test.directory, root: test.directory },
+            cost: 0,
+            tokens: { output: 1, input: 0, reasoning: 4877, cache: { read: 0, write: 0 } },
+            modelID: ref.modelID,
+            providerID: ref.providerID,
+            parentID: markerId,
+            time: { created: Date.now() },
+            finish: "stop",
+          })
+          yield* svc.updatePart({
+            id: PartID.ascending(),
+            messageID: msg.id,
+            sessionID: session.id,
+            type: "reasoning",
+            text: "REASONING-ONLY SUMMARY BODY",
+            time: { start: Date.now(), end: Date.now() },
+          })
+          return msg
+        }),
+      )
+      yield* SessionCompaction.use.finalize({
+        sessionID: session.id,
+        parentID: markerId,
+        assistantID: summary.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      const after = yield* ssn.messages({ sessionID: session.id })
+      const mirrored = after.find((m) => m.info.id === summary.id)!
+      const text = mirrored.parts.find((p): p is SessionV1.TextPart => p.type === "text")
+      expect(text?.text).toBe("REASONING-ONLY SUMMARY BODY")
+      // The reasoning part is kept in full (nothing moved, only mirrored).
+      const reasoning = mirrored.parts.find((p): p is SessionV1.ReasoningPart => p.type === "reasoning")
+      expect(reasoning?.text).toBe("REASONING-ONLY SUMMARY BODY")
+    }),
+  )
+
+it.instance(
+    "finalize does not duplicate the text part when the summary already has text (0377)",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createCompactionMarker(session.id)
+      const all = yield* ssn.messages({ sessionID: session.id })
+      const markerId = all.at(-1)!.info.id
+      const summary = yield* createSummaryAssistantMessage(session.id, markerId, test.directory, "NORMAL SUMMARY")
+      yield* SessionCompaction.use.finalize({
+        sessionID: session.id,
+        parentID: markerId,
+        assistantID: summary.id,
+        messages: yield* ssn.messages({ sessionID: session.id }),
+      })
+      const after = yield* ssn.messages({ sessionID: session.id })
+      const done = after.find((m) => m.info.id === summary.id)!
+      const texts = done.parts.filter((p): p is SessionV1.TextPart => p.type === "text")
+      expect(texts).toHaveLength(1)
+      expect(texts[0]!.text).toBe("NORMAL SUMMARY")
+    }),
+  )
+
+it.instance(
     "refuses the huge-count reduce when a tailless marker precedes budget-exceeding content",
     Effect.gen(function* () {
       const test = yield* TestInstance

@@ -143,7 +143,13 @@ const INJECT_NOTES = [
   // stable") and the model defaulted to a bare summary every time; the flip
   // makes the capability the operative default without mandating narration.
   "Persistence tools (read, edit, write, skill) are LIVE during this summary. If the conversation produced a stable, reusable learning - a convention, a gotcha, a procedure, a bug history, a decision with rationale - park it in the relevant project file or skill that future sessions will read (workflow doc, AGENTS.md, skill sibling, runbook, BUG doc), then reference that path in the summary instead of re-deriving the full detail. Keep per-session progress state (current count, next step, active partial work) in the summary body itself. Do not edit files out of scope, and never let persistence replace the summary's completed/active/next-move sections.",
-  "Use minimal reasoning; output the summary directly.",
+  // "Use minimal reasoning; output the summary directly." was REMOVED (0377,
+  // endpoint A/B in BUG_COMPACTION.md): at real-chain scale the steer
+  // CORRELATED with the reasoning-only-summary failure (1/4 retries lost the
+  // summary to the thinking block) and did not reduce thinking when it worked.
+  // Without it: 4/4 clean text summaries, 6x lower length variance. Reasoning
+  // is allowed; the finalize-time text fallback below is the deterministic
+  // safety net for models that wrap the summary in thinking anyway.
 ].join("\n")
 type Turn = {
   start: number
@@ -1089,6 +1095,33 @@ const layer = Layer.effect(
         agent: "compaction",
         mode: "compaction",
       })
+
+      // Reasoning-only summary fallback (0377): a model can wrap the ENTIRE
+      // summary in its thinking block (GLM-5.3-Flash live 2026-09-27: output:1,
+      // reasoning:4877 tokens, finish stop). The reasoning part still replays
+      // into follow-up turns, but the summary renders collapsed in the TUI and
+      // rides the thinking channel instead of being first-class content. If
+      // the finished summary has no non-empty text part, mirror the reasoning
+      // text into a text part (full text kept in both).
+      const hasSummaryText = assistant.parts.some(
+        (part): part is SessionV1.TextPart => part.type === "text" && part.text.trim().length > 0,
+      )
+      if (!hasSummaryText) {
+        const reasoningText = assistant.parts
+          .filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning" && part.text.trim().length > 0)
+          .map((part) => part.text)
+          .join("\n\n")
+        if (reasoningText) {
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: assistant.info.id,
+            sessionID: input.sessionID,
+            type: "text",
+            text: reasoningText,
+            time: { start: Date.now(), end: Date.now() },
+          })
+        }
+      }
 
       // guard-origin compaction (loop/stall 3rd/6th fire): the context being
       // compacted is poisonous by definition - the recent turns are the loop
