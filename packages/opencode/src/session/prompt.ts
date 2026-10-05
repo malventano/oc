@@ -1224,6 +1224,10 @@ const layer = Layer.effect(
         let compactingPrompt: string | undefined
         let steerPrompt: string | undefined
 
+        // Guard enable state (spec 06 s5): per-session toggle under
+        // metadata.guards, default ON. Seeded from the session fetched below;
+        // re-read at the top of each loop iteration so a mid-turn toggle
+        // applies at the next step.
         let loopGuardEnabled = true
         let stallGuardEnabled = true
         // Lazy question rejection: an escaped question tool call solidifies
@@ -1246,8 +1250,20 @@ const layer = Layer.effect(
         let autoCompactRounds = 0
         let guardsHalted = false
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        const initialFlags = Session.guardFlags(session.metadata)
+        loopGuardEnabled = initialFlags.loop
+        stallGuardEnabled = initialFlags.stall
 
         while (true) {
+          // Per-iteration enable-state read (spec 06 s5): a mid-turn toggle
+          // applies at the next step. The 9th-fire halt is per-turn state and
+          // is never resurrected here (the halt breaks the loop anyway).
+          if (!guardsHalted) {
+            const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
+            const flags = Session.guardFlags(current.metadata)
+            loopGuardEnabled = flags.loop
+            stallGuardEnabled = flags.stall
+          }
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(

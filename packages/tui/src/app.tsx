@@ -1086,6 +1086,57 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           dialog.clear()
         },
       },
+      // Per-session guard toggles (spec 06 s5): metadata replaces wholesale on
+      // update, so merge the existing record. Titles recompute from the
+      // session store (session.updated syncs the toggle back).
+      ...(route.data.type === "session"
+        ? [
+            {
+              name: "session.guards.toggle_loop",
+              title: (sync.session.get(route.data.sessionID)?.metadata?.guards as {loop?: boolean} | undefined)?.loop ??
+                true
+                ? "Disable loop guard"
+                : "Enable loop guard",
+              category: "Session",
+              run: () => {
+                if (route.data.type !== "session") return
+                const sessionID = route.data.sessionID
+                const session = sync.session.get(sessionID)
+                const guards = (session?.metadata?.guards ?? {}) as { loop?: boolean; stall?: boolean }
+                void sdk.client.session.update({
+                  sessionID,
+                  metadata: {
+                    ...session?.metadata,
+                    guards: { ...guards, loop: !(guards.loop ?? true) },
+                  },
+                })
+                dialog.clear()
+              },
+            },
+            {
+              name: "session.guards.toggle_stall",
+              title: (sync.session.get(route.data.sessionID)?.metadata?.guards as {stall?: boolean} | undefined)?.stall ??
+                true
+                ? "Disable stall guard"
+                : "Enable stall guard",
+              category: "Session",
+              run: () => {
+                if (route.data.type !== "session") return
+                const sessionID = route.data.sessionID
+                const session = sync.session.get(sessionID)
+                const guards = (session?.metadata?.guards ?? {}) as { loop?: boolean; stall?: boolean }
+                void sdk.client.session.update({
+                  sessionID,
+                  metadata: {
+                    ...session?.metadata,
+                    guards: { ...guards, stall: !(guards.stall ?? true) },
+                  },
+                })
+                dialog.clear()
+              },
+            },
+          ]
+        : []),
     ].map((command) => ({
       namespace: "palette",
       ...command,

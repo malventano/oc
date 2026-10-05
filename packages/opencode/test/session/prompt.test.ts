@@ -554,6 +554,64 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+it.instance("loop guard disabled per session runs the loop unguarded", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      metadata: { guards: { loop: false } },
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.text("Ho".repeat(400))
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.info.role).toBe("assistant")
+    expect((result.info as SessionV1.Assistant).error).toBeUndefined()
+    const text = result.parts
+      .filter((p): p is SessionV1.TextPart => p.type === "text")
+      .map((p) => p.text)
+      .join("")
+    expect(text).toContain("Ho".repeat(400))
+  }),
+)
+
+it.instance("loop guard enabled by default fires on looping output (contrast)", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.text("Ho".repeat(400))
+    yield* llm.text("done")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.info.role).toBe("assistant")
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const hoMessage = messages.find((m) =>
+      m.parts.some((p) => p.type === "text" && p.text.includes("Ho".repeat(20))),
+    )
+    expect(hoMessage).toBeDefined()
+    expect(JSON.stringify((hoMessage!.info as SessionV1.Assistant).error)).toContain("Loop guard")
+  }),
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>
