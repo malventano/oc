@@ -221,6 +221,23 @@ const Model = Schema.Struct({
 
 export const Metadata = Schema.Record(Schema.String, Schema.Any)
 
+// Per-session guard enable state (spec 06 s5): stored under metadata.guards.
+// Any absent layer (metadata, guards, per-guard key) means ON. Read by the
+// prompt loop per iteration; toggled from the TUI palette via session update.
+export const Guards = Schema.Struct({
+  loop: Schema.Boolean,
+  stall: Schema.Boolean,
+})
+export type Guards = Types.DeepMutable<Schema.Schema.Type<typeof Guards>>
+
+export function guardFlags(metadata: typeof Metadata.Type | undefined): Guards {
+  const guards = metadata?.guards as Partial<Guards> | undefined
+  return {
+    loop: guards?.loop ?? true,
+    stall: guards?.stall ?? true,
+  }
+}
+
 export const Info = Schema.Struct({
   id: SessionID,
   slug: Schema.String,

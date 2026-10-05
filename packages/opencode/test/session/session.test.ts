@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2 } from "@opencode-ai/core/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -345,4 +345,15 @@ describe("Session", () => {
       expect(saved.metadata).toBeUndefined()
     }),
   )
+})
+
+describe("guardFlags", () => {
+  test("defaults to on for absent or partial metadata", () => {
+    expect(SessionNs.guardFlags(undefined)).toEqual({ loop: true, stall: true })
+    expect(SessionNs.guardFlags({})).toEqual({ loop: true, stall: true })
+    expect(SessionNs.guardFlags({ guards: {} })).toEqual({ loop: true, stall: true })
+    expect(SessionNs.guardFlags({ guards: { loop: false } })).toEqual({ loop: false, stall: true })
+    expect(SessionNs.guardFlags({ guards: { stall: false } })).toEqual({ loop: true, stall: false })
+    expect(SessionNs.guardFlags({ guards: { loop: false, stall: false } })).toEqual({ loop: false, stall: false })
+  })
 })
