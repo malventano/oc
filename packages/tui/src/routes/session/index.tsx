@@ -3571,6 +3571,21 @@ function Shell(props: ToolProps) {
   })
   const command = createMemo(() => stringValue(props.input.command) ?? "")
   const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
+  // 0379 (spec 12 s6): an ABORTED call that captured output keeps the tool
+  // block - command + collapsed output - with an aborted header, and the red
+  // aborted line renders as an additional row below. The partial output was
+  // already persisted and fed back to the model (message-v2 error+interrupted
+  // serialization); only the TUI hid it. Gated on interrupted + output +
+  // landed command: every other error (permission deny, compaction stub)
+  // keeps the bare red row - a boxed block after a fail must not look like a
+  // completed run.
+  const abortedWithOutput = createMemo(
+    () =>
+      props.part.state.status === "error" &&
+      props.part.state.metadata?.interrupted === true &&
+      stringValue(props.metadata.output) !== undefined &&
+      command().length > 0,
+  )
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 10
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
@@ -3611,6 +3626,7 @@ function Shell(props: ToolProps) {
       const wd = workdirDisplay()
       return wd ? `${p} Running in ${wd}` : `${p} Running`
     }
+    if (abortedWithOutput()) return props.fromUserShell ? "! shell · aborted" : "# bash · aborted"
     return props.fromUserShell ? "! shell" : "# bash"
   })
   // Heredoc bodies get their own language colors (delimiter-named, else
@@ -3662,53 +3678,72 @@ function Shell(props: ToolProps) {
     stringValue(props.metadata.output) !== undefined ||
     command().length > 0
 
-  return (
-    <Show when={error()} fallback={
-      <Show when={showBlock()} fallback={
-        <InlineTool icon="$" pending="Writing command…" complete={command()} part={props.part}>
-          {command()}
-        </InlineTool>
-      }>
-      {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
-          completed. The single code element persists (its buffer holds the
-          last highlight of the identical content), so the completion never
-          remounts a fresh element - no white flash, no blank. The title
-          toggles "# bash" <-> "# Running" <-> "# bash" in place, the
-          spinner runs while streaming/running, fg brightens
-          textMuted -> theme.text at completion, and the grow-only clamp
-          releases to the command's natural final height. The completed
-          HEREDOC flips segments to the static per-segment re-split (fresh
-          mounts - fine: no deltas after completion). The output + expand
-          toggle render as block children after the code. */}
-      <LiveToolStream
-        part={props.part}
-        title={title()}
-        streaming={stream.streaming()}
-        // Trim the display's trailing newlines (display-only) so the
-        // streaming width/rows match the landed command's (0146 judder).
-        content={stream.display().replace(/\n+$/, "")}
-        filetype={liveFiletype()}
-        gutter={gutter()}
-        // 0289 (stable slots): LIVE heredoc segments throughout - each block
-        // mounts once (StreamSegment's fixed slots) and grows in place, so the
-        // bash/body split with independent gutters streams without jumping. The
-        // completed value is the static re-split (same shape; the slots update
-        // in place, so the completion never repaints).
-        segments={completed() ? commandSegments() : liveSegments()}
-        fg={stream.streaming() || isRunning() ? theme.textMuted : theme.text}
-        release={completed()}
-        spinner={stream.streaming() || isRunning()}
-        onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
-      >
-        <Show when={output()}>
-          <text fg={theme.text}>{limited()}</text>
-        </Show>
-        <Show when={collapsed().overflow}>
-          <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
-        </Show>
-      </LiveToolStream>
-      </Show>
+  // 0379: the block is shared by the running/completed path AND the
+  // aborted-with-output path (same LiveToolStream, header flips to
+  // "# bash · aborted" via the title memo).
+  const shellBlock = (
+    <Show when={showBlock()} fallback={
+      <InlineTool icon="$" pending="Writing command…" complete={command()} part={props.part}>
+        {command()}
+      </InlineTool>
     }>
+    {/* 0199 carry-over: ONE LiveToolStream for streaming, running, AND
+        completed. The single code element persists (its buffer holds the
+        last highlight of the identical content), so the completion never
+        remounts a fresh element - no white flash, no blank. The title
+        toggles "# bash" <-> "# Running" <-> "# bash" in place, the
+        spinner runs while streaming/running, fg brightens
+        textMuted -> theme.text at completion, and the grow-only clamp
+        releases to the command's natural final height. The completed
+        HEREDOC flips segments to the static per-segment re-split (fresh
+        mounts - fine: no deltas after completion). The output + expand
+        toggle render as block children after the code. */}
+    <LiveToolStream
+      part={props.part}
+      title={title()}
+      streaming={stream.streaming()}
+      // Trim the display's trailing newlines (display-only) so the
+      // streaming width/rows match the landed command's (0146 judder).
+      content={stream.display().replace(/\n+$/, "")}
+      filetype={liveFiletype()}
+      gutter={gutter()}
+      // 0289 (stable slots): LIVE heredoc segments throughout - each block
+      // mounts once (StreamSegment's fixed slots) and grows in place, so the
+      // bash/body split with independent gutters streams without jumping. The
+      // completed value is the static re-split (same shape; the slots update
+      // in place, so the completion never repaints).
+      segments={completed() ? commandSegments() : liveSegments()}
+      fg={stream.streaming() || isRunning() ? theme.textMuted : theme.text}
+      release={completed()}
+      spinner={stream.streaming() || isRunning()}
+      onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+    >
+      <Show when={output()}>
+        <text fg={theme.text}>{limited()}</text>
+      </Show>
+      <Show when={collapsed().overflow}>
+        <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+      </Show>
+    </LiveToolStream>
+    </Show>
+  )
+
+  return (
+    <Show
+      when={error() && !abortedWithOutput()}
+      fallback={
+        <>
+          {shellBlock}
+          {/* 0379: the red aborted line stays visible as an additional row
+              under the preserved block (user direction). */}
+          <Show when={abortedWithOutput()}>
+            <InlineTool icon="$" pending="Writing command…" failure={error()} complete={false} part={props.part}>
+              {command()}
+            </InlineTool>
+          </Show>
+        </>
+      }
+    >
       <InlineTool icon="$" pending="Writing command…" failure={error()} complete={false} part={props.part}>
         {command()}
       </InlineTool>
