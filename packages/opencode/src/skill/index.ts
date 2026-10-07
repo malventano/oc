@@ -90,6 +90,14 @@ type State = {
   dirMtimes: Record<string, number>
   /** Per-scanned-root matched path list at last re-scan (for add/remove detection). */
   matchCache: Record<string, string[]>
+  /**
+   * 0381: SKILL.md files that failed frontmatter parse or had invalid
+   * frontmatter (missing/non-string name), keyed by path with the stat at
+   * failure. The file-level refresh re-checks them on stat change, so a
+   * repair registers WITHOUT a dir-mtime rescan (the 2026-10-07 gap: an
+   * in-place fix to a never-registered skill was invisible).
+   */
+  broken: Record<string, { mtimeMs: number; size: number }>
 }
 
 type ScanSpec = { root: string; pattern: string; opts?: { dot?: boolean; scope?: string } }
@@ -120,6 +128,7 @@ export interface Interface {
 }
 
 const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
+  const st = yield* Effect.tryPromise(() => NFS.stat(match)).pipe(Effect.catch(() => Effect.succeed(undefined)))
   const md = yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
     catch: (err) => err,
@@ -127,6 +136,13 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
     Effect.catch(
       Effect.fnUntraced(function* (err) {
         const message = FrontmatterError.isInstance(err) ? err.data.message : `Failed to parse skill ${match}`
+        // 0381: record the broken parse (per-path stat) so the file-level
+        // refresh can self-heal a repair without a dir-mtime rescan. The
+        // load-error event publishes once per distinct file state - boot and
+        // later rescans of the same unchanged broken file stay quiet.
+        const prev = state.broken[match]
+        if (st && prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) return undefined
+        if (st) state.broken[match] = { mtimeMs: st.mtimeMs, size: st.size }
         const { Session } = yield* Effect.promise(() => import("@/session/session"))
         yield* events.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() })
         yield* Effect.logError("failed to load skill", { skill: match, error: err })
@@ -137,7 +153,17 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
 
   if (!md) return
 
-  if (!isSkillFrontmatter(md.data)) return
+  if (!isSkillFrontmatter(md.data)) {
+    // 0381: parse OK but frontmatter invalid (missing/non-string name) -
+    // same broken tracking as a parse failure (this was a SILENT drop before).
+    if (st) state.broken[match] = { mtimeMs: st.mtimeMs, size: st.size }
+    yield* Effect.logWarning("invalid skill frontmatter", { skill: match })
+    return
+  }
+
+  // A previously-broken file that now parses via a rescan re-add: drop the
+  // broken entry (the file-level refresh would otherwise keep re-parsing it).
+  delete state.broken[match]
 
   if (state.skills[md.data.name]) {
     yield* Effect.logWarning("duplicate skill name", {
@@ -316,7 +342,7 @@ const layer = Layer.effect(
     )
     const state = yield* InstanceState.make(
       Effect.fn("Skill.state")(function* () {
-        const s: State = { skills: {}, dirs: new Set(), lastSeen: {}, dirMtimes: {}, matchCache: {} }
+        const s: State = { skills: {}, dirs: new Set(), lastSeen: {}, dirMtimes: {}, matchCache: {}, broken: {} }
         // Register the built-in skill BEFORE disk discovery so a user-disk
         // skill with the same name can override it.
         s.skills[CUSTOMIZE_OPENCODE_SKILL_NAME] = {
@@ -391,6 +417,12 @@ const layer = Layer.effect(
       const statResults = yield* Effect.all(
         [
           ...skillList.map((info) => ({ kind: "skill" as const, path: info.location, info })),
+          // 0381: broken paths join the same batched stat pass (full refresh
+          // only - a never-registered skill cannot be in a mid-turn `names`
+          // scope).
+          ...(options?.names
+            ? []
+            : Object.keys(s.broken).map((p) => ({ kind: "broken" as const, path: p, info: undefined as undefined }))),
           ...watchedDirs.map((dir) => ({ kind: "dir" as const, path: dir, info: undefined as undefined })),
         ].map((t) =>
           Effect.tryPromise(() => NFS.stat(t.path)).pipe(
@@ -405,6 +437,7 @@ const layer = Layer.effect(
       type StatResult = (typeof statResults)[number]
       type DirStatResult = StatResult & { t: { kind: "dir" } }
       type SkillStatResult = StatResult & { t: { kind: "skill" } }
+      type BrokenStatResult = StatResult & { t: { kind: "broken" } }
       const stats = statResults
         .filter((r): r is SkillStatResult => r.t.kind === "skill")
         .map(({ t, st }) => ({ info: t.info, st }))
@@ -449,6 +482,62 @@ const layer = Layer.effect(
           // Frontmatter rename: drop the old key.
           delete s.skills[info.name]
           delete s.lastSeen[info.name]
+        }
+      }
+      // Broken entries (0381, full refresh only): re-parse on stat change; a
+      // repaired file registers like a normal change (the next epoch
+      // snapshot's table gains the skill). A vanished file drops the entry -
+      // the dir-level rescan owns add/remove for paths that never registered.
+      const brokenStats = statResults
+        .filter((r): r is BrokenStatResult => r.t.kind === "broken")
+        .map(({ t, st }) => ({ path: t.path, st }))
+      if (brokenStats.length > 0) {
+        const brokenChanged = brokenStats.filter(({ path, st }) => {
+          if (!st) return true
+          const prev = s.broken[path]
+          return !(prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size)
+        })
+        const brokenParsed = yield* Effect.all(
+          brokenChanged
+            .filter(({ st }) => st !== undefined)
+            .map(({ path }) =>
+              Effect.tryPromise(() => ConfigMarkdown.parse(path)).pipe(
+                Effect.catch(() => Effect.succeed(undefined)),
+                Effect.map((md) => ({ path, md })),
+              ),
+            ),
+          { concurrency: "unbounded" },
+        )
+        const brokenParsedByPath = new Map(brokenParsed.flatMap((x) => (x.md ? [[x.path, x.md]] : [])))
+        for (const { path, st } of brokenStats) {
+          if (!st) {
+            delete s.broken[path]
+            continue
+          }
+          const prev = s.broken[path]
+          if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue
+          const md = brokenParsedByPath.get(path)
+          if (!md || !isSkillFrontmatter(md.data)) {
+            // Still broken: refresh the recorded stat so the next change
+            // re-triggers (and the boot error event does not republish).
+            s.broken[path] = { mtimeMs: st.mtimeMs, size: st.size }
+            continue
+          }
+          delete s.broken[path]
+          s.skills[md.data.name] = {
+            name: md.data.name,
+            description: md.data.description,
+            location: path,
+            content: md.content,
+          }
+          s.lastSeen[md.data.name] = { mtimeMs: st.mtimeMs, size: st.size }
+          changed.push({
+            name: md.data.name,
+            deleted: false,
+            description: md.data.description,
+            content: md.content,
+            mtimeMs: st.mtimeMs,
+          })
         }
       }
       // Dir-level (full refresh only): re-scan roots whose dir mtime changed

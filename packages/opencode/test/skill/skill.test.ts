@@ -91,6 +91,35 @@ describe("skill", () => {
     }),
   )
 
+  it.live("self-heals a broken skill on file-level refresh without a dir-mtime change (0381)", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          // Invalid frontmatter (missing name) - the pre-0381 silent-drop mode.
+          const file = path.join(dir, ".opencode", "skill", "broken-skill", "SKILL.md")
+          yield* Effect.promise(() =>
+            Bun.write(file, `---\ndescription: broken, no name field\n---\n\n# Broken\n`),
+          )
+          const skill = yield* Skill.Service
+          expect((yield* skill.all()).find((s) => s.name === "broken-skill")).toBeUndefined()
+
+          // Repair IN PLACE: file mtime changes, directory mtime does not
+          // (rewriting a file's content never bumps the parent dir).
+          yield* Effect.sleep("20 millis")
+          yield* Effect.promise(() =>
+            Bun.write(file, `---\nname: broken-skill\ndescription: repaired in place.\n---\n\n# Fixed\n`),
+          )
+
+          const changed = yield* skill.refresh()
+          const item = (yield* skill.all()).find((s) => s.name === "broken-skill")
+          expect(item).toBeDefined()
+          expect(item!.description).toBe("repaired in place.")
+          expect(changed.some((c) => c.name === "broken-skill" && !c.deleted)).toBe(true)
+        }),
+      { git: true },
+    ),
+  )
+
   it.live("discovers skills from .opencode/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
