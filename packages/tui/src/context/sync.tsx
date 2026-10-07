@@ -772,6 +772,19 @@ export const {
       },
       bootstrap,
     }
+    // 0380: catch-up after the event stream reconnects (stall watchdog or
+    // error reconnect). Push-only SSE means events missed during the gap
+    // never arrive - a turn that ended in the gap would strand the footer
+    // busy forever (both BUG_TUI_EVENT_STREAM_DEATH incidents). Clear the
+    // full-sync cache, refresh the session list, and re-hydrate any session
+    // that looks in-flight so the store converges on fresh state.
+    sdk.setReconnectHook(() => {
+      fullSyncedSessions.clear()
+      void result.session.refresh().catch(() => {})
+      for (const s of store.session) {
+        if (result.session.status(s.id) !== "idle") void result.session.sync(s.id).catch(() => {})
+      }
+    })
     return result
   },
 })

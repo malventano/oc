@@ -120,3 +120,117 @@ test("an aborted signal stops the loop without reconnecting", async () => {
 
   expect(cycles).toBe(0)
 })
+
+// 0380: a stream that goes silent WITHOUT erroring parks the plain for-await
+// forever (window 10, 2026-10-06: server finished the turn 110s later, TUI
+// frozen, trace file absent - no error path ever fired). The stall watchdog
+// races each read against a silence timeout and reconnects.
+const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+test("a silent stream trips the stall watchdog and reconnects", async () => {
+  const received: number[] = []
+  const traces: string[] = []
+  const controller = new AbortController()
+  let cycles = 0
+
+  await consumeEventStream<number>({
+    signal: controller.signal,
+    retryDelay: 1,
+    stallTimeout: 25,
+    sleep: realSleep,
+    connect: async () => {
+      cycles += 1
+      if (cycles === 1) {
+        // Never yields, never throws - the plain for-await would park here.
+        return (async function* () {
+          await new Promise<void>(() => {})
+        })()
+      }
+      if (cycles === 2) {
+        return (async function* () {
+          yield 1
+          await new Promise<void>(() => {})
+        })()
+      }
+      return (async function* () {
+        yield 2
+        controller.abort()
+      })()
+    },
+    onEvent: (event) => received.push(event),
+    onTrace: (kind) => traces.push(kind),
+  })
+
+  expect(received).toEqual([1, 2])
+  expect(traces).toEqual(["stall", "stall"])
+  expect(cycles).toBe(3)
+})
+
+test("an arriving event resets the stall timer (quiet gaps under the timeout do not stall)", async () => {
+  const received: number[] = []
+  const traces: string[] = []
+  const controller = new AbortController()
+  let cycles = 0
+
+  await consumeEventStream<number>({
+    signal: controller.signal,
+    retryDelay: 1,
+    stallTimeout: 40,
+    sleep: realSleep,
+    connect: async () => {
+      cycles += 1
+      if (cycles === 1) {
+        return (async function* () {
+          yield 1
+          await realSleep(10)
+          yield 2
+          await new Promise<void>(() => {})
+        })()
+      }
+      return (async function* () {
+        yield 3
+        controller.abort()
+      })()
+    },
+    onEvent: (event) => received.push(event),
+    onTrace: (kind) => traces.push(kind),
+  })
+
+  // The 10ms gap between events 1 and 2 is well under the 40ms timeout - only
+  // the terminal silence trips the watchdog.
+  expect(received).toEqual([1, 2, 3])
+  expect(traces).toEqual(["stall"])
+  expect(cycles).toBe(2)
+})
+
+test("a reconnect fires the reconnect hook for catch-up", async () => {
+  const reconnects: number[] = []
+  const controller = new AbortController()
+  let cycles = 0
+
+  await consumeEventStream<number>({
+    signal: controller.signal,
+    retryDelay: 1,
+    stallTimeout: 20,
+    sleep: realSleep,
+    connect: async () => {
+      cycles += 1
+      if (cycles === 1) {
+        return (async function* () {
+          yield 1
+          await new Promise<void>(() => {})
+        })()
+      }
+      return (async function* () {
+        yield 2
+        controller.abort()
+      })()
+    },
+    onEvent: () => {},
+    onReconnect: () => reconnects.push(cycles),
+    onTrace: () => {},
+  })
+
+  // First connect is NOT a reconnect; the stall-triggered second connect is.
+  expect(reconnects).toEqual([2])
+})
