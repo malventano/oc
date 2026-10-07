@@ -93,44 +93,96 @@ export function getStreamDeltaMs(now: number): number {
   return lastDeltaAt === 0 ? Number.POSITIVE_INFINITY : now - lastDeltaAt
 }
 
-// Resilient event-stream consumption loop (0367). Fault-isolates each event's
-// handling and never stops permanently: a throwing handler is reported and the
-// stream continues, a stream failure is reported and reconnected with
-// exponential backoff, and the only permanent stop is an aborted signal. The
-// caller owns the per-cycle drain (`onCycleEnd`, the batching flush) and the
-// trace sink. Exported for the regression test.
+// 0380: stall watchdog threshold - 3 missed server heartbeats (global event
+// stream emits `server.heartbeat` every 10s, global.ts Stream.tick). Total
+// silence beyond this means the SSE subscription is dead without an error.
+const EVENT_STREAM_STALL_TIMEOUT_MS = 30_000
+
+// Resilient event-stream consumption loop (0367, stall watchdog 0380).
+// Fault-isolates each event's handling and never stops permanently: a throwing
+// handler is reported and the stream continues, a stream failure is reported
+// and reconnected with exponential backoff, and a SILENT stream is detected by
+// the stall watchdog and reconnected (a stream that stops delivering without
+// erroring would otherwise park the read forever - window 10, 2026-10-06).
+// The caller owns the per-cycle drain (`onCycleEnd`, the batching flush), the
+// reconnect hook (catch-up after any non-first connect), and the trace sink.
+// Exported for the regression test.
+class EventStreamStallError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`event stream stalled: no event for ${timeoutMs}ms`)
+  }
+}
+
 export function consumeEventStream<T>(input: {
   connect: (signal: AbortSignal) => Promise<AsyncIterable<T>>
   onEvent: (event: T) => void
   onCycleEnd?: () => void
-  onTrace: (kind: "handler" | "stream" | "loop", error: unknown, event?: T) => void
+  onReconnect?: () => void
+  onTrace: (kind: "handler" | "stream" | "stall" | "loop", error: unknown, event?: T) => void
   signal: AbortSignal
   retryDelay?: number
   maxRetryDelay?: number
   sleep?: (ms: number) => Promise<void>
+  // Milliseconds of TOTAL stream silence (any event counts, including the
+  // server's 10s heartbeat) before the read is abandoned and the stream
+  // reconnected. Opt-in: only the SSE consumer arms it (the server heartbeat
+  // is the liveness source - a quiet long-running tool call is not a stall);
+  // generic consumers (tests) pass nothing and get the plain for-await.
+  stallTimeout?: number
 }): Promise<void> {
   const retryDelay = input.retryDelay ?? 1000
   const maxRetryDelay = input.maxRetryDelay ?? 30000
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   return (async () => {
     let attempt = 0
+    let cycles = 0
     while (true) {
       if (input.signal.aborted) break
+      // Per-cycle teardown controller: aborting it kills the underlying HTTP
+      // request even when the stream iterable is parked on a read that can
+      // never settle (a hung generator's return() never resolves - awaiting
+      // it would hang the reconnect).
+      const teardown = new AbortController()
+      const onOuterAbort = () => teardown.abort()
+      input.signal.addEventListener("abort", onOuterAbort, { once: true })
       try {
-        const stream = await input.connect(input.signal)
-        for await (const event of stream) {
-          if (input.signal.aborted) break
-          try {
-            input.onEvent(event)
-          } catch (error) {
-            input.onTrace("handler", error, event)
+        const stream = await input.connect(teardown.signal)
+        cycles += 1
+        if (cycles > 1) input.onReconnect?.()
+        const iterator = stream[Symbol.asyncIterator]()
+        try {
+          while (!input.signal.aborted) {
+            let next: IteratorResult<T>
+            if (input.stallTimeout === undefined) {
+              next = await iterator.next()
+            } else {
+              // Race the read against the stall timeout. The timeout resolves
+              // (never rejects), so a losing timer is a harmless no-op.
+              const timeout = sleep(input.stallTimeout).then(() => "stall" as const)
+              const settled = await Promise.race([iterator.next().then((r) => ({ r })), timeout])
+              if (settled === "stall") throw new EventStreamStallError(input.stallTimeout)
+              next = settled.r
+            }
+            if (next.done) break
+            try {
+              input.onEvent(next.value)
+            } catch (error) {
+              input.onTrace("handler", error, next.value)
+            }
           }
+        } finally {
+          // Tear down the request WITHOUT awaiting the iterator's return: a
+          // stream parked on a never-settling read hangs return() forever.
+          teardown.abort()
+          void iterator.return?.().catch(() => {})
         }
         input.onCycleEnd?.()
         attempt += 1
       } catch (error) {
-        input.onTrace("stream", error)
+        input.onTrace(error instanceof EventStreamStallError ? "stall" : "stream", error)
         attempt += 1
+      } finally {
+        input.signal.removeEventListener("abort", onOuterAbort)
       }
       if (input.signal.aborted) break
       const backoff = Math.min(retryDelay * 2 ** (attempt - 1), maxRetryDelay)
@@ -162,6 +214,12 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     }
 
     let sdk = createSDK()
+
+    // 0380: invoked by startSSE after any non-first successful SSE connect
+    // (error reconnect or stall watchdog reconnect). The sync layer registers
+    // a catch-up (push-only SSE means events missed during the gap never
+    // arrive - a turn that ended in the gap would strand the footer busy).
+    let reconnectHook: (() => void) | undefined
 
     const handlers = new Set<(event: GlobalEvent) => void>()
     const emitter = {
@@ -238,6 +296,11 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       // the consumption loop into a bare swallow, with no reconnect), leaving
       // the store stale and the live footer stuck busy after the server had
       // completed the turn (BUG_TUI_EVENT_STREAM_DEATH).
+      // 0380: the stall watchdog arms on total stream silence - the server's
+      // 10s heartbeat (global event stream `Stream.tick`) is the liveness
+      // source, so 30s of no events AT ALL means the subscription is dead
+      // without an error (half-open socket / wedged publisher). The reconnect
+      // hook lets the sync layer catch up on events missed during the gap.
       void consumeEventStream({
         signal: ctrl.signal,
         connect: async (signal) => {
@@ -259,9 +322,11 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           if (timer) clearTimeout(timer)
           if (queue.length > 0) flush()
         },
+        onReconnect: () => reconnectHook?.(),
         onTrace: traceStream,
         retryDelay,
         maxRetryDelay,
+        stallTimeout: EVENT_STREAM_STALL_TIMEOUT_MS,
       })
     }
 
@@ -295,6 +360,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       event: emitter,
       fetch: props.fetch ?? fetch,
       url: props.url,
+      setReconnectHook(fn: () => void) {
+        reconnectHook = fn
+      },
     }
   },
 })
