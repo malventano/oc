@@ -2124,6 +2124,16 @@ const layer = Layer.effect(
     const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
+      // 0390: a NEW turn (the session idle before this prompt) reconciles the
+      // PRIOR turn's stale state - an unfinished assistant message or a
+      // pending/running tool part from a dead turn can never still be busy.
+      // A queued prompt (the session busy - joining a live turn) skips the
+      // sweep: the live turn's parts are legitimately in flight. Background
+      // task children are protected by the reconcile's child-status guard.
+      const sessionStatus = yield* status.get(input.sessionID)
+      if (sessionStatus.type === "idle") {
+        yield* sessions.reconcile({ sessionID: input.sessionID, live: true }).pipe(Effect.catchAll(() => Effect.void))
+      }
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
     })
 

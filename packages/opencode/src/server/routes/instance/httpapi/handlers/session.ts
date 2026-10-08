@@ -1,5 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Question } from "@/question"
+import { BackgroundJob } from "@/background/job"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -50,6 +51,7 @@ const tryParseJson = (text: string) =>
 export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", (handlers) =>
   Effect.gen(function* () {
     const session = yield* Session.Service
+    const background = yield* BackgroundJob.Service
     const shareSvc = yield* SessionShare.Service
     const promptSvc = yield* SessionPrompt.Service
     const revertSvc = yield* SessionRevert.Service
@@ -256,6 +258,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // resume=true is the TUI's Enter-flush: interrupt the current turn and
       // process queued prompts. Plain aborts (double-ESC interrupt) stop the
       // session flat - no queue drain past the cancel.
+      // 0390: the task tool's background subagents run under BackgroundJob,
+      // NOT the run-state - the cancel below never saw them, so aborting a
+      // session (the restart escape included) left background subs running
+      // and their task parts "running" in the DB forever. Cancel the job
+      // first; its own finalizer finalizes the sub's turn.
+      yield* background.cancel(ctx.params.sessionID).pipe(Effect.catchAll(() => Effect.void))
       yield* promptSvc.cancel(ctx.params.sessionID, ctx.query.resume === true)
       return true
     })

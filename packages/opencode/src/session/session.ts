@@ -10,6 +10,7 @@ import type { ProviderMetadata, Usage } from "@opencode-ai/llm"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import * as SessionStatus from "./status"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
@@ -477,7 +478,7 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
-  readonly reconcile: (input: { sessionID: SessionID }) => Effect.Effect<{ messages: number; parts: number }>
+  readonly reconcile: (input: { sessionID: SessionID; live?: boolean }) => Effect.Effect<{ messages: number; parts: number }>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -516,6 +517,7 @@ const layer: Layer.Layer<
     const background = yield* BackgroundJob.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const sessionStatus = yield* SessionStatus.Service
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
@@ -627,7 +629,16 @@ const layer: Layer.Layer<
     // blocks (0379). Recurses into child sessions (a killed subagent's
     // parts). Scoped: only the caller's session + children - other
     // processes' live sessions are never touched.
-    const reconcile = Effect.fn("Session.reconcile")(function* (input: { sessionID: SessionID }) {
+    const reconcile = Effect.fn("Session.reconcile")(function* (input: {
+      sessionID: SessionID
+      // live: the new-turn-start sweep (SessionPrompt.loop) - the session was
+      // IDLE when this runs, so the prior turn's corpses are provably dead,
+      // but BACKGROUND task children may legitimately still be running: their
+      // parts survive when the child session's status is live, and the
+      // children recursion is skipped entirely (a live child's own unfinished
+      // assistant message must never be finalized under it).
+      live?: boolean
+    }) {
       let finalizedMessages = 0
       let finalizedParts = 0
       // Targeted queries, NOT messages({sessionID}): the reconcile runs in
@@ -640,13 +651,19 @@ const layer: Layer.Layer<
       // the last boot); ancient ones got their one-time cleanup on the first
       // post-0388 boot. Measured 2026-10-08: an unbounded scan cost 1323ms
       // on the 157K-part session (boot.trace), the bounded form is ~ms.
+      // ROWID NOTE (0390): `MessageTable.rowid` is NOT a declared drizzle
+      // column - the property is undefined and the sql template renders it
+      // as EMPTY, producing `> (SELECT ...)` = a syntax error that killed
+      // every reconcile since the rowid amendment (the window-13 ghost
+      // family). Use the raw `rowid` identifier; the per-session bound
+      // stays in the correlated subquery.
       const staleMessages = yield* db
         .select()
         .from(MessageTable)
         .where(
           and(
             eq(MessageTable.session_id, input.sessionID),
-            sql`${MessageTable.rowid} > (SELECT COALESCE(MAX(rowid), 0) - 5000 FROM ${MessageTable} WHERE session_id = ${input.sessionID})`,
+            sql`rowid > (SELECT COALESCE(MAX(rowid), 0) - 5000 FROM ${MessageTable} WHERE session_id = ${input.sessionID})`,
             eq(sql`json_extract(${MessageTable.data}, '$.role')`, "assistant"),
             sql`json_extract(${MessageTable.data}, '$.time.completed') IS NULL`,
           ),
@@ -670,7 +687,7 @@ const layer: Layer.Layer<
         .where(
           and(
             eq(PartTable.session_id, input.sessionID),
-            sql`${PartTable.rowid} > (SELECT COALESCE(MAX(rowid), 0) - 5000 FROM ${PartTable} WHERE session_id = ${input.sessionID})`,
+            sql`rowid > (SELECT COALESCE(MAX(rowid), 0) - 5000 FROM ${PartTable} WHERE session_id = ${input.sessionID})`,
             eq(sql`json_extract(${PartTable.data}, '$.type')`, "tool"),
             sql`json_extract(${PartTable.data}, '$.state.status') IN ('pending','running')`,
           ),
@@ -679,6 +696,17 @@ const layer: Layer.Layer<
         .pipe(Effect.orDie)
       for (const row of staleParts) {
         const part = JSON.parse(row.data) as SessionV1.ToolPart
+        // A task part can outlive its turn legitimately (a background
+        // subagent spanning turns): only sweep it when its child session is
+        // not actually running. Non-task tools have no such escape - a prior
+        // turn's inline tool cannot still be busy.
+        if (part.tool === "task") {
+          const child = (part.state.metadata as { sessionId?: string } | undefined)?.sessionId
+          if (child) {
+            const childStatus = yield* sessionStatus.get(child)
+            if (childStatus.type !== "idle") continue
+          }
+        }
         yield* updatePart({
           ...part,
           state: {
@@ -690,6 +718,7 @@ const layer: Layer.Layer<
         })
         finalizedParts++
       }
+      if (input.live) return { messages: finalizedMessages, parts: finalizedParts }
       const kids = yield* children(input.sessionID)
       for (const kid of kids) {
         const child = yield* reconcile({ sessionID: kid.id })
@@ -1176,7 +1205,7 @@ function listByProject(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node],
+  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node, SessionStatus.node],
 })
 
 export * as Session from "./session"

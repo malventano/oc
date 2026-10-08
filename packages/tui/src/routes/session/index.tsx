@@ -508,9 +508,21 @@ export function Session() {
       // + queue-deadlock family, BUGS: DESIGN_RESTART_RECONCILE.md). Once per
       // process, for the first session this process claims (the -s target the
       // restart resumes): finalize the stale claims server-side.
+      // 0390: a failed reconcile is VISIBLE - it leaves running task parts +
+      // an unfinalized corpse turn in the DB (the ghost-sub family, window 13
+      // 2026-10-08), so swallow nothing: the error is probed and toasted, and
+      // the latch only sets on success so the next route load retries.
       if (!reconcileDone) {
-        reconcileDone = true
-        await sdk.client.session.reconcile({ sessionID }).catch(() => {})
+        const result = await sdk.client.session.reconcile({ sessionID }, { throwOnError: true }).catch((error) => {
+          toast.show({
+            title: "State cleanup failed",
+            message: `The boot reconcile did not complete (${error instanceof Error ? error.message : String(error)}). Stale subagent state may persist until the next restart.`,
+            variant: "error",
+            duration: 8000,
+          })
+          return undefined
+        })
+        if (result) reconcileDone = true
       }
       const previousWorkspace = untrack(() => project.workspace.current())
       const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
@@ -4876,7 +4888,9 @@ function Task(props: ToolProps) {
   const { navigate } = useRoute()
   const sync = useSync()
   const dialog = useDialog()
-  const dimensions = useTerminalDimensions()
+  // The content-column width (sidebar-aware, via the session context) - the
+  // raw terminal width ignores the sidebar and the line wraps (0390).
+  const ctx = use()
 
   onMount(() => {
     const sessionID = stringValue(props.metadata.sessionId)
@@ -4886,8 +4900,33 @@ function Task(props: ToolProps) {
   const sessionID = createMemo(() => stringValue(props.metadata.sessionId))
   const messages = createMemo(() => sync.data.message[sessionID() ?? ""] ?? [])
 
+  // The call's turn window inside the child session (0390): a re-called
+  // subagent REUSES the child session, so session-level reads pollute every
+  // prior call line with the current call's totals (the 07:38 report: the
+  // interrupted calls rendered the relaunch's live mirror). The window opens
+  // at the child's last user message at/before THIS call's start and closes
+  // at the next user message after it - each call line shows its own turn.
+  const callStart = createMemo(
+    () => (props.part.state as { time?: { start?: number } }).time?.start ?? 0,
+  )
+  const window = createMemo(() => {
+    const msgs = messages()
+    let startIdx = 0
+    let endIdx = msgs.length
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].role !== "user") continue
+      const t = msgs[i].time.created
+      if (t <= callStart()) startIdx = i
+      if (t > callStart()) {
+        endIdx = i
+        break
+      }
+    }
+    return msgs.slice(startIdx, endIdx)
+  })
+
   const tools = createMemo(() => {
-    return messages().flatMap((msg) =>
+    return window().flatMap((msg) =>
       (sync.data.part[msg.id] ?? [])
         .filter((part): part is ToolPart => part.type === "tool")
         .map((part) => ({ tool: part.tool, state: part.state })),
@@ -4901,10 +4940,12 @@ function Task(props: ToolProps) {
   const status = createMemo(() => sync.data.session_status[sessionID() ?? ""])
   const isRunning = createMemo(() => {
     const value = status()
-    return (
-      props.part.state.status === "running" ||
-      (props.metadata.background === true && value !== undefined && value.type !== "idle")
-    )
+    // A task part is only live if its CHILD session is live: a killed run
+    // (restart/crash) leaves the part "running" in the store forever - the
+    // ghost-spinner family (0390). The child status is the truth; the part
+    // status alone can never resurrect a dead child.
+    if (props.part.tool === "task") return value !== undefined && value.type !== "idle"
+    return props.part.state.status === "running"
   })
   const retry = createMemo(() => {
     const value = status()
@@ -4913,8 +4954,9 @@ function Task(props: ToolProps) {
   })
 
   const duration = createMemo(() => {
-    const first = messages().find((x) => x.role === "user")?.time.created
-    const assistant = messages().findLast((x) => x.role === "assistant")?.time.completed
+    // Per-call (0390): the window's own span, not the child session's total.
+    const first = window().find((x) => x.role === "user")?.time.created
+    const assistant = window().findLast((x) => x.role === "assistant")?.time.completed
     if (!first || !assistant) return 0
     return assistant - first
   })
@@ -4934,15 +4976,14 @@ function Task(props: ToolProps) {
     }),
   )
   const lastUser = createMemo(() => {
-    const msgs = messages()
-    for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "user") return msgs[i]
+    for (let i = window().length - 1; i >= 0; i--) if (window()[i].role === "user") return window()[i]
     return undefined
   })
   const turnMessages = createMemo(() => {
     const start = lastUser()
     if (!start) return []
-    const msgs = messages()
-    return msgs.slice(msgs.indexOf(start) + 1)
+    const win = window()
+    return win.slice(win.indexOf(start) + 1)
   })
   const mirrorTokens = createMemo(() => {
     let reasoning = 0
@@ -5033,10 +5074,11 @@ function Task(props: ToolProps) {
       if (current()) {
         const state = current()!.state
         const title = state.status === "running" || state.status === "completed" ? state.title : undefined
-        // Width-aware cap (0388): the block indent eats ~10 columns - a long
-        // Bash command must never flood the parent pane. The full command
-        // stays one click away in the subagent view.
-        const cap = Math.max(20, dimensions().width - 10)
+        // Width-aware cap (0388/0390): the content column (sidebar-aware)
+        // minus ~10 for the block indent and the arrow - a long Bash command
+        // must never wrap in the parent pane. The full command stays one
+        // click away in the subagent view.
+        const cap = Math.max(20, ctx.width - 10)
         content.push(`↳ ${Locale.titlecase(current()!.tool)} ${Locale.truncate(title ?? "", cap)}`)
       } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
       // The mirror line (0388): the child's live footer counters.
@@ -5053,7 +5095,11 @@ function Task(props: ToolProps) {
       content.push(`↳ ${parts.join(" · ")}`)
     }
 
-    if (!isRunning() && props.part.state.status === "completed") {
+    // 0390: the detail line renders for every NON-live call - completed,
+    // error'd, or limbo (running-in-DB but the child is dead, pre-reconcile).
+    // The window data is frozen at the call's own turn, so the line always
+    // ends with its respective turn's totals.
+    if (!isRunning()) {
       let detail = `↳ ${formatCompletedSubagentDetail(tools().length, Locale.duration(duration()))}`
       const calls = callsTotal()
       if (calls) detail += ` · total ${Locale.duration(calls.total)} (${calls.calls} calls)`
@@ -5067,7 +5113,11 @@ function Task(props: ToolProps) {
     <InlineTool
       icon={props.part.state.status === "completed" ? "✓" : "│"}
       separate={true}
-      color={retry() ? theme.error : undefined}
+      color={
+        retry() || props.part.state.status === "error"
+          ? theme.error
+          : undefined
+      }
       spinner={isRunning()}
       complete={stringValue(props.input.description)}
       pending="Delegating…"
