@@ -4,6 +4,7 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  ErrorBoundary,
   For,
   Match,
   on,
@@ -416,6 +417,24 @@ export function Session() {
   const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
 
+  // 0384: proactive recovery - the subagent-view wedge family root cause is
+  // native TextBuffer pool exhaustion under view churn (the native allocator
+  // holds cumulative allocations; see BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md). When
+  // un-destroyed TextBuffers pile up, restart BEFORE the arena chokes and
+  // wedges the view - a ~5s execve with session auto-resume beats a dead UI.
+  onMount(() => {
+    const iv = setInterval(() => {
+      try {
+        const get = (globalThis as Record<string, unknown>).__ocTBGet as (() => number) | undefined
+        const live = typeof get === "function" ? get() : 0
+        if (live > 12000) {
+          restart(route.sessionID, "Restart complete: TextBuffer count high - proactive recovery (0384)")
+        }
+      } catch {}
+    }, 5000)
+    onCleanup(() => clearInterval(iv))
+  })
+
   const pending = createMemo(() => {
     const completed = messages().findLastIndex((message) => message.role === "assistant" && message.time.completed)
     const pending = messages().findLastIndex(
@@ -469,6 +488,14 @@ export function Session() {
     // gate used to delay this mount past the navigation, hiding the bug.
     // Skip placeholder ids; the effect re-runs when the real session lands.
     if (!sessionID.startsWith("ses")) return
+    // 0384: a fresh navigation resets the containment retry ladder, and sweeps
+    // the orphan renderables the swap just created (dead-on-arrival mounts leak
+    // ~hundreds of native TextBuffers per hop - BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md;
+    // the 5s periodic sweep cannot keep up with rapid hopping, so sweep
+    // immediately with a tight 1.5s age gate).
+    tbRetryAttempt = undefined
+    const orphanSweep = (globalThis as { __ocOrphanSweep?: (minAge?: number) => number }).__ocOrphanSweep
+    orphanSweep?.(1500)
     void (async () => {
       const previousWorkspace = untrack(() => project.workspace.current())
       const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
@@ -495,7 +522,19 @@ export function Session() {
       }
       editor.reconnect(result.data.directory)
       await sync.session.sync(sessionID)
-      if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
+      if (route.sessionID === sessionID && scroll) {
+        // 0384: the scrollbox now PERSISTS across session switches (non-keyed
+        // session route) - its sticky-scroll state carries the previous
+        // session's position and anchor across a total content replacement,
+        // which re-pins the view to the bottom on subsequent stream updates
+        // (the "snaps back to the bottom on additional semiturns" regression).
+        // Reset to fresh-session semantics: sticky-bottom, no manual scroll.
+        const sticky = scroll as unknown as {
+          applyStickyStart?: (start: "top" | "bottom") => void
+        }
+        sticky.applyStickyStart?.("bottom")
+        scroll.scrollBy(100_000)
+      }
     })().catch((error) => {
       if (route.sessionID !== sessionID) return
       toast.show({
@@ -527,6 +566,10 @@ export function Session() {
   let seeded = false
   let scroll: ScrollBoxRenderable
   let prompt: PromptRef | undefined
+  // 0384: one-shot guard for the containment boundary's auto-restart
+  // (TextBuffer pool exhaustion -> execve recovery; util/restart.ts).
+  let tbRestartScheduled = false
+  let tbRetryAttempt: number | undefined = undefined
   const args = useArgs()
   const [promptRefSignal, setPromptRefSignal] = createSignal<PromptRef | undefined>()
   const bind = (r: PromptRef | undefined) => {
@@ -725,6 +768,9 @@ export function Session() {
 
   const local = useLocal()
 
+  // 0383 probe: Session component lifecycle - the keyed Show remounts this
+  // component per sessionID change; mount/unmount here vs the route effect
+  // (which also fires on mount) distinguishes partial-remount states.
   function enterChild(sessionID: string) {
     navigate({
       type: "session",
@@ -1559,6 +1605,47 @@ export function Session() {
         <box flexDirection="row" flexGrow={1} minHeight={0}>
           <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
             <Show when={session()}>
+              {/* 0384 containment: a TextBuffer-exhaustion cascade (probe-verified
+                  root cause of the subagent-view wedge, BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md)
+                  must dispose only the message list, not the whole Session. The
+                  exhaustion is a TRANSIENT concurrent-live spike during rapid view
+                  churn (outgoing trees awaiting deferred destroy + incoming trees;
+                  native cap ~15.5-16K) - it drains within ms once the burst stops.
+                  Recovery ladder: retry the list at 100/400ms (the spike drains);
+                  only restart (execve + session auto-resume) if exhaustion
+                  persists through the retries. */}
+              <ErrorBoundary
+                fallback={(error, reset) => {
+                  const attempt = (tbRetryAttempt = (tbRetryAttempt ?? 0) + 1)
+                  if (attempt <= 2) {
+                    setTimeout(() => {
+                      reset()
+                    }, attempt === 1 ? 100 : 400)
+                    return (
+                      <box flexDirection="column" padding={1}>
+                        <text fg={theme.textMuted}>
+                          Message view hit a transient render-resource limit - recovering (attempt {attempt}/2)...
+                        </text>
+                      </box>
+                    )
+                  }
+                  if (!tbRestartScheduled) {
+                    tbRestartScheduled = true
+                    setTimeout(() => {
+                      restart(
+                        route.sessionID,
+                        "Restart complete: message view crashed (TextBuffer pool exhaustion) - automatic recovery (0384)",
+                      )
+                    }, 1500)
+                  }
+                  return (
+                    <box flexDirection="column" padding={1}>
+                      <text fg={theme.error}>Message view crashed: {String(error).slice(0, 140)}</text>
+                      <text fg={theme.textMuted}>Restarting to recover (TextBuffer pool exhausted)...</text>
+                    </box>
+                  )
+                }}
+              >
               <scrollbox
                 ref={(r) => (scroll = r)}
                 viewportOptions={{
@@ -1690,6 +1777,7 @@ export function Session() {
                   }}
                 </For>
               </scrollbox>
+              </ErrorBoundary>
               <box flexShrink={0}>
                 <Show when={permissions().length > 0}>
                   <PermissionPrompt

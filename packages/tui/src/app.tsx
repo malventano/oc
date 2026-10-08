@@ -503,6 +503,9 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const renderer = useRenderer()
   const dialog = useDialog()
   const local = useLocal()
+  // 0383 probe: App-level route watcher - logs every route change independent
+  // of the Session component's own effect, discriminating "route changed but
+  // the Session route effect never ran" from "route never changed".
   const kv = useKV()
   const keymap = useOpencodeKeymap()
   const event = useEvent()
@@ -1298,8 +1301,21 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
               <Home />
             </Match>
             <Match when={route.data.type === "session"}>
-              <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                {(_) => <Session />}
+              {/* 0384: NOT keyed. The keyed remount dead-on-arrival race
+                  (BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md): during navigation bursts
+                  the freshly created child was disposed before its effects
+                  ran - zero Session components alive, stale frame, every
+                  keybind dead. Session is already reactive to
+                  route.sessionID (all memos + the route effect re-track it;
+                  the -c placeholder->real-id flow already survives a change),
+                  and per-session state (draftStash, prompt history) is keyed
+                  by sessionID, so a persistent instance is safe. The route
+                  effect re-syncs + scrolls on every sessionID change. */}
+              <Show when={route.data.type === "session" ? route.data.sessionID : undefined}>
+                {/* 0383 probe note: the show.childFn probe is retired by 0384 -
+                    with the non-keyed Show there is exactly one instantiation per
+                    home->session activation; session.mount tracks it. */}
+                <Session />
               </Show>
             </Match>
           </Switch>
