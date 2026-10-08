@@ -701,7 +701,7 @@ index 815856b..b4ad117 100644
          this.updateStickyState();
        }
      });
-@@ -11929,12 +12009,140 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11929,12 +12009,145 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -812,8 +812,15 @@ index 815856b..b4ad117 100644
 +        // the viewport down a few rows per streamed message - so only a
 +        // top-removal (heightShrunk) moves the position, via the D-anchor; a
 +        // grow/hold leaves it put.
++        // 0385b: a shrink is NOT unambiguously a top-removal. A semiturn
++        // can destroy+remount the anchored block itself (a Solid branch
++        // swap: streaming -> completed) - the height dips while the child
++        // count is unchanged, and the D-anchor would drag the position DOWN
++        // by the dip (the bottom ratchet). Only a real prune (child count
++        // FELL) moves the position; a remount keeps it and re-captures.
++        const childCountNow = this.content.getChildrenSortedByPrimaryAxis().length;
 +        let target;
-+        if (this._manualAnchorOffset < 0 && heightShrunk) {
++        if (this._manualAnchorOffset < 0 && heightShrunk && childCountNow < this._manualAnchorChildCount) {
 +          target = this.content.height - this._manualAnchorD;
 +        } else if (this._manualAnchorOffset < 0) {
 +          target = this.verticalScrollBar.scrollPosition;
@@ -824,25 +831,23 @@ index 815856b..b4ad117 100644
 +          this.verticalScrollBar.scrollPosition = target;
 +        }
 +      } else if (this._hasManualScroll && this._manualAnchorChild && this._manualAnchorChild.isDestroyed) {
-+        // The anchored block was DESTROYED. If the content shrank, a top-
-+        // removal happened (a prune) - the continuously-tracked distance to
-+        // the content bottom gives the exact removal, so the same rows stay
-+        // visible regardless of which blocks remounted around it. If the
-+        // content only grew or held (a pure remount), nothing moved -
-+        // re-capture so future changes are anchored again.
-+        if (heightShrunk) {
++        // The anchored block was DESTROYED. A shrink is only a top-removal
++        // (a prune) when the child count FELL - then the D-anchor keeps the
++        // same rows visible. A same-count shrink is the anchored block's
++        // own destroy+remount (branch swap): nothing above the reading spot
++        // moved, so keep the position and re-capture (0385b).
++        if (heightShrunk && childCountNow < this._manualAnchorChildCount) {
 +          const target = this.content.height - this._manualAnchorD;
 +          if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
 +            this.verticalScrollBar.scrollPosition = target;
 +          }
-+        } else {
-+          this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
 +        }
++        this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
 +      }
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11950,7 +12158,31 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11950,7 +12163,31 @@ class ScrollBoxRenderable extends BoxRenderable {
            if (this._stickyScrollTop) {
              this.scrollTop = 0;
            } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
@@ -875,7 +880,7 @@ index 815856b..b4ad117 100644
            }
            if (this._stickyScrollLeft) {
              this.scrollLeft = 0;
-@@ -11959,6 +12191,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11959,6 +12196,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -981,7 +986,7 @@ index 0ddf03b..34a3efa 100644
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11973,140 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11928,12 +11973,145 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -1092,8 +1097,15 @@ index 0ddf03b..34a3efa 100644
 +        // the viewport down a few rows per streamed message - so only a
 +        // top-removal (heightShrunk) moves the position, via the D-anchor; a
 +        // grow/hold leaves it put.
++        // 0385b: a shrink is NOT unambiguously a top-removal. A semiturn
++        // can destroy+remount the anchored block itself (a Solid branch
++        // swap: streaming -> completed) - the height dips while the child
++        // count is unchanged, and the D-anchor would drag the position DOWN
++        // by the dip (the bottom ratchet). Only a real prune (child count
++        // FELL) moves the position; a remount keeps it and re-captures.
++        const childCountNow = this.content.getChildrenSortedByPrimaryAxis().length;
 +        let target;
-+        if (this._manualAnchorOffset < 0 && heightShrunk) {
++        if (this._manualAnchorOffset < 0 && heightShrunk && childCountNow < this._manualAnchorChildCount) {
 +          target = this.content.height - this._manualAnchorD;
 +        } else if (this._manualAnchorOffset < 0) {
 +          target = this.verticalScrollBar.scrollPosition;
@@ -1104,25 +1116,23 @@ index 0ddf03b..34a3efa 100644
 +          this.verticalScrollBar.scrollPosition = target;
 +        }
 +      } else if (this._hasManualScroll && this._manualAnchorChild && this._manualAnchorChild.isDestroyed) {
-+        // The anchored block was DESTROYED. If the content shrank, a top-
-+        // removal happened (a prune) - the continuously-tracked distance to
-+        // the content bottom gives the exact removal, so the same rows stay
-+        // visible regardless of which blocks remounted around it. If the
-+        // content only grew or held (a pure remount), nothing moved -
-+        // re-capture so future changes are anchored again.
-+        if (heightShrunk) {
++        // The anchored block was DESTROYED. A shrink is only a top-removal
++        // (a prune) when the child count FELL - then the D-anchor keeps the
++        // same rows visible. A same-count shrink is the anchored block's
++        // own destroy+remount (branch swap): nothing above the reading spot
++        // moved, so keep the position and re-capture (0385b).
++        if (heightShrunk && childCountNow < this._manualAnchorChildCount) {
 +          const target = this.content.height - this._manualAnchorD;
 +          if (Math.abs(target - this.verticalScrollBar.scrollPosition) > 0.5) {
 +            this.verticalScrollBar.scrollPosition = target;
 +          }
-+        } else {
-+          this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
 +        }
++        this._captureManualAnchor(this.verticalScrollBar.scrollPosition);
 +      }
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12131,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11958,6 +12136,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
