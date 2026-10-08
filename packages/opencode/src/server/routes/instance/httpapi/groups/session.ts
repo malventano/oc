@@ -91,6 +91,7 @@ export const SessionPaths = {
   update: `${root}/:sessionID`,
   fork: `${root}/:sessionID/fork`,
   abort: `${root}/:sessionID/abort`,
+  reconcile: `${root}/:sessionID/reconcile`,
   share: `${root}/:sessionID/share`,
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
@@ -274,6 +275,21 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.abort",
             summary: "Abort session",
             description: "Abort an active session and stop any ongoing AI processing or command execution.",
+          }),
+        ),
+        HttpApiEndpoint.post("reconcile", SessionPaths.reconcile, {
+          params: { sessionID: SessionID },
+          success: described(
+            Schema.Struct({ messages: Schema.Number, parts: Schema.Number }),
+            "Reconciled session",
+          ),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.reconcile",
+            summary: "Reconcile session",
+            description:
+              "Finalize stale in-flight state (unfinished assistant messages, pending tool parts) left by a restart, crash, or kill. Scoped to the session and its children.",
           }),
         ),
         HttpApiEndpoint.post("init", SessionPaths.init, {

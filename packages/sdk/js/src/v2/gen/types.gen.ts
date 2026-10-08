@@ -638,8 +638,11 @@ export type CompactionPart = {
   type: "compaction"
   auto: boolean
   overflow?: boolean
+  guard?: boolean
   tail_start_id?: string
   virtual?: boolean
+  no_tail?: boolean
+  clean_start?: boolean
 }
 
 export type Part =
@@ -1238,7 +1241,7 @@ export type GlobalEvent = {
             | MessageOutputLengthError
             | MessageAbortedError
             | StallGuardError
-    | LoopGuardTrimError
+            | LoopGuardTrimError
             | StructuredOutputError
             | ContextOverflowError
             | ContentFilterError
@@ -2261,6 +2264,7 @@ export type GlobalSession = {
   }
   title: string
   agent?: string
+  lastUserAgent?: string
   model?: {
     id: string
     providerID: string
@@ -5399,7 +5403,7 @@ export type SessionError = {
       | MessageOutputLengthError
       | MessageAbortedError
       | StallGuardError
-    | LoopGuardTrimError
+      | LoopGuardTrimError
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
@@ -6726,7 +6730,7 @@ export type EventSessionError = {
       | MessageOutputLengthError
       | MessageAbortedError
       | StallGuardError
-    | LoopGuardTrimError
+      | LoopGuardTrimError
       | StructuredOutputError
       | ContextOverflowError
       | ContentFilterError
@@ -10071,6 +10075,36 @@ export type SessionAbortResponses = {
 }
 
 export type SessionAbortResponse = SessionAbortResponses[keyof SessionAbortResponses]
+
+export type SessionReconcileData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: never
+  url: "/session/{sessionID}/reconcile"
+}
+
+export type SessionReconcileErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionReconcileError = SessionReconcileErrors[keyof SessionReconcileErrors]
+
+export type SessionReconcileResponses = {
+  /**
+   * Reconciled session
+   */
+  200: {
+    messages: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    parts: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type SessionReconcileResponse = SessionReconcileResponses[keyof SessionReconcileResponses]
 
 export type SessionInitData = {
   body?: {
