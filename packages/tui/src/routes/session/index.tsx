@@ -4904,24 +4904,34 @@ function Task(props: ToolProps) {
   // subagent REUSES the child session, so session-level reads pollute every
   // prior call line with the current call's totals (the 07:38 report: the
   // interrupted calls rendered the relaunch's live mirror). The window opens
-  // at the child's last user message at/before THIS call's start and closes
-  // at the next user message after it - each call line shows its own turn.
-  const callStart = createMemo(
-    () => (props.part.state as { time?: { start?: number } }).time?.start ?? 0,
-  )
-  const window = createMemo(() => {
-    const msgs = messages()
-    let startIdx = 0
-    let endIdx = msgs.length
-    for (let i = 0; i < msgs.length; i++) {
-      if (msgs[i].role !== "user") continue
-      const t = msgs[i].time.created
-      if (t <= callStart()) startIdx = i
-      if (t > callStart()) {
-        endIdx = i
-        break
+  // at the child's i-th user message and closes at the (i+1)-th, where i =
+  // THIS call's ordinal among the task parts referencing the same child (the
+  // i-th call = the child's i-th user message). The part's own time.start is
+  // useless as the bound: running parts never carry one, and the reconcile
+  // stamps it at sweep time.
+  const callIndex = createMemo(() => {
+    const child = sessionID()
+    if (!child) return 0
+    const parentMsgs = sync.data.message[ctx.sessionID] ?? []
+    let index = 0
+    for (const m of parentMsgs) {
+      if (m.role !== "assistant") continue
+      for (const p of sync.data.part[m.id] ?? []) {
+        if (p.type !== "tool" || p.tool !== "task") continue
+        const sid = (p.state as { metadata?: { sessionId?: string } }).metadata?.sessionId
+        if (sid !== child) continue
+        if (p.id === props.part.id) return index
+        index++
       }
     }
+    return index
+  })
+  const window = createMemo(() => {
+    const msgs = messages()
+    const bounds: number[] = []
+    for (let i = 0; i < msgs.length; i++) if (msgs[i].role === "user") bounds.push(i)
+    const startIdx = bounds[Math.min(callIndex(), bounds.length - 1)] ?? 0
+    const endIdx = bounds[callIndex() + 1] ?? msgs.length
     return msgs.slice(startIdx, endIdx)
   })
 
@@ -4954,11 +4964,16 @@ function Task(props: ToolProps) {
   })
 
   const duration = createMemo(() => {
-    // Per-call (0390): the window's own span, not the child session's total.
-    const first = window().find((x) => x.role === "user")?.time.created
-    const assistant = window().findLast((x) => x.role === "assistant")?.time.completed
-    if (!first || !assistant) return 0
-    return assistant - first
+    // Per-call (0390): the window's own span, ending at the turn's LAST
+    // ACTIVITY (the newest message creation). The completed stamp cannot be
+    // trusted for killed calls - the reconcile stamps it at boot time, which
+    // inflates the runtime by the idle-between-restarts gap.
+    const win = window()
+    const first = win.find((x) => x.role === "user")?.time.created
+    if (!first) return 0
+    let lastActivity = first
+    for (const m of win) lastActivity = Math.max(lastActivity, m.time.created)
+    return Math.max(0, lastActivity - first)
   })
 
   // The mirror (0388, spec 12 section 8a): the child's live counters,
@@ -5043,15 +5058,27 @@ function Task(props: ToolProps) {
   // message's created (or the last assistant completed) - inter-call idle
   // excluded. Only multi-call children get a total.
   const callsTotal = createMemo(() => {
+    // The store hydrates only the LAST ~100 messages of the child - for a
+    // child with a long history the user-message spans seen here are a
+    // truncated tail (and resume double-writes can make the visible spans
+    // near-zero-wide), so the "total" would be a fiction. Render it only
+    // when the child's full history is actually in the store.
+    if (messages().length >= 100) return undefined
     const users = messages().filter((m) => m.role === "user")
     if (users.length <= 1) return undefined
-    const lastCompleted = [...messages()].reverse().find((m) => m.role === "assistant")?.time.completed
     let total = 0
     for (let i = 0; i < users.length; i++) {
       const start = users[i].time.created
-      const end = users[i + 1]?.time.created ?? lastCompleted
+      const end = users[i + 1]?.time.created
       if (!end || end <= start) continue
-      total += end - start
+      // The span's end = its last ACTIVITY (the newest message creation in
+      // the span) - completed stamps on killed calls are post-mortem.
+      let last = 0
+      for (const m of messages()) {
+        if (m.role !== "assistant" || m.time.created < start || m.time.created >= end) continue
+        last = Math.max(last, m.time.created)
+      }
+      total += Math.max(0, (last || end) - start)
     }
     return { total, calls: users.length }
   })
@@ -5079,7 +5106,10 @@ function Task(props: ToolProps) {
         // must never wrap in the parent pane. The full command stays one
         // click away in the subagent view.
         const cap = Math.max(20, ctx.width - 10)
-        content.push(`↳ ${Locale.titlecase(current()!.tool)} ${Locale.truncate(title ?? "", cap)}`)
+        // Multi-line commands (cd/export/... scripts) carry newlines in the
+        // title - collapse them so the line stays a single visual row.
+        const flat = (title ?? "").replace(/\s*\n\s*/g, " ")
+        content.push(`↳ ${Locale.titlecase(current()!.tool)} ${Locale.truncate(flat, cap)}`)
       } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
       // The mirror line (0388): the child's live footer counters.
       const tokens = mirrorTokens()
@@ -5100,7 +5130,21 @@ function Task(props: ToolProps) {
     // The window data is frozen at the call's own turn, so the line always
     // ends with its respective turn's totals.
     if (!isRunning()) {
-      let detail = `↳ ${formatCompletedSubagentDetail(tools().length, Locale.duration(duration()))}`
+      // Footer parity (0390): a completed/interrupted call freezes the same
+      // counters the turn footer retains - duration, tokens (rate), tools.
+      // The rate comes from the stream-rate state keyed by this call's turn
+      // (zero when it was evicted or never streamed while watched).
+      const tokens = mirrorTokens()
+      const rate = mirrorRate()
+      const parts = [
+        formatCompletedSubagentDetail(tools().length, Locale.duration(duration())),
+        tokens.reasoning + tokens.output > 0
+          ? `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok`
+          : undefined,
+        rate > 0 ? `${formatCount(Math.round(rate))}/s` : undefined,
+        `${mirrorTools()} tool${mirrorTools() === 1 ? "" : "s"}`,
+      ].filter((x) => x !== undefined && x !== "")
+      let detail = `↳ ${parts.join(" · ")}`
       const calls = callsTotal()
       if (calls) detail += ` · total ${Locale.duration(calls.total)} (${calls.calls} calls)`
       content.push(detail)
@@ -5109,7 +5153,30 @@ function Task(props: ToolProps) {
     return content.join("\n")
   })
 
+  // ONE LINE PER SUBAGENT (0390): a re-called subagent reuses the child
+  // session, so the parent stream would render one row per call - the
+  // original plus every resume looked like duplicate subagents. Only the
+  // LATEST call's row renders; the prior calls fold into its aggregate
+  // total (the calls count on the detail line).
+  const isLatestCall = createMemo(() => {
+    const child = sessionID()
+    if (!child) return true
+    const parentMsgs = sync.data.message[ctx.sessionID] ?? []
+    let lastId = ""
+    for (const m of parentMsgs) {
+      if (m.role !== "assistant") continue
+      for (const p of sync.data.part[m.id] ?? []) {
+        if (p.type !== "tool" || p.tool !== "task") continue
+        const sid = (p.state as { metadata?: { sessionId?: string } }).metadata?.sessionId
+        if (sid !== child) continue
+        lastId = p.id
+      }
+    }
+    return props.part.id === lastId
+  })
+
   return (
+    <Show when={isLatestCall()}>
     <InlineTool
       icon={props.part.state.status === "completed" ? "✓" : "│"}
       separate={true}
@@ -5132,6 +5199,7 @@ function Task(props: ToolProps) {
     >
       {content()}
     </InlineTool>
+    </Show>
   )
 }
 

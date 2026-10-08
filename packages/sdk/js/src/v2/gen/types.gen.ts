@@ -10084,6 +10084,7 @@ export type SessionReconcileResponses = {
   200: {
     messages: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
     parts: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    failures: Array<string>
   }
 }
 

@@ -263,7 +263,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       // session (the restart escape included) left background subs running
       // and their task parts "running" in the DB forever. Cancel the job
       // first; its own finalizer finalizes the sub's turn.
-      yield* background.cancel(ctx.params.sessionID).pipe(Effect.catchAll(() => Effect.void))
+      yield* background.cancel(ctx.params.sessionID).pipe(Effect.catch(() => Effect.void))
       yield* promptSvc.cancel(ctx.params.sessionID, ctx.query.resume === true)
       return true
     })

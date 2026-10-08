@@ -280,7 +280,11 @@ export const SessionApi = HttpApi.make("session")
         HttpApiEndpoint.post("reconcile", SessionPaths.reconcile, {
           params: { sessionID: SessionID },
           success: described(
-            Schema.Struct({ messages: Schema.Number, parts: Schema.Number }),
+            Schema.Struct({
+              messages: Schema.Number,
+              parts: Schema.Number,
+              failures: Schema.Array(Schema.String),
+            }),
             "Reconciled session",
           ),
           error: HttpApiError.BadRequest,

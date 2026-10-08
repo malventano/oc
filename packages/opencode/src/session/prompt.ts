@@ -2132,7 +2132,7 @@ const layer = Layer.effect(
       // task children are protected by the reconcile's child-status guard.
       const sessionStatus = yield* status.get(input.sessionID)
       if (sessionStatus.type === "idle") {
-        yield* sessions.reconcile({ sessionID: input.sessionID, live: true }).pipe(Effect.catchAll(() => Effect.void))
+        yield* sessions.reconcile({ sessionID: input.sessionID, live: true }).pipe(Effect.catch(() => Effect.void))
       }
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
     })
