@@ -477,6 +477,7 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  readonly reconcile: (input: { sessionID: SessionID }) => Effect.Effect<{ messages: number; parts: number }>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -611,6 +612,91 @@ const layer: Layer.Layer<
         }
       }
       return rows.map((row) => ({ ...fromRow(row), project: projects.get(row.project_id) ?? null }))
+    })
+
+    // Reconcile stale in-flight state (BUG: DESIGN_RESTART_RECONCILE.md): a
+    // /restart, crash, or kill mid-turn leaves an unfinished assistant
+    // message and pending/running tool parts in the DB. The resumed process
+    // computes busy from that corpse turn (computeTurn -> t.active), so
+    // prompts queue behind a turn that can never finish and the transcript
+    // shows phantom "running" spinners. Finalize the claims: the unfinished
+    // assistant message gets the same interrupted semantics
+    // finalizeInterruptedAssistant uses (the prompt loop's exit invariant
+    // requires finish + time.completed, else the turn re-processes), tool
+    // parts land in the aborted/error state the TUI renders as aborted
+    // blocks (0379). Recurses into child sessions (a killed subagent's
+    // parts). Scoped: only the caller's session + children - other
+    // processes' live sessions are never touched.
+    const reconcile = Effect.fn("Session.reconcile")(function* (input: { sessionID: SessionID }) {
+      let finalizedMessages = 0
+      let finalizedParts = 0
+      // Targeted queries, NOT messages({sessionID}): the reconcile runs in
+      // the boot path of the resumed session (before the first prompt) - on
+      // a large session a full WithParts load added seconds of blank screen
+      // (2026-10-08 06:22 report). SQL JSON filters scan only the stale rows.
+      // The rowid-range predicate bounds the scan BEFORE the unindexed
+      // json_extract filters run (SQLITE evaluates the cheap predicate first
+      // and short-circuits): future corpses are always recent (created since
+      // the last boot); ancient ones got their one-time cleanup on the first
+      // post-0388 boot. Measured 2026-10-08: an unbounded scan cost 1323ms
+      // on the 157K-part session (boot.trace), the bounded form is ~ms.
+      const staleMessages = yield* db
+        .select()
+        .from(MessageTable)
+        .where(
+          and(
+            eq(MessageTable.session_id, input.sessionID),
+            sql`${MessageTable.rowid} > (SELECT COALESCE(MAX(rowid), 0) - 5000 FROM ${MessageTable} WHERE session_id = ${input.sessionID})`,
+            eq(sql`json_extract(${MessageTable.data}, '$.role')`, "assistant"),
+            sql`json_extract(${MessageTable.data}, '$.time.completed') IS NULL`,
+          ),
+        )
+        .all()
+        .pipe(Effect.orDie)
+      for (const row of staleMessages) {
+        const info = JSON.parse(row.data) as SessionV1.Assistant
+        info.error ??= MessageV2.fromError(new DOMException("Aborted", "AbortError"), {
+          providerID: info.providerID,
+          aborted: true,
+        })
+        info.finish = "stop"
+        info.time.completed = Date.now()
+        yield* updateMessage(info)
+        finalizedMessages++
+      }
+      const staleParts = yield* db
+        .select()
+        .from(PartTable)
+        .where(
+          and(
+            eq(PartTable.session_id, input.sessionID),
+            sql`${PartTable.rowid} > (SELECT COALESCE(MAX(rowid), 0) - 5000 FROM ${PartTable} WHERE session_id = ${input.sessionID})`,
+            eq(sql`json_extract(${PartTable.data}, '$.type')`, "tool"),
+            sql`json_extract(${PartTable.data}, '$.state.status') IN ('pending','running')`,
+          ),
+        )
+        .all()
+        .pipe(Effect.orDie)
+      for (const row of staleParts) {
+        const part = JSON.parse(row.data) as SessionV1.ToolPart
+        yield* updatePart({
+          ...part,
+          state: {
+            ...part.state,
+            status: "error",
+            error: "Interrupted by restart",
+            time: { start: part.state.time?.start ?? Date.now(), end: Date.now() },
+          },
+        })
+        finalizedParts++
+      }
+      const kids = yield* children(input.sessionID)
+      for (const kid of kids) {
+        const child = yield* reconcile({ sessionID: kid.id })
+        finalizedMessages += child.messages
+        finalizedParts += child.parts
+      }
+      return { messages: finalizedMessages, parts: finalizedParts }
     })
 
     const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
@@ -1002,6 +1088,7 @@ const layer: Layer.Layer<
       diff,
       messages,
       children,
+      reconcile,
       remove,
       updateMessage,
       removeMessage,

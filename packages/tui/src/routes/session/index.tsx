@@ -129,6 +129,10 @@ const DRAFT_STASH_BOTTOM = "bottom"
 // a second Enter then duplicates the prompt). The retry loop re-arms the same
 // timer so the single id tracks the newest pending restore.
 let pendingRestoreTimer: ReturnType<typeof setTimeout> | null = null
+// 0388: the boot reconcile runs ONCE per process (module latch - a component
+// remount must never re-fire it: a re-reconcile during a live turn would
+// finalize live parts).
+let reconcileDone = false
 function scheduleRestore(fn: () => void, delay: number) {
   if (pendingRestoreTimer) clearTimeout(pendingRestoreTimer)
   pendingRestoreTimer = setTimeout(() => {
@@ -497,6 +501,17 @@ export function Session() {
     const orphanSweep = (globalThis as { __ocOrphanSweep?: (minAge?: number) => number }).__ocOrphanSweep
     orphanSweep?.(1500)
     void (async () => {
+      // 0388: boot reconcile - a restart/crash mid-turn leaves an unfinished
+      // assistant message + pending tool parts in the DB; the resumed session
+      // computes busy from that corpse turn (computeTurn -> t.active), queueing
+      // prompts behind a turn that can never finish (the 2026-10-08 scrollback
+      // + queue-deadlock family, BUGS: DESIGN_RESTART_RECONCILE.md). Once per
+      // process, for the first session this process claims (the -s target the
+      // restart resumes): finalize the stale claims server-side.
+      if (!reconcileDone) {
+        reconcileDone = true
+        await sdk.client.session.reconcile({ sessionID }).catch(() => {})
+      }
       const previousWorkspace = untrack(() => project.workspace.current())
       const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })
       if (!result.data) {
@@ -1632,10 +1647,20 @@ export function Session() {
                   if (!tbRestartScheduled) {
                     tbRestartScheduled = true
                     setTimeout(() => {
-                      restart(
-                        route.sessionID,
-                        "Restart complete: message view crashed (TextBuffer pool exhaustion) - automatic recovery (0384)",
-                      )
+                      void (async () => {
+                        // 0388: finalize the dying turn before the execve -
+                        // the containment fires BY DESIGN mid-stream; without
+                        // the abort the resumed session inherits the corpse
+                        // turn. The boot reconcile is the backstop.
+                        await Promise.race([
+                          sdk.client.session.abort({ sessionID: route.sessionID, resume: "false" }).catch(() => {}),
+                          new Promise((resolve) => setTimeout(resolve, 1000)),
+                        ])
+                        restart(
+                          route.sessionID,
+                          "Restart complete: message view crashed (TextBuffer pool exhaustion) - automatic recovery (0384)",
+                        )
+                      })()
                     }, 1500)
                   }
                   return (

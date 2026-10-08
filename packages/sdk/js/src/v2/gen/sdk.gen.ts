@@ -207,6 +207,8 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionReconcileErrors,
+  SessionReconcileResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
@@ -3968,6 +3970,25 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionAbortResponses, SessionAbortErrors, ThrowOnError>({
       url: "/session/{sessionID}/abort",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Reconcile session
+   *
+   * Finalize stale in-flight state (unfinished assistant messages, pending tool parts) left by a restart, crash, or kill. Scoped to the session and its children.
+   */
+  public reconcile<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).post<SessionReconcileResponses, SessionReconcileErrors, ThrowOnError>({
+      url: "/session/{sessionID}/reconcile",
       ...options,
       ...params,
     })

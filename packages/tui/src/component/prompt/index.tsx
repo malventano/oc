@@ -1278,7 +1278,15 @@ export function Prompt(props: PromptProps) {
         // execve only fires after the RPC resolves (the writes are committed
         // before the response). Idle sessions: the cancel is a no-op.
         if (props.sessionID) {
-          await sdk.client.session.abort({ sessionID: props.sessionID, resume: "false" }).catch(() => {})
+          // 0388: bound the abort - a hung/failed cancel must not delay the
+          // restart (window 13, 2026-10-08: the abort silently finalized
+          // nothing and the execve fired over unfinalized state). The boot
+          // reconcile (session.reconcile) is the safety net for whatever the
+          // abort does not finalize in time.
+          await Promise.race([
+            sdk.client.session.abort({ sessionID: props.sessionID, resume: "false" }).catch(() => {}),
+            new Promise((resolve) => setTimeout(resolve, 1000)),
+          ])
         }
         restart(props.sessionID)
      } catch (error) {
