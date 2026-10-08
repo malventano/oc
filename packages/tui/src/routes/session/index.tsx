@@ -2539,6 +2539,12 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
+  // Mouse path for the "view subagents" hint (spec 18): click = the same
+  // command the shortcut dispatches.
+  const keymap = useOpencodeKeymap()
+  const renderer = useRenderer()
+  const [subHintHover, setSubHintHover] = createSignal(false)
+  const [bgHintHover, setBgHintHover] = createSignal(false)
 
   return (
     <>
@@ -2559,26 +2565,46 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
       </For>
       <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
         <box paddingTop={1} paddingLeft={3}>
-          <text fg={theme.text}>
-            {childShortcut()}
-            <span style={{ fg: theme.textMuted }}> view subagents</span>
-            <Show
-              when={
-                sync.data.capabilities.experimentalBackgroundSubagents &&
-                props.parts.some(
-                  (x) =>
-                    x.type === "tool" &&
-                    x.tool === "task" &&
-                    x.state.status === "running" &&
-                    x.state.metadata?.background !== true,
-                )
-              }
+          <box
+            onMouseOver={() => setSubHintHover(true)}
+            onMouseOut={() => setSubHintHover(false)}
+            onMouseUp={() => {
+              if (renderer.getSelection()?.getSelectedText()) return
+              keymap.dispatchCommand("session.child.first")
+            }}
+          >
+            <text fg={subHintHover() ? theme.secondary : theme.text}>
+              {childShortcut()}
+              <span style={{ fg: theme.textMuted }}> view subagents</span>
+            </text>
+          </box>
+          <Show
+            when={
+              sync.data.capabilities.experimentalBackgroundSubagents &&
+              props.parts.some(
+                (x) =>
+                  x.type === "tool" &&
+                  x.tool === "task" &&
+                  x.state.status === "running" &&
+                  x.state.metadata?.background !== true,
+              )
+            }
+          >
+            <box
+              onMouseOver={() => setBgHintHover(true)}
+              onMouseOut={() => setBgHintHover(false)}
+              onMouseUp={() => {
+                if (renderer.getSelection()?.getSelectedText()) return
+                keymap.dispatchCommand("session.background")
+              }}
             >
-              <span style={{ fg: theme.textMuted }}> · </span>
-              {backgroundShortcut()}
-              <span style={{ fg: theme.textMuted }}> background</span>
-            </Show>
-          </text>
+              <text fg={bgHintHover() ? theme.secondary : theme.text}>
+                <span style={{ fg: theme.textMuted }}> · </span>
+                {backgroundShortcut()}
+                <span style={{ fg: theme.textMuted }}> background</span>
+              </text>
+            </box>
+          </Show>
         </box>
       </Show>
       <Show when={props.message.error && props.message.error.name !== "MessageAbortedError"}>

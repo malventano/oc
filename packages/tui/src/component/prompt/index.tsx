@@ -59,6 +59,7 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { HintChip } from "../../ui/hint-chip"
 import { restart } from "../../util/restart"
 
 registerOpencodeSpinner()
@@ -408,21 +409,37 @@ export function Prompt(props: PromptProps) {
   // independent of the main turn's stream state (background subagents keep
   // running while the parent is idle).
   const activeSubagents = createMemo(() => {
-    if (!props.sessionID) return 0
+    if (!props.sessionID) return undefined
     const messages = sync.data.message[props.sessionID] ?? []
     let count = 0
+    let sid: string | undefined
     for (const m of messages) {
       for (const p of sync.data.part[m.id] ?? []) {
-        if (p.type === "tool" && p.tool === "task" && p.state.status === "running") count++
+        if (p.type !== "tool" || p.tool !== "task" || p.state.status !== "running") continue
+        count++
+        // The first running part in message order wins the click target
+        // (the footbar chip navigates into the active subagent, or the
+        // first of several). The session id lands in the part metadata at
+        // spawn; a not-yet-attached part simply has no target.
+        if (!sid) {
+          const meta = p.state.metadata as { sessionId?: string } | undefined
+          if (meta?.sessionId) sid = meta.sessionId
+        }
       }
     }
-    return count
+    if (count === 0) return undefined
+    return { count, sid }
   })
   const subagentsText = createMemo(() => {
-    const n = activeSubagents()
-    if (n === 0) return
-    return `${n} subagent${n > 1 ? "s" : ""}`
+    const a = activeSubagents()
+    if (!a) return
+    return `${a.count} subagent${a.count > 1 ? "s" : ""}`
   })
+  // Footbar chip hover (spec 18): which hint chip the pointer is over -
+  // hover tint + click activation follow the subagent-footer chip idiom.
+  const [chipHover, setChipHover] = createSignal<"agents" | "subagents" | "commands" | null>(null)
+  // Busy-state hint chips (spec 18): interrupt/queue/revert/cancel.
+  const [busyHintHover, setBusyHintHover] = createSignal<string | null>(null)
 
   const sessionTitle = createMemo(() => (props.sessionID ? sync.session.get(props.sessionID)?.title : undefined))
 
@@ -1939,33 +1956,76 @@ export function Prompt(props: PromptProps) {
                     })()}
                   </box>
                 </box>
-                <text flexShrink={0} fg={store.interrupt > 0 ? theme.primary : theme.text} wrapMode="none" truncate>
+                <box flexShrink={0} flexDirection="row" gap={0}>
                   <Show
                     when={store.mode === "shell" || auto()?.visible}
                     fallback={
                       <Show
                         when={emptyWithQueued()}
                         fallback={
-                          <>
-                            esc{" "}
-                            <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                              {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                            </span>
+                          <box flexDirection="row" gap={0}>
+                            <HintChip
+                              hover={busyHintHover}
+                              setHover={setBusyHintHover}
+                              id="esc"
+                              onActivate={() => {
+                                input.focus()
+                                keymap.dispatchCommand("session.interrupt")
+                              }}
+                            >
+                              esc{" "}
+                              <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
+                                {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                              </span>
+                            </HintChip>
                             <Show when={busyWithDraft()}>
-                              {" "}·{" "}enter{" "}
-                              <span style={{ fg: theme.textMuted }}>queue</span>
+                              <text fg={theme.text} wrapMode="none">
+                                {" "}·{" "}
+                              </text>
+                              <HintChip hover={busyHintHover} setHover={setBusyHintHover} id="enter" onActivate={() => void submit()}>
+                                enter <span style={{ fg: theme.textMuted }}>queue</span>
+                              </HintChip>
                             </Show>
-                          </>
+                          </box>
                         }
                       >
-                        esc <span style={{ fg: theme.textMuted }}>revert</span>{" "}·{" "}enter{" "}
-                        <span style={{ fg: theme.textMuted }}>inject queued</span>
+                        <box flexDirection="row" gap={0}>
+                          <HintChip
+                            hover={busyHintHover}
+                            setHover={setBusyHintHover}
+                            id="esc"
+                            onActivate={() => {
+                              const queued = queuedMessages()
+                              const last = queued[queued.length - 1]
+                              if (last) void pullBackPrompt(last)
+                            }}
+                          >
+                            esc <span style={{ fg: theme.textMuted }}>revert</span>
+                          </HintChip>
+                          <text fg={theme.text} wrapMode="none">
+                            {" "}·{" "}
+                          </text>
+                          <HintChip hover={busyHintHover} setHover={setBusyHintHover} id="enter" onActivate={() => void submit()}>
+                            enter <span style={{ fg: theme.textMuted }}>inject queued</span>
+                          </HintChip>
+                        </box>
                       </Show>
                     }
                   >
-                    esc <span style={{ fg: theme.textMuted }}>cancel</span>
+                    <Show
+                      when={store.mode === "shell"}
+                      fallback={
+                        <text fg={theme.text} wrapMode="none">
+                          esc <span style={{ fg: theme.textMuted }}>cancel</span>
+                        </text>
+                      }
+                    >
+                      <HintChip hover={busyHintHover} setHover={setBusyHintHover} id="esc" onActivate={() => cancelShellMode()}>
+                        esc <span style={{ fg: theme.textMuted }}>cancel</span>
+                      </HintChip>
+                    </Show>
                   </Show>
-                </text>
+                </box>
                 <text flexShrink={0} fg={theme.textMuted} wrapMode="none">·</text>
                 <box flexShrink={1} minWidth={0} flexDirection="row" gap={1}>
                   <text fg={theme.textMuted} wrapMode="none" truncate>
@@ -2059,22 +2119,55 @@ export function Prompt(props: PromptProps) {
                       )}
                     </Match>
                     <Match when={true}>
-                      <text fg={theme.text}>
-                        {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
-                      </text>
+                      <box
+                        backgroundColor={chipHover() === "agents" ? theme.backgroundElement : undefined}
+                        onMouseOver={() => setChipHover("agents")}
+                        onMouseOut={() => setChipHover(null)}
+                        onMouseUp={() => {
+                          if (renderer.getSelection()?.getSelectedText()) return
+                          keymap.dispatchCommand("agent.cycle")
+                        }}
+                      >
+                        <text fg={chipHover() === "agents" ? theme.secondary : theme.text}>
+                          {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
+                        </text>
+                      </box>
                     </Match>
                    </Switch>
                    <Show when={subagentsText()}>
-                     <text fg={theme.textMuted} wrapMode="none">· {subagentsText()}</text>
+                     <box
+                       backgroundColor={chipHover() === "subagents" ? theme.backgroundElement : undefined}
+                       onMouseOver={() => setChipHover("subagents")}
+                       onMouseOut={() => setChipHover(null)}
+                       onMouseUp={() => {
+                         if (renderer.getSelection()?.getSelectedText()) return
+                         const a = activeSubagents()
+                         if (a?.sid) route.navigate({ type: "session", sessionID: a.sid })
+                       }}
+                     >
+                       <text fg={chipHover() === "subagents" ? theme.secondary : theme.textMuted} wrapMode="none">
+                         · {subagentsText()}
+                       </text>
+                     </box>
                    </Show>
-                   <text fg={theme.text} wrapMode="none">
-                     <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
-                   </text>
+                   <box
+                     backgroundColor={chipHover() === "commands" ? theme.backgroundElement : undefined}
+                     onMouseOver={() => setChipHover("commands")}
+                     onMouseOut={() => setChipHover(null)}
+                     onMouseUp={() => {
+                       if (renderer.getSelection()?.getSelectedText()) return
+                       keymap.dispatchCommand("command.palette.show")
+                     }}
+                   >
+                     <text fg={chipHover() === "commands" ? theme.secondary : theme.text} wrapMode="none">
+                       <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
+                     </text>
+                   </box>
                  </Match>
                  <Match when={store.mode === "shell"}>
-                   <text fg={theme.text}>
+                   <HintChip hover={busyHintHover} setHover={setBusyHintHover} id="esc" onActivate={() => cancelShellMode()}>
                      esc <span style={{ fg: theme.textMuted }}>cancel</span>
-                   </text>
+                   </HintChip>
                  </Match>
                </Switch>
                </box>

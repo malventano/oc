@@ -9,7 +9,8 @@ import {
   type ScrollBoxRenderable,
 } from "@opentui/core"
 import { LANGUAGE_EXTENSIONS } from "../../util/filetype"
-import { useBindings, useCommandShortcut } from "../../keymap"
+import { useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
+import { HintChip } from "../../ui/hint-chip"
 import { useTheme } from "../../context/theme"
 import { useTerminalDimensions } from "@opentui/solid"
 import path from "path"
@@ -166,6 +167,8 @@ function DiffViewer(props: { api: TuiPluginApi }) {
   const toggleViewShortcut = useCommandShortcut("diff.toggle_view")
   const markReviewedShortcut = useCommandShortcut("diff.mark_reviewed")
   const helpShortcut = useCommandShortcut("diff.help")
+  const keymap = useOpencodeKeymap()
+  const [diffHintHover, setDiffHintHover] = createSignal<string | null>(null)
   let scroll: ScrollBoxRenderable | undefined
   const patchNodeByFileIndex = new Map<number, BoxRenderable>()
   const diffNodeByFileIndex = new Map<number, DiffRenderable>()
@@ -881,62 +884,33 @@ function DiffViewer(props: { api: TuiPluginApi }) {
         </box>
 
         <Panel flexShrink={0} gap={2} paddingLeft={1} border="none">
-          <Show when={switchFocusShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>focus file tree</span>
-              </text>
+          <For
+            each={[
+              { id: "focus", shortcut: switchFocusShortcut, cmd: "diff.switch_focus", label: "focus file tree" },
+              { id: "nextFile", shortcut: nextFileShortcut, cmd: "diff.next_file", label: "next file" },
+              { id: "nextHunk", shortcut: nextHunkShortcut, cmd: "diff.next_hunk", label: "next hunk" },
+              { id: "prevHunk", shortcut: previousHunkShortcut, cmd: "diff.previous_hunk", label: "previous hunk" },
+              { id: "prevFile", shortcut: previousFileShortcut, cmd: "diff.previous_file", label: "previous file" },
+              { id: "switchSource", shortcut: switchSourceShortcut, cmd: "diff.switch_source", label: "switch source" },
+              { id: "markReviewed", shortcut: markReviewedShortcut, cmd: "diff.mark_reviewed", label: "mark reviewed" },
+              { id: "help", shortcut: helpShortcut, cmd: "diff.help", label: "all" },
+            ]}
+          >
+            {(item) => (
+              <Show when={item.shortcut()}>
+                {(shortcut) => (
+                  <HintChip
+                    hover={diffHintHover}
+                    setHover={setDiffHintHover}
+                    id={item.id}
+                    onActivate={() => keymap.dispatchCommand(item.cmd)}
+                  >
+                    {shortcut()} <span style={{ fg: theme().textMuted }}>{item.label}</span>
+                  </HintChip>
+                )}
+              </Show>
             )}
-          </Show>
-          <Show when={nextFileShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>next file</span>
-              </text>
-            )}
-          </Show>
-          <Show when={nextHunkShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>next hunk</span>
-              </text>
-            )}
-          </Show>
-          <Show when={previousHunkShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>previous hunk</span>
-              </text>
-            )}
-          </Show>
-          <Show when={previousFileShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>previous file</span>
-              </text>
-            )}
-          </Show>
-          <Show when={switchSourceShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>switch source</span>
-              </text>
-            )}
-          </Show>
-          <Show when={markReviewedShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>mark reviewed</span>
-              </text>
-            )}
-          </Show>
-          <Show when={helpShortcut()}>
-            {(shortcut) => (
-              <text fg={theme().text}>
-                {shortcut()} <span style={{ fg: theme().textMuted }}>all</span>
-              </text>
-            )}
-          </Show>
+          </For>
         </Panel>
       </PanelGroup>
     </box>

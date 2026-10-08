@@ -1,9 +1,12 @@
 import { TextAttributes } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import { createStore } from "solid-js/store"
 import { For } from "solid-js"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
+import { HintChip } from "../ui/hint-chip"
 import { useBindings } from "../keymap"
+import { createSignal } from "solid-js"
 
 export function DialogWorkspaceUnavailable(props: { onRestore?: () => boolean | void | Promise<boolean | void> }) {
   const dialog = useDialog()
@@ -11,6 +14,8 @@ export function DialogWorkspaceUnavailable(props: { onRestore?: () => boolean | 
   const [store, setStore] = createStore({
     active: "restore" as "cancel" | "restore",
   })
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
+  const renderer = useRenderer()
 
   const options = ["cancel", "restore"] as const
 
@@ -37,9 +42,9 @@ export function DialogWorkspaceUnavailable(props: { onRestore?: () => boolean | 
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           Workspace Unavailable
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <text fg={theme.textMuted} wrapMode="word">
         This session is attached to a workspace that is no longer available.
@@ -54,12 +59,17 @@ export function DialogWorkspaceUnavailable(props: { onRestore?: () => boolean | 
               paddingLeft={2}
               paddingRight={2}
               backgroundColor={item === store.active ? theme.primary : undefined}
+              onMouseOver={() => setHintHover(item)}
+              onMouseOut={() => setHintHover(null)}
               onMouseUp={() => {
+                if (renderer.getSelection()?.getSelectedText()) return
                 setStore("active", item)
                 void confirm()
               }}
             >
-              <text fg={item === store.active ? theme.selectedListItemText : theme.textMuted}>{item}</text>
+              <text fg={item === store.active ? theme.selectedListItemText : hintHover() === item ? theme.secondary : theme.textMuted}>
+                {item}
+              </text>
             </box>
           )}
         </For>

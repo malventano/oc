@@ -1,8 +1,10 @@
 import { RGBA, TextAttributes } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import open from "open"
 import { createSignal } from "solid-js"
 import { selectedForeground, useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "../ui/dialog"
+import { HintChip } from "../ui/hint-chip"
 import { Link } from "../ui/link"
 import { BgPulse } from "./bg-pulse"
 import { useBindings } from "../keymap"
@@ -43,6 +45,8 @@ export function DialogRetryAction(props: DialogRetryActionProps) {
   const showGoTreatment = () => props.link === GO_URL
   const textBg = () => (showGoTreatment() ? panelOverlay(theme.backgroundPanel) : undefined)
   const [selected, setSelected] = createSignal<"dismiss" | "action">("action")
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
+  const renderer = useRenderer()
 
   useBindings(() => ({
     bindings: [
@@ -88,9 +92,9 @@ export function DialogRetryAction(props: DialogRetryActionProps) {
           <text attributes={TextAttributes.BOLD} fg={theme.text} bg={textBg()}>
             {props.title}
           </text>
-          <text fg={theme.textMuted} bg={textBg()} onMouseUp={() => dialog.clear()}>
+          <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
             esc
-          </text>
+          </HintChip>
         </box>
         <box gap={0}>
           <text fg={theme.textMuted} bg={textBg()}>
@@ -116,7 +120,10 @@ export function DialogRetryAction(props: DialogRetryActionProps) {
             paddingRight={2}
             backgroundColor={selected() === "dismiss" ? theme.primary : RGBA.fromInts(0, 0, 0, 0)}
             onMouseOver={() => setSelected("dismiss")}
-            onMouseUp={() => dismiss(props, dialog)}
+            onMouseUp={() => {
+              if (renderer.getSelection()?.getSelectedText()) return
+              dismiss(props, dialog)
+            }}
           >
             <text
               fg={selected() === "dismiss" ? fg : theme.textMuted}
@@ -131,7 +138,10 @@ export function DialogRetryAction(props: DialogRetryActionProps) {
             paddingRight={2}
             backgroundColor={selected() === "action" ? theme.primary : RGBA.fromInts(0, 0, 0, 0)}
             onMouseOver={() => setSelected("action")}
-            onMouseUp={() => runAction(props, dialog)}
+            onMouseUp={() => {
+              if (renderer.getSelection()?.getSelectedText()) return
+              runAction(props, dialog)
+            }}
           >
             <text
               fg={selected() === "action" ? fg : theme.text}

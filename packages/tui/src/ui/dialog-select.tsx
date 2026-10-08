@@ -11,10 +11,11 @@ import { useTheme, selectedForeground } from "../context/theme"
 import { entries, filter, flatMap, groupBy, pipe } from "remeda"
 import { batch, createEffect, createMemo, createSignal, For, Show, type JSX, on, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useTerminalDimensions } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as fuzzysort from "fuzzysort"
 import { isDeepEqual } from "remeda"
 import { useDialog, type DialogContext } from "./dialog"
+import { HintChip } from "./hint-chip"
 import { Locale } from "../util/locale"
 import { getScrollAcceleration } from "../util/scroll"
 import { useTuiConfig } from "../config"
@@ -86,6 +87,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   const dialog = useDialog()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
+  const renderer = useRenderer()
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
 
   const [store, setStore] = createStore({
@@ -94,6 +96,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     input: "keyboard" as "keyboard" | "mouse",
   })
   const [focusedAction, setFocusedAction] = createSignal<number>()
+  const [footerHover, setFooterHover] = createSignal<string | null>(null)
   const actionFocused = createMemo(() => focusedAction() !== undefined)
   let selection: { value: T; category?: string } | undefined
   let resetSelection = false
@@ -549,15 +552,21 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     const item = action.item
     const active = createMemo(() => isActionFocused(item))
     const disabled = createMemo(() => isActionDisabled(item))
+    const hovered = createMemo(() => footerHover() === item.command && !active() && !disabled())
     const fg = selectedForeground(theme)
     return (
       <box
         flexDirection="row"
         backgroundColor={active() ? theme.primary : RGBA.fromInts(0, 0, 0, 0)}
-        onMouseUp={() => triggerAction(item)}
+        onMouseOver={() => setFooterHover(item.command)}
+        onMouseOut={() => setFooterHover(null)}
+        onMouseUp={() => {
+          if (renderer.getSelection()?.getSelectedText()) return
+          triggerAction(item)
+        }}
       >
         <text
-          fg={disabled() ? theme.textMuted : active() ? fg : theme.text}
+          fg={disabled() ? theme.textMuted : active() ? fg : hovered() ? theme.secondary : theme.text}
           attributes={active() ? TextAttributes.BOLD : undefined}
         >
           {item.title}
@@ -576,9 +585,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
               {props.title}
             </text>
           )}
-          <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+          <HintChip hover={footerHover} setHover={setFooterHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
             esc
-          </text>
+          </HintChip>
         </box>
         <Show when={props.renderFilter !== false}>
           <box paddingTop={1}>

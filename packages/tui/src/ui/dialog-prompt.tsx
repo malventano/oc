@@ -1,6 +1,7 @@
 import { TextareaRenderable, TextAttributes } from "@opentui/core"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
+import { HintChip } from "./hint-chip"
 import { Show, createEffect, createSignal, onMount, type JSX } from "solid-js"
 import { Spinner } from "../component/spinner"
 import { useTuiConfig } from "../config"
@@ -24,6 +25,7 @@ export function DialogPrompt(props: DialogPromptProps) {
   const tuiConfig = useTuiConfig()
   const submitShortcut = useCommandShortcut("dialog.prompt.submit")
   const [textareaTarget, setTextareaTarget] = createSignal<TextareaRenderable>()
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
   let textarea: TextareaRenderable
 
   function confirm() {
@@ -79,9 +81,9 @@ export function DialogPrompt(props: DialogPromptProps) {
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           {props.title}
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <box gap={1}>
         {props.description?.()}
@@ -106,9 +108,9 @@ export function DialogPrompt(props: DialogPromptProps) {
       <box paddingBottom={1} gap={1} flexDirection="row">
         <Show when={!props.busy} fallback={<text fg={theme.textMuted}>processing…</text>}>
           <Show when={submitShortcut()}>
-            <text fg={theme.text}>
+            <HintChip hover={hintHover} setHover={setHintHover} id="submit" onActivate={() => confirm()}>
               {submitShortcut()} <span style={{ fg: theme.textMuted }}>submit</span>
-            </text>
+            </HintChip>
           </Show>
         </Show>
       </box>

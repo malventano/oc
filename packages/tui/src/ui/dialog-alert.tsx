@@ -1,7 +1,9 @@
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
+import { HintChip } from "./hint-chip"
 import { useBindings } from "../keymap"
+import { createSignal } from "solid-js"
 
 export type DialogAlertProps = {
   title: string
@@ -12,6 +14,7 @@ export type DialogAlertProps = {
 export function DialogAlert(props: DialogAlertProps) {
   const dialog = useDialog()
   const { theme } = useTheme()
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
 
   useBindings(() => ({
     bindings: [
@@ -32,25 +35,27 @@ export function DialogAlert(props: DialogAlertProps) {
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           {props.title}
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <box paddingBottom={1}>
         <text fg={theme.textMuted}>{props.message}</text>
       </box>
       <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
-        <box
-          paddingLeft={3}
-          paddingRight={3}
-          backgroundColor={theme.primary}
-          onMouseUp={() => {
+        <HintChip
+          hover={hintHover}
+          setHover={setHintHover}
+          id="ok"
+          filled
+          padX={3}
+          onActivate={() => {
             props.onConfirm?.()
             dialog.clear()
           }}
         >
-          <text fg={theme.selectedListItemText}>ok</text>
-        </box>
+          ok
+        </HintChip>
       </box>
     </box>
   )

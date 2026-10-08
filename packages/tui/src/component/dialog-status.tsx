@@ -2,8 +2,9 @@ import { TextAttributes } from "@opentui/core"
 import { fileURLToPath } from "bun"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
+import { HintChip } from "../ui/hint-chip"
 import { useSync } from "../context/sync"
-import { For, Match, Switch, Show, createMemo } from "solid-js"
+import { For, Match, Switch, Show, createMemo, createSignal } from "solid-js"
 
 export type DialogStatusProps = {}
 
@@ -11,6 +12,7 @@ export function DialogStatus() {
   const sync = useSync()
   const { theme } = useTheme()
   const dialog = useDialog()
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
 
   const enabledFormatters = createMemo(() => sync.data.formatter.filter((f) => f.enabled))
 
@@ -46,9 +48,9 @@ export function DialogStatus() {
         <text fg={theme.text} attributes={TextAttributes.BOLD}>
           Status
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <Show when={Object.keys(sync.data.mcp).length > 0} fallback={<text fg={theme.text}>No MCP Servers</text>}>
         <box>

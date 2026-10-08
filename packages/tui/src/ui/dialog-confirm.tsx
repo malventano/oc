@@ -4,7 +4,9 @@ import { useDialog, type DialogContext } from "./dialog"
 import { createStore } from "solid-js/store"
 import { For } from "solid-js"
 import { Locale } from "../util/locale"
+import { HintChip } from "./hint-chip"
 import { useBindings } from "../keymap"
+import { createSignal } from "solid-js"
 
 export type DialogConfirmProps = {
   title: string
@@ -22,6 +24,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
   const [store, setStore] = createStore({
     active: "confirm" as "confirm" | "cancel",
   })
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
 
   useBindings(() => ({
     bindings: [
@@ -59,9 +62,9 @@ export function DialogConfirm(props: DialogConfirmProps) {
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           {props.title}
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <box paddingBottom={1}>
         <text fg={theme.textMuted}>{props.message}</text>
@@ -69,20 +72,21 @@ export function DialogConfirm(props: DialogConfirmProps) {
       <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
         <For each={["cancel", "confirm"] as const}>
           {(key) => (
-            <box
-              paddingLeft={1}
-              paddingRight={1}
-              backgroundColor={key === store.active ? theme.primary : undefined}
-              onMouseUp={() => {
+            <HintChip
+              hover={hintHover}
+              setHover={setHintHover}
+              id={key}
+              idleFg={theme.textMuted}
+              filled={key === store.active}
+              padX={1}
+              onActivate={() => {
                 if (key === "confirm") props.onConfirm?.()
                 if (key === "cancel") props.onCancel?.()
                 dialog.clear()
               }}
             >
-              <text fg={key === store.active ? theme.selectedListItemText : theme.textMuted}>
-                {Locale.titlecase(key === "cancel" ? (props.label ?? key) : key)}
-              </text>
-            </box>
+              {Locale.titlecase(key === "cancel" ? (props.label ?? key) : key)}
+            </HintChip>
           )}
         </For>
       </box>
