@@ -98,7 +98,7 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
-import { restart } from "../../util/restart"
+import { preRestartEscape, restart } from "../../util/restart"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1648,14 +1648,18 @@ export function Session() {
                     tbRestartScheduled = true
                     setTimeout(() => {
                       void (async () => {
-                        // 0388: finalize the dying turn before the execve -
-                        // the containment fires BY DESIGN mid-stream; without
-                        // the abort the resumed session inherits the corpse
-                        // turn. The boot reconcile is the backstop.
-                        await Promise.race([
-                          sdk.client.session.abort({ sessionID: route.sessionID, resume: "false" }).catch(() => {}),
-                          new Promise((resolve) => setTimeout(resolve, 1000)),
-                        ])
+                        // 0389: the escape covers the whole tree (parent +
+                        // background subagent children) + forces the DB clean
+                        // before the execve - the containment fires BY DESIGN
+                        // mid-stream; without it the resumed session inherits
+                        // the corpse turn and orphaned running children. The
+                        // boot reconcile is the backstop.
+                        await preRestartEscape({
+                          sessionID: route.sessionID,
+                          sessions: sync.data.session,
+                          abort: (id) => sdk.client.session.abort({ sessionID: id, resume: "false" }),
+                          reconcile: (id) => sdk.client.session.reconcile({ sessionID: id }),
+                        })
                         restart(
                           route.sessionID,
                           "Restart complete: message view crashed (TextBuffer pool exhaustion) - automatic recovery (0384)",
