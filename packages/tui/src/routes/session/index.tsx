@@ -4872,6 +4872,7 @@ function Task(props: ToolProps) {
   const { navigate } = useRoute()
   const sync = useSync()
   const dialog = useDialog()
+  const dimensions = useTerminalDimensions()
 
   onMount(() => {
     const sessionID = stringValue(props.metadata.sessionId)
@@ -4914,6 +4915,102 @@ function Task(props: ToolProps) {
     return assistant - first
   })
 
+  // The mirror (0388, spec 12 section 8a): the child's live counters,
+  // exactly as its own footer would show them - the clock anchors at the
+  // most recent prompt (resets on every re-call), tokens/rate/tools cover
+  // the current turn window, context/cost follow the SubagentFooter rule.
+  // Every read comes from the synced store; nothing new is fetched.
+  const [mirrorNow, setMirrorNow] = createSignal(0)
+  createEffect(
+    on(isRunning, (running) => {
+      if (!running) return
+      setMirrorNow(Date.now())
+      const id = setInterval(() => setMirrorNow(Date.now()), 1000)
+      onCleanup(() => clearInterval(id))
+    }),
+  )
+  const lastUser = createMemo(() => {
+    const msgs = messages()
+    for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "user") return msgs[i]
+    return undefined
+  })
+  const turnMessages = createMemo(() => {
+    const start = lastUser()
+    if (!start) return []
+    const msgs = messages()
+    return msgs.slice(msgs.indexOf(start) + 1)
+  })
+  const mirrorTokens = createMemo(() => {
+    let reasoning = 0
+    let output = 0
+    for (const m of turnMessages()) {
+      if (m.role !== "assistant") continue
+      reasoning += m.tokens.reasoning
+      output += m.tokens.output
+    }
+    return { reasoning, output }
+  })
+  const liveStep = createMemo(() => {
+    const msgs = turnMessages()
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role === "assistant" && !m.time.completed) return m
+    }
+    return undefined
+  })
+  const mirrorChars = createMemo(() => {
+    const step = liveStep()
+    return step ? streamedChars(sync.data.part[step.id]) : 0
+  })
+  const mirrorRate = createMemo(() => {
+    const key = lastUser()?.id ?? ""
+    if (!key) return 0
+    return streamRateFor(key, liveStep()?.id ?? "", mirrorChars())
+  })
+  const mirrorTools = createMemo(
+    () =>
+      turnMessages().reduce(
+        (n, m) => n + (sync.data.part[m.id] ?? []).filter((p) => p.type === "tool").length,
+        0,
+      ),
+  )
+  const mirrorUsage = createMemo(() => {
+    const last = [...messages()].findLast(
+      (m): m is AssistantMessage => m.role === "assistant" && m.tokens.output > 0,
+    )
+    if (!last) return undefined
+    const tokens =
+      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
+    if (tokens <= 0) return undefined
+    const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
+    const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
+    const cost = sync.session.get(sessionID() ?? "")?.cost ?? 0
+    const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
+    return { pct, cost: cost > 0 ? money.format(cost) : undefined }
+  })
+  const mirrorElapsed = createMemo(() => {
+    if (!isRunning()) return 0
+    const start = lastUser()?.time.created
+    if (!start) return 0
+    return Math.max(0, mirrorNow() - start)
+  })
+  // Re-called completion: per-call active spans close at the next user
+  // message's created (or the last assistant completed) - inter-call idle
+  // excluded. Only multi-call children get a total.
+  const callsTotal = createMemo(() => {
+    const users = messages().filter((m) => m.role === "user")
+    if (users.length <= 1) return undefined
+    const lastCompleted = [...messages()].reverse().find((m) => m.role === "assistant")?.time.completed
+    let total = 0
+    for (let i = 0; i < users.length; i++) {
+      const start = users[i].time.created
+      const end = users[i + 1]?.time.created ?? lastCompleted
+      if (!end || end <= start) continue
+      total += end - start
+    }
+    return { total, calls: users.length }
+  })
+
   const content = createMemo(() => {
     const description = stringValue(props.input.description)
     if (!description) return ""
@@ -4932,12 +5029,31 @@ function Task(props: ToolProps) {
       if (current()) {
         const state = current()!.state
         const title = state.status === "running" || state.status === "completed" ? state.title : undefined
-        content.push(`↳ ${Locale.titlecase(current()!.tool)} ${title}`)
+        // Width-aware cap (0388): the block indent eats ~10 columns - a long
+        // Bash command must never flood the parent pane. The full command
+        // stays one click away in the subagent view.
+        const cap = Math.max(20, dimensions().width - 10)
+        content.push(`↳ ${Locale.titlecase(current()!.tool)} ${Locale.truncate(title ?? "", cap)}`)
       } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
+      // The mirror line (0388): the child's live footer counters.
+      const tokens = mirrorTokens()
+      const usage = mirrorUsage()
+      const parts = [
+        Locale.duration(mirrorElapsed()),
+        `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok`,
+        mirrorRate() > 0 ? `${formatCount(Math.round(mirrorRate()))}/s` : undefined,
+        `${mirrorTools()} tool${mirrorTools() === 1 ? "" : "s"}`,
+        usage?.pct,
+        usage?.cost,
+      ].filter((x) => x !== undefined && x !== "")
+      content.push(`↳ ${parts.join(" · ")}`)
     }
 
     if (!isRunning() && props.part.state.status === "completed") {
-      content.push(`↳ ${formatCompletedSubagentDetail(tools().length, Locale.duration(duration()))}`)
+      let detail = `↳ ${formatCompletedSubagentDetail(tools().length, Locale.duration(duration()))}`
+      const calls = callsTotal()
+      if (calls) detail += ` · total ${Locale.duration(calls.total)} (${calls.calls} calls)`
+      content.push(detail)
     }
 
     return content.join("\n")
