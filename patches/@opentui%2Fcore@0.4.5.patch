@@ -646,7 +646,7 @@ index 815856b..b4ad117 100644
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11436,6 +11475,39 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11436,6 +11475,46 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -656,6 +656,13 @@ index 815856b..b4ad117 100644
 +  // viewport registers its real height as it comes into view), scrollTop
 +  // is shifted by the child's y-delta so the visible content never jumps.
 +  _manualAnchorChild = null;
++  // 0384: set while recalculateBarProps re-applies scrollSize/viewportSize -
++  // the setter's internal re-clamp can drag scrollTop during a transient
++  // height collapse (a block re-rendering shorter for a frame); the clamp
++  // must NOT re-capture the anchor or recompute manual-scroll state (it
++  // reads as "at sticky bottom" and ratchets the view to the bottom).
++  _clampingScroll = false;
++  _clampingScrollWasManual = false;
 +  _manualAnchorOffset = 0;
 +  _manualAnchorHeight = 0;
 +  // Fallback anchor (0186): the child immediately BELOW the anchor, plus the
@@ -686,15 +693,15 @@ index 815856b..b4ad117 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11696,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11624,6 +11703,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
-+        this._captureManualAnchor(position);
++        if (!this._clampingScroll) this._captureManualAnchor(position);
          this.updateStickyState();
        }
      });
-@@ -11929,12 +12002,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11929,12 +12009,140 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -736,8 +743,26 @@ index 815856b..b4ad117 100644
 +      const anchor = this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed
 +        ? { child: this._manualAnchorChild, offset: this._manualAnchorOffset }
 +        : null;
++      // 0384: flag the scrollSize/viewportSize re-application so the clamp
++      // the setter performs on a transient height collapse cannot re-capture
++      // the anchor via the onChange below (the clamp drags scrollTop and the
++      // capture would re-anchor at the dragged spot - the bottom ratchet).
++      this._clampingScrollWasManual = this._hasManualScroll;
++      this._clampingScroll = true;
++      try {
        this.verticalScrollBar.scrollSize = this.content.height;
        this.verticalScrollBar.viewportSize = this.viewport.height;
++      } finally {
++        this._clampingScroll = false;
++      }
++      // The clamp-driven onChange still runs the un-guarded
++      // updateStickyState, whose syncManualScrollState clears
++      // _hasManualScroll at the clamped position. Restore it while the
++      // anchor is alive - the anchor branch below then compensates the
++      // clamped position back to the user's spot.
++      if (this._clampingScrollWasManual && !this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed) {
++        this._hasManualScroll = true;
++      }
 +      // Content shrank since the last recalc = a top-removal (the store
 +      // pruning the oldest messages). Appends only grow it; blocks registering
 +      // real heights in the gap BELOW the viewport grow it. So a shrink is the
@@ -817,7 +842,7 @@ index 815856b..b4ad117 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11950,7 +12133,31 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11950,7 +12158,31 @@ class ScrollBoxRenderable extends BoxRenderable {
            if (this._stickyScrollTop) {
              this.scrollTop = 0;
            } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
@@ -850,7 +875,7 @@ index 815856b..b4ad117 100644
            }
            if (this._stickyScrollLeft) {
              this.scrollLeft = 0;
-@@ -11959,6 +12166,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11959,6 +12191,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -904,7 +929,7 @@ index 0ddf03b..34a3efa 100644
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11435,6 +11442,36 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11435,6 +11442,43 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -914,6 +939,13 @@ index 0ddf03b..34a3efa 100644
 +  // viewport registers its real height as it comes into view), scrollTop
 +  // is shifted by the child's y-delta so the visible content never jumps.
 +  _manualAnchorChild = null;
++  // 0384: set while recalculateBarProps re-applies scrollSize/viewportSize -
++  // the setter's internal re-clamp can drag scrollTop during a transient
++  // height collapse (a block re-rendering shorter for a frame); the clamp
++  // must NOT re-capture the anchor or recompute manual-scroll state (it
++  // reads as "at sticky bottom" and ratchets the view to the bottom).
++  _clampingScroll = false;
++  _clampingScrollWasManual = false;
 +  _manualAnchorOffset = 0;
 +  _manualAnchorHeight = 0;
 +  // Fallback anchor (0186): the child immediately BELOW the anchor, plus the
@@ -941,15 +973,15 @@ index 0ddf03b..34a3efa 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11660,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11623,6 +11667,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
-+        this._captureManualAnchor(position);
++        if (!this._clampingScroll) this._captureManualAnchor(position);
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11966,122 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11928,12 +11973,140 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -991,8 +1023,26 @@ index 0ddf03b..34a3efa 100644
 +      const anchor = this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed
 +        ? { child: this._manualAnchorChild, offset: this._manualAnchorOffset }
 +        : null;
++      // 0384: flag the scrollSize/viewportSize re-application so the clamp
++      // the setter performs on a transient height collapse cannot re-capture
++      // the anchor via the onChange below (the clamp drags scrollTop and the
++      // capture would re-anchor at the dragged spot - the bottom ratchet).
++      this._clampingScrollWasManual = this._hasManualScroll;
++      this._clampingScroll = true;
++      try {
        this.verticalScrollBar.scrollSize = this.content.height;
        this.verticalScrollBar.viewportSize = this.viewport.height;
++      } finally {
++        this._clampingScroll = false;
++      }
++      // The clamp-driven onChange still runs the un-guarded
++      // updateStickyState, whose syncManualScrollState clears
++      // _hasManualScroll at the clamped position. Restore it while the
++      // anchor is alive - the anchor branch below then compensates the
++      // clamped position back to the user's spot.
++      if (this._clampingScrollWasManual && !this._hasManualScroll && this._manualAnchorChild && !this._manualAnchorChild.isDestroyed) {
++        this._hasManualScroll = true;
++      }
 +      // Content shrank since the last recalc = a top-removal (the store
 +      // pruning the oldest messages). Appends only grow it; blocks registering
 +      // real heights in the gap BELOW the viewport grow it. So a shrink is the
@@ -1072,7 +1122,7 @@ index 0ddf03b..34a3efa 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12106,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11958,6 +12131,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
