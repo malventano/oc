@@ -112,3 +112,49 @@ export function restart(sessionID: string | undefined, resumePrompt?: string) {
   if (resumePrompt) argv.push("--prompt", resumePrompt)
   process.execve(process.execPath, [process.execPath, ...argv], process.env)
 }
+
+/**
+ * The pre-restart escape (0389, spec 16): /restart (and the containment
+ * auto-restart) while busy - or with background subagents running - must
+ * land the WHOLE session tree in a clean state before the execve. A
+ * parent-only abort leaves background children running: their runs die
+ * with the process, their task parts stay "running" in the DB, and their
+ * session statuses never go idle (the 2026-10-08 window-13 report: every
+ * sub still showed active after a /restart).
+ *
+ * Sequence: abort the parent + every descendant in parallel (bounded -
+ * a hung cancel must not delay the restart), then force the DB clean
+ * with the reconcile (recurses children server-side, bounded). The boot
+ * reconcile remains the backstop for ungraceful exits (crash/kill has no
+ * pre-restart path).
+ */
+export async function preRestartEscape(opts: {
+  sessionID: string
+  sessions: readonly { id: string; parentID?: string }[]
+  abort: (sessionID: string) => Promise<unknown>
+  reconcile: (sessionID: string) => Promise<unknown>
+}) {
+  // Descendants: walk the parentID links transitively (task children are
+  // one level, but the walk costs nothing and survives nesting).
+  const descendants: string[] = []
+  const frontier = [opts.sessionID]
+  while (frontier.length > 0) {
+    const current = frontier.shift()!
+    for (const session of opts.sessions) {
+      if (session.parentID === current && !descendants.includes(session.id)) {
+        descendants.push(session.id)
+        frontier.push(session.id)
+      }
+    }
+  }
+  const bounded = <T>(promise: Promise<T>, ms: number) =>
+    Promise.race([promise, new Promise<undefined>((resolve) => setTimeout(resolve, ms))])
+  await bounded(
+    Promise.all([
+      opts.abort(opts.sessionID).catch(() => {}),
+      ...descendants.map((id) => opts.abort(id).catch(() => {})),
+    ]),
+    1500,
+  )
+  await bounded(opts.reconcile(opts.sessionID).catch(() => {}), 2000)
+}

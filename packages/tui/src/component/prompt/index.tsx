@@ -60,7 +60,7 @@ import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
 import { HintChip } from "../../ui/hint-chip"
-import { restart } from "../../util/restart"
+import { preRestartEscape, restart } from "../../util/restart"
 
 registerOpencodeSpinner()
 
@@ -1295,15 +1295,18 @@ export function Prompt(props: PromptProps) {
         // execve only fires after the RPC resolves (the writes are committed
         // before the response). Idle sessions: the cancel is a no-op.
         if (props.sessionID) {
-          // 0388: bound the abort - a hung/failed cancel must not delay the
-          // restart (window 13, 2026-10-08: the abort silently finalized
-          // nothing and the execve fired over unfinalized state). The boot
-          // reconcile (session.reconcile) is the safety net for whatever the
-          // abort does not finalize in time.
-          await Promise.race([
-            sdk.client.session.abort({ sessionID: props.sessionID, resume: "false" }).catch(() => {}),
-            new Promise((resolve) => setTimeout(resolve, 1000)),
-          ])
+          // 0389: the escape covers the WHOLE tree - the parent abort alone
+          // leaves background subagent children running (their parts stay
+          // "running" in the DB, their statuses never go idle - window 13,
+          // 2026-10-08). Abort parent + descendants in parallel (bounded),
+          // then force the DB clean with the reconcile (bounded). The boot
+          // reconcile is the backstop for ungraceful exits.
+          await preRestartEscape({
+            sessionID: props.sessionID,
+            sessions: sync.data.session,
+            abort: (id) => sdk.client.session.abort({ sessionID: id, resume: "false" }),
+            reconcile: (id) => sdk.client.session.reconcile({ sessionID: id }),
+          })
         }
         restart(props.sessionID)
      } catch (error) {
