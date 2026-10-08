@@ -3,6 +3,7 @@ import { useSync } from "../context/sync"
 import { map, pipe, sortBy } from "remeda"
 import { DialogSelect } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
+import { HintChip } from "../ui/hint-chip"
 import { useSDK } from "../context/sdk"
 import { DialogPrompt } from "../ui/dialog-prompt"
 import { Link } from "../ui/link"
@@ -237,6 +238,7 @@ interface AutoMethodProps {
   authorization: ProviderAuthAuthorization
 }
 function AutoMethod(props: AutoMethodProps) {
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
   const { theme } = useTheme()
   const sdk = useSDK()
   const dialog = useDialog()
@@ -289,18 +291,29 @@ function AutoMethod(props: AutoMethodProps) {
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           {props.title}
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <box gap={1}>
         <Link href={props.authorization.url} fg={theme.primary} />
         <text fg={theme.textMuted}>{props.authorization.instructions}</text>
       </box>
       <text fg={theme.textMuted}>Waiting for authorization…</text>
-      <text fg={theme.text}>
+      <HintChip
+        hover={hintHover}
+        setHover={setHintHover}
+        id="copy"
+        onActivate={() => {
+          const code = props.authorization.instructions.match(/[A-Z0-9]{4}-[A-Z0-9]{4,5}/)?.[0] ?? props.authorization.url
+          clipboard
+            .write?.(code)
+            .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+            .catch(toast.error)
+        }}
+      >
         c <span style={{ fg: theme.textMuted }}>copy</span>
-      </text>
+      </HintChip>
     </box>
   )
 }

@@ -1,8 +1,10 @@
 import { TextareaRenderable, TextAttributes } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
+import { HintChip } from "./hint-chip"
 import { createStore } from "solid-js/store"
-import { onMount, Show } from "solid-js"
+import { onMount, Show, createSignal } from "solid-js"
 import { useTuiConfig } from "../config"
 import { useBindings } from "../keymap"
 import { smartCursorBindings } from "../util/smart-cursor"
@@ -35,6 +37,18 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
     openWithoutSaving: props.defaultOpenWithoutSaving,
     active: "filename" as "filename" | "thinking" | "toolDetails" | "assistantMetadata" | "openWithoutSaving",
   })
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
+  const renderer = useRenderer()
+
+  // Mouse path for the checkbox rows (spec 18): the first click selects
+  // the row; clicking the ACTIVE row toggles its flag (the space gesture).
+  function toggleExportOption(id: "thinking" | "toolDetails" | "assistantMetadata" | "openWithoutSaving") {
+    if (store.active !== id) {
+      setStore("active", id)
+      return
+    }
+    setStore(id, !store[id])
+  }
 
   useBindings(() => ({
     bindings: [
@@ -95,9 +109,9 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           Export Options
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <box gap={1}>
         <box>
@@ -133,48 +147,84 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
           gap={2}
           paddingLeft={1}
           backgroundColor={store.active === "thinking" ? theme.backgroundElement : undefined}
-          onMouseUp={() => setStore("active", "thinking")}
+          onMouseOver={() => setHintHover("thinking")}
+          onMouseOut={() => setHintHover(null)}
+          onMouseUp={() => {
+            if (renderer.getSelection()?.getSelectedText()) return
+            toggleExportOption("thinking")
+          }}
         >
           <text fg={store.active === "thinking" ? theme.primary : theme.textMuted}>
             {store.thinking ? "[x]" : "[ ]"}
           </text>
-          <text fg={store.active === "thinking" ? theme.primary : theme.text}>Include thinking</text>
+          <text fg={store.active === "thinking" ? theme.primary : hintHover() === "thinking" ? theme.secondary : theme.text}>
+            Include thinking
+          </text>
         </box>
         <box
           flexDirection="row"
           gap={2}
           paddingLeft={1}
           backgroundColor={store.active === "toolDetails" ? theme.backgroundElement : undefined}
-          onMouseUp={() => setStore("active", "toolDetails")}
+          onMouseOver={() => setHintHover("toolDetails")}
+          onMouseOut={() => setHintHover(null)}
+          onMouseUp={() => {
+            if (renderer.getSelection()?.getSelectedText()) return
+            toggleExportOption("toolDetails")
+          }}
         >
           <text fg={store.active === "toolDetails" ? theme.primary : theme.textMuted}>
             {store.toolDetails ? "[x]" : "[ ]"}
           </text>
-          <text fg={store.active === "toolDetails" ? theme.primary : theme.text}>Include tool details</text>
+          <text fg={store.active === "toolDetails" ? theme.primary : hintHover() === "toolDetails" ? theme.secondary : theme.text}>
+            Include tool details
+          </text>
         </box>
         <box
           flexDirection="row"
           gap={2}
           paddingLeft={1}
           backgroundColor={store.active === "assistantMetadata" ? theme.backgroundElement : undefined}
-          onMouseUp={() => setStore("active", "assistantMetadata")}
+          onMouseOver={() => setHintHover("assistantMetadata")}
+          onMouseOut={() => setHintHover(null)}
+          onMouseUp={() => {
+            if (renderer.getSelection()?.getSelectedText()) return
+            toggleExportOption("assistantMetadata")
+          }}
         >
           <text fg={store.active === "assistantMetadata" ? theme.primary : theme.textMuted}>
             {store.assistantMetadata ? "[x]" : "[ ]"}
           </text>
-          <text fg={store.active === "assistantMetadata" ? theme.primary : theme.text}>Include assistant metadata</text>
+          <text fg={store.active === "assistantMetadata" ? theme.primary : hintHover() === "assistantMetadata" ? theme.secondary : theme.text}>
+            Include assistant metadata
+          </text>
         </box>
         <box
           flexDirection="row"
           gap={2}
           paddingLeft={1}
           backgroundColor={store.active === "openWithoutSaving" ? theme.backgroundElement : undefined}
-          onMouseUp={() => setStore("active", "openWithoutSaving")}
+          onMouseOver={() => setHintHover("openWithoutSaving")}
+          onMouseOut={() => setHintHover(null)}
+          onMouseUp={() => {
+            if (renderer.getSelection()?.getSelectedText()) return
+            toggleExportOption("openWithoutSaving")
+          }}
         >
           <text fg={store.active === "openWithoutSaving" ? theme.primary : theme.textMuted}>
             {store.openWithoutSaving ? "[x]" : "[ ]"}
           </text>
-          <text fg={store.active === "openWithoutSaving" ? theme.primary : theme.text}>Open without saving</text>
+          <text
+            fg={
+              store.active === "openWithoutSaving"
+                ? theme.primary
+                : hintHover() === "openWithoutSaving"
+                  ? theme.secondary
+                  : theme.text
+            }
+          >
+            Open without saving
+          </text>
         </box>
       </box>
       <Show when={store.active !== "filename"}>

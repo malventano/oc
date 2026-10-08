@@ -1,8 +1,10 @@
 import { TextAttributes } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
+import { HintChip } from "../ui/hint-chip"
 import { createStore } from "solid-js/store"
-import { For } from "solid-js"
+import { For, createSignal } from "solid-js"
 import { useBindings } from "../keymap"
 
 export function DialogSessionDeleteFailed(props: {
@@ -14,6 +16,8 @@ export function DialogSessionDeleteFailed(props: {
 }) {
   const dialog = useDialog()
   const { theme } = useTheme()
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
+  const renderer = useRenderer()
   const [store, setStore] = createStore({
     active: "delete" as "delete" | "restore",
   })
@@ -56,9 +60,9 @@ export function DialogSessionDeleteFailed(props: {
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           Failed to Delete Session
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <text fg={theme.textMuted} wrapMode="word">
         {`The session "${props.session}" could not be deleted because the workspace "${props.workspace}" is not available.`}
@@ -76,14 +80,23 @@ export function DialogSessionDeleteFailed(props: {
               paddingTop={1}
               paddingBottom={1}
               backgroundColor={item.id === store.active ? theme.primary : undefined}
+              onMouseOver={() => setHintHover(item.id)}
+              onMouseOut={() => setHintHover(null)}
               onMouseUp={() => {
+                if (renderer.getSelection()?.getSelectedText()) return
                 setStore("active", item.id)
                 void confirm()
               }}
             >
               <text
                 attributes={TextAttributes.BOLD}
-                fg={item.id === store.active ? theme.selectedListItemText : theme.text}
+                fg={
+                  item.id === store.active
+                    ? theme.selectedListItemText
+                    : hintHover() === item.id
+                      ? theme.secondary
+                      : theme.text
+                }
               >
                 {item.title}
               </text>

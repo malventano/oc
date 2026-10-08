@@ -1,5 +1,5 @@
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, For, Show } from "solid-js"
 import { getScrollAcceleration } from "../util/scroll"
 import { useClipboard } from "../context/clipboard"
@@ -54,6 +54,7 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
     { key: "q", label: () => "Quit", onUse: () => exit() },
   ]
   const [selected, setSelected] = createSignal(0)
+  const renderer = useRenderer()
   const move = (delta: number) => setSelected((prev) => (prev + delta + actions.length) % actions.length)
   let scroll: ScrollBoxRenderable | undefined
 
@@ -139,7 +140,10 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
                 <box flexDirection="column" alignItems="center" flexShrink={0}>
                   <box
                     onMouseDown={() => setSelected(index())}
-                    onMouseUp={() => action.onUse()}
+                    onMouseUp={() => {
+                      if (renderer.getSelection()?.getSelectedText()) return
+                      action.onUse()
+                    }}
                     backgroundColor={isCopied() ? colors.success : isSelected() ? colors.primary : colors.element}
                     minWidth={15}
                     alignItems="center"

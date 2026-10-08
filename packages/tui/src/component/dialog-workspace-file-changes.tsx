@@ -1,12 +1,13 @@
 import { TextAttributes } from "@opentui/core"
-import { useKeyboard } from "@opentui/solid"
+import { useKeyboard, useRenderer } from "@opentui/solid"
 import type { VcsFileStatus } from "@opencode-ai/sdk/v2"
-import { createMemo, For } from "solid-js"
+import { createMemo, createSignal, For } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Locale } from "../util/locale"
 import { useTheme } from "../context/theme"
 import { useTuiConfig } from "../config"
 import { useDialog, type DialogContext } from "../ui/dialog"
+import { HintChip } from "../ui/hint-chip"
 import { getScrollAcceleration } from "../util/scroll"
 
 const options = ["no", "yes"] as const
@@ -32,6 +33,8 @@ export function DialogWorkspaceFileChanges(props: {
 }) {
   const dialog = useDialog()
   const { theme } = useTheme()
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
+  const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const [store, setStore] = createStore({ active: "yes" as WorkspaceFileChangesChoice })
@@ -71,9 +74,9 @@ export function DialogWorkspaceFileChanges(props: {
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
           {props.title ?? "File Changes Found"}
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       <box paddingLeft={2} paddingRight={2}>
         <text fg={theme.textMuted} wrapMode="word">
@@ -115,13 +118,18 @@ export function DialogWorkspaceFileChanges(props: {
               paddingLeft={2}
               paddingRight={2}
               backgroundColor={item === store.active ? theme.primary : undefined}
+              onMouseOver={() => setHintHover(item)}
+              onMouseOut={() => setHintHover(null)}
               onMouseUp={() => {
+                if (renderer.getSelection()?.getSelectedText()) return
                 setStore("active", item)
                 props.onSelect(item)
                 dialog.clear()
               }}
             >
-              <text fg={item === store.active ? theme.selectedListItemText : theme.textMuted}>{item}</text>
+              <text fg={item === store.active ? theme.selectedListItemText : hintHover() === item ? theme.secondary : theme.textMuted}>
+                {item}
+              </text>
             </box>
           )}
         </For>

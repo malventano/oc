@@ -3,6 +3,7 @@ import { createMemo, createSignal, For } from "solid-js"
 import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
+import { HintChip } from "../ui/hint-chip"
 import { useRoute } from "../context/route"
 import { useLocal } from "../context/local"
 import { useClipboard } from "../context/clipboard"
@@ -18,6 +19,7 @@ export function DialogDebug() {
   const clipboard = useClipboard()
   const toast = useToast()
   const [copied, setCopied] = createSignal(false)
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
 
   dialog.setSize("large")
 
@@ -56,9 +58,9 @@ export function DialogDebug() {
         <text fg={theme.text} attributes={TextAttributes.BOLD}>
           Debug
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="esc" idleFg={theme.textMuted} onActivate={() => dialog.clear()}>
           esc
-        </text>
+        </HintChip>
       </box>
       {/* No click-to-copy here: releasing a mouse selection must trigger the
           global copy-on-select so users can copy a single value, e.g. the session id. */}
@@ -78,12 +80,12 @@ export function DialogDebug() {
       </box>
       <box flexDirection="row" justifyContent="space-between">
         <text fg={theme.textMuted}>Share this when reporting an issue.</text>
-        <text onMouseUp={copy}>
-          <span style={{ fg: copied() ? theme.success : theme.text }}>
+        <HintChip hover={hintHover} setHover={setHintHover} id="copy" onActivate={() => copy()}>
+          <span style={{ fg: copied() ? theme.success : hintHover() === "copy" ? theme.secondary : theme.text }}>
             <b>{copied() ? "✓ copied" : "copy"}</b>{" "}
           </span>
           <span style={{ fg: theme.textMuted }}>enter</span>
-        </text>
+        </HintChip>
       </box>
     </box>
   )

@@ -32,6 +32,9 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
   const tabs = createMemo(() => (single() ? 1 : questions().length + 1)) // questions + confirm tab (no confirm for single select)
   const [tabHover, setTabHover] = createSignal<number | "confirm" | null>(null)
+  // Footer hint hover (spec 18): the hint row IS the click surface - each
+  // hint dispatches what its key does in the current state.
+  const [hintHover, setHintHover] = createSignal<"tab" | "enter" | "esc" | null>(null)
   // A re-asked question (undo back to the question turn) carries the tool
   // part's stored answers: pre-populate the panel so the user can adjust
   // their previous answers instead of re-entering them.
@@ -642,9 +645,11 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                       fg={
                         isActive()
                           ? selectedForeground(theme, agentColor())
-                          : isAnswered()
-                            ? theme.text
-                            : theme.textMuted
+                          : tabHover() === index()
+                            ? theme.secondary
+                            : isAnswered()
+                              ? theme.text
+                              : theme.textMuted
                       }
                     >
                       {q.header}
@@ -670,7 +675,11 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 selectTab(questions().length)
               }}
             >
-              <text fg={confirm() ? selectedForeground(theme, agentColor()) : theme.textMuted}>Confirm</text>
+              <text
+                fg={confirm() ? selectedForeground(theme, agentColor()) : tabHover() === "confirm" ? theme.secondary : theme.textMuted}
+              >
+                Confirm
+              </text>
             </box>
           </box>
         </Show>
@@ -830,30 +839,85 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
       >
         <box flexDirection="row" gap={2}>
           <Show when={single() || (confirm() && allAnswered())}>
-            <text fg={theme.text}>
-              {"⇆"} <span style={{ fg: theme.textMuted }}>tab agents</span>
-            </text>
+            <box
+              backgroundColor={hintHover() === "tab" ? theme.backgroundElement : undefined}
+              onMouseOver={() => setHintHover("tab")}
+              onMouseOut={() => setHintHover(null)}
+              onMouseUp={() => {
+                if (renderer.getSelection()?.getSelectedText()) return
+                local.agent.move(1)
+              }}
+            >
+              <text fg={hintHover() === "tab" ? theme.secondary : theme.text}>
+                {"⇆"} <span style={{ fg: theme.textMuted }}>tab agents</span>
+              </text>
+            </box>
           </Show>
           <Show when={!single() && !(confirm() && allAnswered())}>
-            <text fg={theme.text}>
-              {"⇆"} <span style={{ fg: theme.textMuted }}>tab</span>
-            </text>
+            <box
+              backgroundColor={hintHover() === "tab" ? theme.backgroundElement : undefined}
+              onMouseOver={() => setHintHover("tab")}
+              onMouseOut={() => setHintHover(null)}
+              onMouseUp={() => {
+                if (renderer.getSelection()?.getSelectedText()) return
+                selectTab((store.tab + 1) % tabs())
+              }}
+            >
+              <text fg={hintHover() === "tab" ? theme.secondary : theme.text}>
+                {"⇆"} <span style={{ fg: theme.textMuted }}>tab</span>
+              </text>
+            </box>
           </Show>
           <Show when={!confirm()}>
             <text fg={theme.text}>
               {"↑↓"} <span style={{ fg: theme.textMuted }}>select</span>
             </text>
           </Show>
-          <text fg={theme.text}>
-            enter{" "}
-            <span style={{ fg: theme.textMuted }}>
-              {confirm() ? "submit" : multi() ? "toggle" : single() ? "submit" : "confirm"}
-            </span>
-          </text>
+          <box
+            backgroundColor={hintHover() === "enter" ? theme.backgroundElement : undefined}
+            onMouseOver={() => setHintHover("enter")}
+            onMouseOut={() => setHintHover(null)}
+            onMouseUp={() => {
+              if (renderer.getSelection()?.getSelectedText()) return
+              // Mirrors the return binding per state: the edit layer commits
+              // (staying on the tab), Confirm submits, otherwise select
+              // (which advances/submits for single, toggles for multi).
+              if (store.editing && !confirm()) {
+                commitEdit(false)
+                return
+              }
+              if (confirm()) {
+                void submit()
+                return
+              }
+              selectOption()
+            }}
+          >
+            <text fg={hintHover() === "enter" ? theme.secondary : theme.text}>
+              enter{" "}
+              <span style={{ fg: theme.textMuted }}>
+                {confirm() ? "submit" : multi() ? "toggle" : single() ? "submit" : "confirm"}
+              </span>
+            </text>
+          </box>
 
-          <text fg={theme.text}>
-            esc <span style={{ fg: theme.textMuted }}>dismiss</span>
-          </text>
+          <box
+            backgroundColor={hintHover() === "esc" ? theme.backgroundElement : undefined}
+            onMouseOver={() => setHintHover("esc")}
+            onMouseOut={() => setHintHover(null)}
+            onMouseUp={() => {
+              if (renderer.getSelection()?.getSelectedText()) return
+              if (store.editing && !confirm()) {
+                setStore("editing", false)
+                return
+              }
+              reject()
+            }}
+          >
+            <text fg={hintHover() === "esc" ? theme.secondary : theme.text}>
+              esc <span style={{ fg: theme.textMuted }}>dismiss</span>
+            </text>
+          </box>
         </box>
       </box>
     </box>

@@ -1,12 +1,13 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
 import type { PermissionRequest } from "@opencode-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
+import { HintChip } from "../../ui/hint-chip"
 import { useSync } from "../../context/sync"
 import { useProject } from "../../context/project"
 import { filetype } from "../../util/filetype"
@@ -447,6 +448,8 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
   const tuiConfig = useTuiConfig()
   const dimensions = useTerminalDimensions()
   const narrow = createMemo(() => dimensions().width < 80)
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
+  const renderer = useRenderer()
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
     commands: [
@@ -512,12 +515,12 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
           cursorStyle={tuiConfig.cursor}
         />
         <box flexDirection="row" gap={2} flexShrink={0}>
-          <text fg={theme.text}>
+          <HintChip hover={hintHover} setHover={setHintHover} id="enter" onActivate={() => props.onConfirm(input.plainText)}>
             enter <span style={{ fg: theme.textMuted }}>confirm</span>
-          </text>
-          <text fg={theme.text}>
+          </HintChip>
+          <HintChip hover={hintHover} setHover={setHintHover} id="esc" onActivate={() => props.onCancel()}>
             esc <span style={{ fg: theme.textMuted }}>cancel</span>
-          </text>
+          </HintChip>
         </box>
       </box>
     </box>
@@ -629,7 +632,8 @@ function Prompt<const T extends Record<string, string>>(props: {
   }))
 
   const hint = createMemo(() => (store.expanded ? "minimize" : "fullscreen"))
-  useRenderer()
+  const renderer = useRenderer()
+  const [hintHover, setHintHover] = createSignal<string | null>(null)
 
   const content = () => (
     <box
@@ -698,16 +702,21 @@ function Prompt<const T extends Record<string, string>>(props: {
         </box>
         <box flexDirection="row" gap={2} flexShrink={0}>
           <Show when={props.fullscreen}>
-            <text fg={theme.text}>
+            <HintChip
+              hover={hintHover}
+              setHover={setHintHover}
+              id="fullscreen"
+              onActivate={() => setStore("expanded", (v) => !v)}
+            >
               {fullscreenHint()} <span style={{ fg: theme.textMuted }}>{hint()}</span>
-            </text>
+            </HintChip>
           </Show>
           <text fg={theme.text}>
             {"⇆"} <span style={{ fg: theme.textMuted }}>select</span>
           </text>
-          <text fg={theme.text}>
+          <HintChip hover={hintHover} setHover={setHintHover} id="enter" onActivate={() => props.onSelect(store.selected)}>
             enter <span style={{ fg: theme.textMuted }}>confirm</span>
-          </text>
+          </HintChip>
         </box>
       </box>
     </box>

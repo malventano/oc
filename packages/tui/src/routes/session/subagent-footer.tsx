@@ -114,7 +114,7 @@ export function SubagentFooter() {
               onMouseUp={() => keymap.dispatchCommand("session.parent")}
               backgroundColor={hover() === "parent" ? theme.backgroundElement : theme.backgroundPanel}
             >
-              <text fg={theme.text}>
+              <text fg={hover() === "parent" ? theme.secondary : theme.text}>
                 Parent <span style={{ fg: theme.textMuted }}>{parentShortcut()}</span>
               </text>
             </box>
@@ -124,7 +124,7 @@ export function SubagentFooter() {
               onMouseUp={() => keymap.dispatchCommand("session.child.previous")}
               backgroundColor={hover() === "prev" ? theme.backgroundElement : theme.backgroundPanel}
             >
-              <text fg={theme.text}>
+              <text fg={hover() === "prev" ? theme.secondary : theme.text}>
                 Prev <span style={{ fg: theme.textMuted }}>{previousShortcut()}</span>
               </text>
             </box>
@@ -134,7 +134,7 @@ export function SubagentFooter() {
               onMouseUp={() => keymap.dispatchCommand("session.child.next")}
               backgroundColor={hover() === "next" ? theme.backgroundElement : theme.backgroundPanel}
             >
-              <text fg={theme.text}>
+              <text fg={hover() === "next" ? theme.secondary : theme.text}>
                 Next <span style={{ fg: theme.textMuted }}>{nextShortcut()}</span>
               </text>
             </box>
