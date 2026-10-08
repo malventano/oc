@@ -478,7 +478,11 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
-  readonly reconcile: (input: { sessionID: SessionID; live?: boolean }) => Effect.Effect<{ messages: number; parts: number }>
+  readonly reconcile: (input: { sessionID: SessionID; live?: boolean }) => Effect.Effect<{
+    messages: number
+    parts: number
+    failures: string[]
+  }>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -670,15 +674,31 @@ const layer: Layer.Layer<
         )
         .all()
         .pipe(Effect.orDie)
+      // PER-ITEM RESILIENCE (0390): one malformed row (or one failing
+      // publish) must not abort the whole sweep - the 07:43 boot died on a
+      // JSON.parse and cleaned NOTHING. Each row is individually guarded;
+      // failures are collected and returned so the caller can see exactly
+      // what could not be reconciled.
+      const failures: string[] = []
       for (const row of staleMessages) {
-        const info = JSON.parse(row.data) as SessionV1.Assistant
+        const parsed = yield* Effect.try({
+          try: () => JSON.parse(row.data) as SessionV1.Assistant,
+          catch: (error) => `message ${row.id}: JSON.parse failed: ${error}`,
+        }).pipe(Effect.catch((message) => Effect.sync(() => {
+          failures.push(message)
+          return undefined
+        })))
+        if (!parsed) continue
+        const info = parsed
         info.error ??= MessageV2.fromError(new DOMException("Aborted", "AbortError"), {
           providerID: info.providerID,
           aborted: true,
         })
         info.finish = "stop"
         info.time.completed = Date.now()
-        yield* updateMessage(info)
+        yield* updateMessage(info).pipe(
+          Effect.catch((error) => Effect.sync(() => failures.push(`message ${row.id}: ${error}`))),
+        )
         finalizedMessages++
       }
       const staleParts = yield* db
@@ -695,7 +715,15 @@ const layer: Layer.Layer<
         .all()
         .pipe(Effect.orDie)
       for (const row of staleParts) {
-        const part = JSON.parse(row.data) as SessionV1.ToolPart
+        const parsed = yield* Effect.try({
+          try: () => JSON.parse(row.data) as SessionV1.ToolPart,
+          catch: (error) => `part ${row.id}: JSON.parse failed: ${error}`,
+        }).pipe(Effect.catch((message) => Effect.sync(() => {
+          failures.push(message)
+          return undefined
+        })))
+        if (!parsed) continue
+        const part = parsed
         // A task part can outlive its turn legitimately (a background
         // subagent spanning turns): only sweep it when its child session is
         // not actually running. Non-task tools have no such escape - a prior
@@ -715,17 +743,22 @@ const layer: Layer.Layer<
             error: "Interrupted by restart",
             time: { start: part.state.time?.start ?? Date.now(), end: Date.now() },
           },
-        })
+        }).pipe(
+          Effect.catch((error) => Effect.sync(() => failures.push(`part ${row.id}: ${error}`))),
+        )
         finalizedParts++
       }
-      if (input.live) return { messages: finalizedMessages, parts: finalizedParts }
+      if (failures.length > 0) {
+        yield* Effect.logError("Session.reconcile per-item failures", { failures })
+      }
+      if (input.live) return { messages: finalizedMessages, parts: finalizedParts, failures }
       const kids = yield* children(input.sessionID)
       for (const kid of kids) {
         const child = yield* reconcile({ sessionID: kid.id })
         finalizedMessages += child.messages
         finalizedParts += child.parts
       }
-      return { messages: finalizedMessages, parts: finalizedParts }
+      return { messages: finalizedMessages, parts: finalizedParts, failures }
     })
 
     const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
