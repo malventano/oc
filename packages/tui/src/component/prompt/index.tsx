@@ -60,7 +60,7 @@ import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
 import { HintChip } from "../../ui/hint-chip"
-import { preRestartEscape, restart } from "../../util/restart"
+import { restart } from "../../util/restart"
 
 registerOpencodeSpinner()
 
