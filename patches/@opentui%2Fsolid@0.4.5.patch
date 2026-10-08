@@ -1,7 +1,94 @@
-diff --git a/index.js b/index.js
---- a/index.js
-+++ b/index.js
-@@ -636,6 +636,14 @@
+diff --git a/index.bun.js b/index.bun.js
+index c634877..dbb7f86 100644
+--- a/index.bun.js
++++ b/index.bun.js
+@@ -1,5 +1,14 @@
+ // @bun
+ // index.ts
++import { appendFileSync as __ocAppend } from "node:fs";
++// oc probe (0383): pump-boundary disposal timing (BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md).
++// GATED on OC_PUMP_PROBE=1; shares /tmp/oc-pump-trace.log with the oc-side probes.
++function __ocPumpLog(kind, data) {
++  if (process.env.OC_PUMP_PROBE !== "1") return;
++  try {
++    __ocAppend("/tmp/oc-pump-trace.log", JSON.stringify({ at: new Date().toISOString(), kind, ...data }) + "\n");
++  } catch {}
++}
+ import { CliRenderer, createCliRenderer, engine as engine2 } from "@opentui/core";
+ import { createTestRenderer } from "@opentui/core/testing";
+ 
+@@ -589,18 +598,60 @@ function _removeNode(parent, node) {
+   slotParent?.didRemoveSlotChild(parent, node);
+   process.nextTick(() => {
+     if (node instanceof BaseRenderable && !node.parent) {
++      __ocPumpLog("solid.deferredDestroy", { id: node.id });
+       node.destroyRecursively();
+       return;
+     }
++    if (node instanceof BaseRenderable) {
++      // oc probe (0383): the destroy was SKIPPED because the node looks
++      // re-attached - this is the orphan-leak candidate (never disposed,
++      // cleanups fire in a later cascade - BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md).
++      __ocPumpLog("solid.deferredDestroy.skipped", { id: node.id, parent: node.parent?.id });
++    }
+   });
+ }
++// oc 0384: orphan-node registry + sweep (BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md).
++// Every adapter-created renderable is registered at creation. A node that is
++// still UNATTACHED (no parent) and not destroyed after 10s was created by a
++// subtree that died before insertion (the dead-on-arrival navigation race) -
++// its native TextBuffer is never freed by any teardown path (no parent -> no
++// removeNode -> no destroyRecursively). The sweep destroys those orphans;
++// attached nodes are dropped from the registry (the tree owns their lifecycle).
++var __ocNodeRegistry = [];
++globalThis.__ocOrphanSweep = function (minAge) {
++  const ma = typeof minAge === "number" ? minAge : 10000;
++  const now = Date.now();
++  const keep = [];
++  let swept = 0;
++  for (var __ei = 0; __ei < __ocNodeRegistry.length; __ei++) {
++    var __e = __ocNodeRegistry[__ei];
++    try {
++      if (__e.node.isDestroyed) continue;
++      if (__e.node.parent) continue;
++      if (now - __e.at < ma) {
++        keep.push(__e);
++        continue;
++      }
++      __e.node.destroyRecursively();
++      swept++;
++    } catch {}
++  }
++  __ocNodeRegistry = keep;
++  return swept;
++};
++function _registerNode(node) {
++  if (globalThis.__ocOrphanSweep) {
++    __ocNodeRegistry.push({ node, at: Date.now() });
++  }
++  return node;
++}
+ function _createTextNode(value, decodeEntities) {
+   log("Creating text node:", value);
+   const id = getNextId("text-node");
+   if (typeof value === "number") {
+     value = value.toString();
+   }
+-  return TextNode.fromString(decodeEntities ? decodeHTMLStrict(value) : value, { id });
++  return _registerNode(TextNode.fromString(decodeEntities ? decodeHTMLStrict(value) : value, { id }));
+ }
+ function createSlotNode() {
+   const id = getNextId("slot-node");
+@@ -644,7 +695,7 @@ var {
+     if (!elements[tagName]) {
+       throw new Error(`[Reconciler] Unknown component type: ${tagName}`);
+     }
+-    const element = new elements[tagName](solidRenderer, { id });
++    const element = _registerNode(new elements[tagName](solidRenderer, { id }));
+     log("Element created with id:", id);
+     return element;
+   },
+@@ -658,6 +709,15 @@ var {
      textNode.replace(value, 0);
    },
    setProperty(node, name, value, prev) {
@@ -11,15 +98,61 @@ diff --git a/index.js b/index.js
 +    // TextBuffer guard and throw "TextBuffer is destroyed", killing the TUI
 +    // (BUG_TUI_DESTROYED_BUFFER_WRITE). Never write props to a dead node.
 +    if (node && node.isDestroyed) {
++      __ocPumpLog("solid.setProperty.destroyed", { id: node.id, name });
 +      return;
 +    }
      if (name.startsWith("on:")) {
        const eventName = name.slice(3);
        if (value) {
-diff --git a/index.bun.js b/index.bun.js
---- a/index.bun.js
-+++ b/index.bun.js
-@@ -658,6 +658,14 @@
+diff --git a/index.js b/index.js
+index 155a659..ab172b3 100644
+--- a/index.js
++++ b/index.js
+@@ -1,4 +1,13 @@
+ // index.ts
++import { appendFileSync as __ocAppend } from "node:fs";
++// oc probe (0383): pump-boundary disposal timing (BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md).
++// GATED on OC_PUMP_PROBE=1; shares /tmp/oc-pump-trace.log with the oc-side probes.
++function __ocPumpLog(kind, data) {
++  if (process.env.OC_PUMP_PROBE !== "1") return;
++  try {
++    __ocAppend("/tmp/oc-pump-trace.log", JSON.stringify({ at: new Date().toISOString(), kind, ...data }) + "\n");
++  } catch {}
++}
+ import { CliRenderer, createCliRenderer, engine as engine2 } from "@opentui/core";
+ import { createTestRenderer } from "@opentui/core/testing";
+ 
+@@ -561,12 +570,23 @@ function _removeNode(parent, node) {
+   }
+   parent.remove(node);
+   slotParent?.didRemoveSlotChild(parent, node);
+-  process.nextTick(() => {
+-    if (node instanceof BaseRenderable && !node.parent) {
+-      node.destroyRecursively();
+-      return;
+-    }
+-  });
++  // oc 0384: SYNCHRONOUS destroy (was process.nextTick). The deferred destroy
++  // left swapped-out trees (and their native TextBuffers - freed ONLY by
++  // destroyRecursively, no FinalizationRegistry) un-freed until nextTick, and
++  // orphaned subtrees whose cleanup fired only in later cascades - rapid
++  // subagent-view cycling then exhausted the native allocator
++  // ("Failed to create TextBuffer" x152 -> Solid error propagation disposed
++  // the whole Session tree -> dead UI; BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md).
++  // Destroy immediately when the node is detached at this point; if the slot
++  // machinery re-homed it (node.parent set), it is alive elsewhere - leave it.
++  // Post-destroy prop writes are covered by the 0304 setProperty isDestroyed
++  // guard.
++  if (node instanceof BaseRenderable && !node.parent) {
++    __ocPumpLog("solid.syncDestroy", { id: node.id });
++    node.destroyRecursively();
++  } else if (node instanceof BaseRenderable) {
++    __ocPumpLog("solid.destroySkippedRehomed", { id: node.id, parent: node.parent?.id });
++  }
+ }
+ function _createTextNode(value, decodeEntities) {
+   log("Creating text node:", value);
+@@ -636,6 +656,15 @@ var {
      textNode.replace(value, 0);
    },
    setProperty(node, name, value, prev) {
@@ -29,6 +162,7 @@ diff --git a/index.bun.js b/index.bun.js
 +    // TextBuffer guard and throw "TextBuffer is destroyed", killing the TUI
 +    // (BUG_TUI_DESTROYED_BUFFER_WRITE). Never write props to a dead node.
 +    if (node && node.isDestroyed) {
++      __ocPumpLog("solid.setProperty.destroyed", { id: node.id, name });
 +      return;
 +    }
      if (name.startsWith("on:")) {

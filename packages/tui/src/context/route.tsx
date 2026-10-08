@@ -29,13 +29,41 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
     const [store, setStore] = createStore<Route>(
       props.initialRoute ?? initialRoute(startup.initialRoute) ?? { type: "home" },
     )
+    // 0384: coalesce navigation bursts (BUG_SUBAGENT_VIEW_BOTTOM_BLANK.md).
+    // Rapid view swaps (<300ms apart) pile outgoing trees onto the deferred
+    // destroy queue while incoming trees allocate - the concurrent TextBuffer
+    // spike crosses the native pool cap (~15.5-16K) and the allocation-failure
+    // cascade kills the session view. Latest-wins coalescing keeps the spike
+    // at one swap's worth; single navigations are unaffected.
+    let lastNavigateAt = 0
+    let pendingRoute: Route | undefined
+    let pendingTimer: ReturnType<typeof setTimeout> | undefined
+    const applyRoute = (route: Route) => {
+      lastNavigateAt = Date.now()
+      setStore(reconcile(route))
+    }
 
     return {
       get data() {
         return store
       },
       navigate(route: Route) {
-        setStore(reconcile(route))
+        const elapsed = Date.now() - lastNavigateAt
+        if (pendingTimer) {
+          pendingRoute = route
+          return
+        }
+        if (elapsed < 300) {
+          pendingRoute = route
+          pendingTimer = setTimeout(() => {
+            pendingTimer = undefined
+            const next = pendingRoute
+            pendingRoute = undefined
+            if (next) applyRoute(next)
+          }, 300 - elapsed)
+          return
+        }
+        applyRoute(route)
       },
     }
   },
