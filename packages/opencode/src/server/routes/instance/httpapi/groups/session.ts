@@ -287,7 +287,7 @@ export const SessionApi = HttpApi.make("session")
             }),
             "Reconciled session",
           ),
-          error: HttpApiError.BadRequest,
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.reconcile",

@@ -16,7 +16,7 @@
 // Then byte-diffs the JSON.stringify of the full item arrays.
 
 import { Database } from "bun:sqlite"
-import { convertToModelMessages, type UIMessage } from "ai"
+import { convertToModelMessages, type ToolSet, type UIMessage } from "ai"
 
 const DB_PATH = "/root/.local/share/opencode/opencode.db"
 const SESS = "ses_003cd9989ffeOWxdzi5gwDWFin"
@@ -332,9 +332,9 @@ async function toModelMessages(input: WithParts[]): Promise<any[]> {
               ? "[Old tool result content cleared]"
               : truncateToolOutput(part.state.output, undefined)
             const attachments = part.state.time.compacted ? [] : (part.state.attachments ?? [])
-            const mediaAttachments = attachments.filter((a) => isMediaMime(a.mime))
+            const mediaAttachments = attachments.filter((a: { mime: string }) => isMediaMime(a.mime))
             if (mediaAttachments.length > 0) media.push(...mediaAttachments) // all unsupported for openai-compatible
-            const finalAttachments = [] // none supported
+            const finalAttachments: Array<{ mime: string; url: string }> = [] // none supported
             const output = finalAttachments.length > 0 ? { text: outputText, attachments: finalAttachments } : outputText
             assistantMessage.parts.push({
               type: ("tool-" + part.tool) as `tool-${string}`,
@@ -397,7 +397,7 @@ async function toModelMessages(input: WithParts[]): Promise<any[]> {
       }
     }
   }
-  const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
+  const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }])) as ToolSet
   return await convertToModelMessages(
     result.filter((msg) => msg.parts.some((part) => part.type !== "step-start")),
     { tools },

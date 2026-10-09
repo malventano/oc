@@ -1243,7 +1243,7 @@ describe("session.compaction.process", () => {
       // And the filtered output keeps the newest real pair at the front.
       const filtered = MessageV2.filterCompacted(msgs)
       const filteredIds = filtered.map((m) => m.info.id)
-      expect(filteredIds).toContain(realMarkerId)
+      expect(filteredIds).toContain(realMarkerId!)
       expect(filtered.some((m) => m.info.id === realSummary?.info.id)).toBe(true)
     }),
     { git: true },

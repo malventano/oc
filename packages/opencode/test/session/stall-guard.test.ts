@@ -90,7 +90,7 @@ describe("stall-guard detect", () => {
     const hit = StallGuard.detect("stop", "Now let me verify the install:\n\n", false)!
     expect(hit.signature).toBe("colon")
     // the trim keeps the sentence prefix, drops only the colon + whitespace
-    expect("Now let me verify the install:\n\n".slice(0, hit.trimAt)).toBe("Now let me verify the install")
+    expect("Now let me verify the install:\n\n".slice(0, hit.trimAt ?? 0)).toBe("Now let me verify the install")
   })
 
   test("stray-closer: inline leak (no contiguous markup lines) keeps the closer trim (0216)", () => {
