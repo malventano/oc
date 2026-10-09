@@ -1,5 +1,4 @@
 diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
-index 701d70d..0de30ee 100644
 --- a/chunk-bun-t2myhmwd.js
 +++ b/chunk-bun-t2myhmwd.js
 @@ -1,4 +1,17 @@
@@ -20,7 +19,7 @@ index 701d70d..0de30ee 100644
  var __defProp = Object.defineProperty;
  var __returnValue = (v) => v;
  function __exportSetter(name, newValue) {
-@@ -8624,6 +8637,15 @@ class TreeSitterClient extends EventEmitter2 {
+@@ -8624,6 +8637,15 @@
      const messageId = `oneshot_${this.messageIdCounter++}`;
      return new Promise((resolve3, reject) => {
        this.messageCallbacks.set(messageId, { resolve: resolve3, reject });
@@ -36,7 +35,7 @@ index 701d70d..0de30ee 100644
        try {
          this.sendWorkerMessage({
            type: "ONESHOT_HIGHLIGHT",
-@@ -8632,6 +8654,7 @@ class TreeSitterClient extends EventEmitter2 {
+@@ -8632,6 +8654,7 @@
            messageId
          });
        } catch (error) {
@@ -44,7 +43,7 @@ index 701d70d..0de30ee 100644
          this.messageCallbacks.delete(messageId);
          reject(error instanceof Error ? error : new Error(String(error)));
        }
-@@ -8703,7 +8726,7 @@ class TreeSitterClient extends EventEmitter2 {
+@@ -8703,7 +8726,7 @@
          const callback = this.messageCallbacks.get(message.messageId);
          if (callback) {
            this.messageCallbacks.delete(message.messageId);
@@ -53,7 +52,7 @@ index 701d70d..0de30ee 100644
          }
          return;
        }
-@@ -10972,6 +10995,7 @@ class TextBuffer {
+@@ -10972,6 +10995,7 @@
      if (this._destroyed)
        return;
      this._destroyed = true;
@@ -61,7 +60,7 @@ index 701d70d..0de30ee 100644
      this.lib.destroyTextBuffer(this.bufferPtr);
    }
  }
-@@ -14354,11 +14378,19 @@ class FFIRenderLib {
+@@ -14354,11 +14378,19 @@
      const widthMethodCode = widthMethod === "wcwidth" ? 0 : 1;
      const bufferPtr = this.opentui.symbols.createTextBuffer(widthMethodCode);
      if (!bufferPtr) {
@@ -83,10 +82,9 @@ index 701d70d..0de30ee 100644
    }
    textBufferGetLength(buffer) {
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
-index e5e5874..8bc575c 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
-@@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
+@@ -226,6 +226,7 @@
    _position = {};
    _opacity = 1;
    _flexShrink = 1;
@@ -94,7 +92,7 @@ index e5e5874..8bc575c 100644
    _childrenInLayoutOrder = [];
    _childrenInZIndexOrder = [];
    needsZIndexSort = false;
-@@ -519,7 +520,7 @@ class Renderable extends BaseRenderable {
+@@ -519,7 +520,7 @@
      }
      this._width = value;
      this.yogaNode.setWidth(value);
@@ -103,7 +101,7 @@ index e5e5874..8bc575c 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -534,7 +535,7 @@ class Renderable extends BaseRenderable {
+@@ -534,7 +535,7 @@
      }
      this._height = value;
      this.yogaNode.setHeight(value);
@@ -112,7 +110,7 @@ index e5e5874..8bc575c 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -593,6 +594,7 @@ class Renderable extends BaseRenderable {
+@@ -593,6 +594,7 @@
        node.setFlexGrow(0);
      }
      if (options.flexShrink !== undefined) {
@@ -120,7 +118,7 @@ index e5e5874..8bc575c 100644
        this._flexShrink = options.flexShrink;
        node.setFlexShrink(options.flexShrink);
      } else {
-@@ -750,6 +752,7 @@ class Renderable extends BaseRenderable {
+@@ -750,6 +752,7 @@
    }
    set flexShrink(shrink) {
      const value = shrink == null ? 1 : shrink;
@@ -128,7 +126,7 @@ index e5e5874..8bc575c 100644
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2986,6 +2989,7 @@ class TextBufferRenderable extends Renderable {
+@@ -2986,6 +2989,7 @@
        this.requestRender();
      }
    }
@@ -136,7 +134,7 @@ index e5e5874..8bc575c 100644
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3155,12 +3159,26 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3155,12 +3159,26 @@
        this._highlightsDirty = true;
        this._highlightSnapshotId++;
        if (this._streaming && this._filetype && !this._drawUnstyledText) {
@@ -164,7 +162,7 @@ index e5e5874..8bc575c 100644
          this.textBuffer.setText(value);
        }
        this.setRenderedLineSources(undefined);
-@@ -3248,6 +3266,44 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3248,6 +3266,44 @@
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -209,7 +207,7 @@ index e5e5874..8bc575c 100644
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3366,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3310,7 +3366,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -221,7 +219,7 @@ index e5e5874..8bc575c 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3377,30 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,8 +3377,30 @@
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -253,7 +251,7 @@ index e5e5874..8bc575c 100644
      }
    }
    async startHighlight() {
-@@ -3329,7 +3410,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3329,13 +3410,28 @@
      if (!filetype)
        return;
      const isInitialContent = this._streaming && !this._hadInitialContent;
@@ -265,7 +263,45 @@ index e5e5874..8bc575c 100644
        this._hadInitialContent = true;
      }
      this._isHighlighting = true;
-@@ -3393,6 +3477,15 @@ class CodeRenderable extends TextBufferRenderable {
+     try {
+       const result = await this._treeSitterClient.highlightOnce(content, filetype);
+       if (snapshotId !== this._highlightSnapshotId) {
++        // oc-0391 (heredoc body stuck prefix): a superseded response must not
++        // leave the buffer at the last applied snapshot with no re-trigger.
++        // The drop's requestRender runs renderSelf with _highlightsDirty
++        // already consumed, so if the newer highlight is lost or late (the
++        // worker chain backlog past the 30s client timeout, or the late
++        // response discarded at the deleted callback entry), the buffer keeps
++        // a prefix while the gutter counts every row ("gutters but no text").
++        // Re-dirty: the next renderSelf re-highlights and converges once the
++        // content settles (the 0309-mfix chain). Safe ordering: the worker
++        // chain is FIFO, so the older response arrives before the newer's
++        // apply clears the flag - no extra pass in the healthy case.
++        this._highlightsDirty = true;
+         this.requestRender();
+         return;
+       }
+@@ -3354,6 +3450,9 @@
+         }
+       }
+       if (snapshotId !== this._highlightSnapshotId) {
++        // oc-0391: re-dirty on the supersede drop (see the comment at the
++        // highlightOnce drop above).
++        this._highlightsDirty = true;
+         this.requestRender();
+         return;
+       }
+@@ -3378,6 +3477,9 @@
+         const renderedLineSources = this._onChunks ? undefined : this.getConcealLinesSourceMap(content, highlights);
+         chunks = await this.transformChunks(chunks, context);
+         if (snapshotId !== this._highlightSnapshotId) {
++          // oc-0391: re-dirty on the supersede drop (see the comment at the
++          // highlightOnce drop above).
++          this._highlightsDirty = true;
+           this.requestRender();
+           return;
+         }
+@@ -3393,10 +3495,22 @@
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
@@ -281,7 +317,14 @@ index e5e5874..8bc575c 100644
        this.updateTextInfo();
        this.requestRender();
      } catch (error) {
-@@ -3928,6 +4021,19 @@ function toNumber(value) {
+       if (snapshotId !== this._highlightSnapshotId) {
++        // oc-0391: re-dirty on the supersede drop (see the comment at the
++        // highlightOnce drop above).
++        this._highlightsDirty = true;
+         this.requestRender();
+         return;
+       }
+@@ -3928,6 +4042,19 @@
  }
  var canThrowAcrossNativeCallback = typeof process !== "undefined" && typeof process.versions === "object" && process.versions !== null && typeof process.versions.bun === "string";
  
@@ -301,7 +344,7 @@ index e5e5874..8bc575c 100644
  class NativeSpanFeed {
    static create(options) {
      const lib = resolveRenderLib();
-@@ -7184,8 +7290,38 @@ Captured external output:
+@@ -7184,8 +7311,38 @@
      this._feed = feed;
      if (feed) {
        this._detachFeed = feed.onData((bytes) => {
@@ -341,7 +384,7 @@ index e5e5874..8bc575c 100644
          });
        });
        this._detachFeedError = feed.onError((code) => {
-@@ -7460,7 +7596,21 @@ Captured external output:
+@@ -7460,7 +7617,21 @@
      if (!feed || this.feedIdleRenderScheduled || this._isDestroyed)
        return;
      this.feedIdleRenderScheduled = true;
@@ -364,10 +407,9 @@ index e5e5874..8bc575c 100644
        const ordinaryFrameWasWaiting = this.ordinaryFrameWaitingForFeed;
        const ordinaryFrameWaitControlState = this.ordinaryFrameWaitControlState;
 diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
-index 4a2cb78..07da349 100644
 --- a/chunk-node-51kpf0mz.js
 +++ b/chunk-node-51kpf0mz.js
-@@ -225,6 +225,7 @@ class Renderable extends BaseRenderable {
+@@ -225,6 +225,7 @@
    _position = {};
    _opacity = 1;
    _flexShrink = 1;
@@ -375,7 +417,7 @@ index 4a2cb78..07da349 100644
    _childrenInLayoutOrder = [];
    _childrenInZIndexOrder = [];
    needsZIndexSort = false;
-@@ -518,7 +519,7 @@ class Renderable extends BaseRenderable {
+@@ -518,7 +519,7 @@
      }
      this._width = value;
      this.yogaNode.setWidth(value);
@@ -384,7 +426,7 @@ index 4a2cb78..07da349 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -533,7 +534,7 @@ class Renderable extends BaseRenderable {
+@@ -533,7 +534,7 @@
      }
      this._height = value;
      this.yogaNode.setHeight(value);
@@ -393,7 +435,7 @@ index 4a2cb78..07da349 100644
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -592,6 +593,7 @@ class Renderable extends BaseRenderable {
+@@ -592,6 +593,7 @@
        node.setFlexGrow(0);
      }
      if (options.flexShrink !== undefined) {
@@ -401,7 +443,7 @@ index 4a2cb78..07da349 100644
        this._flexShrink = options.flexShrink;
        node.setFlexShrink(options.flexShrink);
      } else {
-@@ -749,6 +751,7 @@ class Renderable extends BaseRenderable {
+@@ -749,6 +751,7 @@
    }
    set flexShrink(shrink) {
      const value = shrink == null ? 1 : shrink;
@@ -409,7 +451,7 @@ index 4a2cb78..07da349 100644
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2985,6 +2988,7 @@ class TextBufferRenderable extends Renderable {
+@@ -2985,6 +2988,7 @@
        this.requestRender();
      }
    }
@@ -417,7 +459,7 @@ index 4a2cb78..07da349 100644
    onResize(width, height) {
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3309,7 +3313,10 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3309,7 +3313,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -429,7 +471,7 @@ index 4a2cb78..07da349 100644
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,7 +3325,16 @@ class CodeRenderable extends TextBufferRenderable {
+@@ -3318,7 +3325,16 @@
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
      } else {
@@ -448,7 +490,6 @@ index 4a2cb78..07da349 100644
    }
    async startHighlight() {
 diff --git a/chunk-node-q0cwyvm9.js b/chunk-node-q0cwyvm9.js
-index be7df0e..85d3051 100644
 --- a/chunk-node-q0cwyvm9.js
 +++ b/chunk-node-q0cwyvm9.js
 @@ -1,3 +1,16 @@
@@ -468,7 +509,7 @@ index be7df0e..85d3051 100644
  var __create = Object.create;
  var __getProtoOf = Object.getPrototypeOf;
  var __defProp = Object.defineProperty;
-@@ -8603,6 +8616,15 @@ class TreeSitterClient extends EventEmitter2 {
+@@ -8603,6 +8616,15 @@
      const messageId = `oneshot_${this.messageIdCounter++}`;
      return new Promise((resolve3, reject) => {
        this.messageCallbacks.set(messageId, { resolve: resolve3, reject });
@@ -484,7 +525,7 @@ index be7df0e..85d3051 100644
        try {
          this.sendWorkerMessage({
            type: "ONESHOT_HIGHLIGHT",
-@@ -8611,6 +8633,7 @@ class TreeSitterClient extends EventEmitter2 {
+@@ -8611,6 +8633,7 @@
            messageId
          });
        } catch (error) {
@@ -492,7 +533,7 @@ index be7df0e..85d3051 100644
          this.messageCallbacks.delete(messageId);
          reject(error instanceof Error ? error : new Error(String(error)));
        }
-@@ -10951,6 +10974,7 @@ class TextBuffer {
+@@ -10951,6 +10974,7 @@
      if (this._destroyed)
        return;
      this._destroyed = true;
@@ -500,7 +541,7 @@ index be7df0e..85d3051 100644
      this.lib.destroyTextBuffer(this.bufferPtr);
    }
  }
-@@ -14333,11 +14357,19 @@ class FFIRenderLib {
+@@ -14333,11 +14357,19 @@
      const widthMethodCode = widthMethod === "wcwidth" ? 0 : 1;
      const bufferPtr = this.opentui.symbols.createTextBuffer(widthMethodCode);
      if (!bufferPtr) {
@@ -522,10 +563,9 @@ index be7df0e..85d3051 100644
    }
    textBufferGetLength(buffer) {
 diff --git a/index.bun.js b/index.bun.js
-index 815856b..b4ad117 100644
 --- a/index.bun.js
 +++ b/index.bun.js
-@@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
+@@ -4799,6 +4799,15 @@
      });
      super.add(this.gutter);
      super.add(this.target);
@@ -541,7 +581,7 @@ index 815856b..b4ad117 100644
    }
    add(child) {
      if (!this.target && "lineInfo" in child && "lineCount" in child && "virtualLineCount" in child && "scrollY" in child) {
-@@ -4911,6 +4920,9 @@ class LineNumberRenderable extends Renderable {
+@@ -4911,6 +4920,9 @@
        this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
      }
    }
@@ -551,7 +591,7 @@ index 815856b..b4ad117 100644
    setLineColors(lineColors) {
      this._lineColorsGutter.clear();
      this._lineColorsContent.clear();
-@@ -5347,6 +5359,7 @@ class DiffRenderable extends Renderable {
+@@ -5347,6 +5359,7 @@
    _syntaxStyle;
    _wrapMode;
    _conceal;
@@ -559,7 +599,7 @@ index 815856b..b4ad117 100644
    _selectionBg;
    _selectionFg;
    _treeSitterClient;
-@@ -5388,6 +5401,11 @@ class DiffRenderable extends Renderable {
+@@ -5388,6 +5401,11 @@
      this._syntaxStyle = options.syntaxStyle;
      this._wrapMode = options.wrapMode;
      this._conceal = options.conceal ?? false;
@@ -571,7 +611,7 @@ index 815856b..b4ad117 100644
      this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined;
      this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined;
      this._treeSitterClient = options.treeSitterClient;
-@@ -5665,7 +5683,8 @@ class DiffRenderable extends Renderable {
+@@ -5665,7 +5683,8 @@
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -581,7 +621,7 @@ index 815856b..b4ad117 100644
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -5778,7 +5797,7 @@ class DiffRenderable extends Renderable {
+@@ -5778,7 +5797,7 @@
      }
      const content = contentLines.join(`
  `);
@@ -590,7 +630,7 @@ index 815856b..b4ad117 100644
      this.attachLineInfoListeners();
      this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set, "100%");
      if (this.rightSide && this.rightSideAdded) {
-@@ -5905,8 +5924,11 @@ class DiffRenderable extends Renderable {
+@@ -5905,8 +5924,11 @@
  `);
      const needsConsistentConcealing = (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype;
      const drawUnstyledText = !needsConsistentConcealing;
@@ -604,7 +644,7 @@ index 815856b..b4ad117 100644
      this.attachLineInfoListeners();
      let finalLeftLines;
      let finalRightLines;
-@@ -6054,8 +6076,8 @@ class DiffRenderable extends Renderable {
+@@ -6054,8 +6076,8 @@
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -615,7 +655,7 @@ index 815856b..b4ad117 100644
    }
    get diff() {
      return this._diff;
-@@ -6291,6 +6313,20 @@ class DiffRenderable extends Renderable {
+@@ -6291,6 +6313,20 @@
        this.rebuildView();
      }
    }
@@ -636,7 +676,7 @@ index 815856b..b4ad117 100644
    get fg() {
      return this._fg;
    }
-@@ -6314,6 +6350,9 @@ class DiffRenderable extends Renderable {
+@@ -6314,6 +6350,9 @@
      this.leftSide?.clearLineColor(line);
      this.rightSide?.clearLineColor(line);
    }
@@ -646,7 +686,7 @@ index 815856b..b4ad117 100644
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11436,6 +11475,46 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11436,6 +11475,46 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -693,7 +733,7 @@ index 815856b..b4ad117 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11703,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11624,6 +11703,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -701,7 +741,7 @@ index 815856b..b4ad117 100644
          this.updateStickyState();
        }
      });
-@@ -11929,12 +12009,145 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11929,12 +12009,145 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -847,7 +887,7 @@ index 815856b..b4ad117 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11950,7 +12163,31 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11950,7 +12163,31 @@
            if (this._stickyScrollTop) {
              this.scrollTop = 0;
            } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
@@ -880,7 +920,7 @@ index 815856b..b4ad117 100644
            }
            if (this._stickyScrollLeft) {
              this.scrollLeft = 0;
-@@ -11959,6 +12196,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11959,6 +12196,8 @@
            }
          }
        }
@@ -890,10 +930,9 @@ index 815856b..b4ad117 100644
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/index.node.js b/index.node.js
-index 0ddf03b..34a3efa 100644
 --- a/index.node.js
 +++ b/index.node.js
-@@ -4910,6 +4910,9 @@ class LineNumberRenderable extends Renderable {
+@@ -4910,6 +4910,9 @@
        this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
      }
    }
@@ -903,7 +942,7 @@ index 0ddf03b..34a3efa 100644
    setLineColors(lineColors) {
      this._lineColorsGutter.clear();
      this._lineColorsContent.clear();
-@@ -5664,7 +5667,8 @@ class DiffRenderable extends Renderable {
+@@ -5664,7 +5667,8 @@
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -913,7 +952,7 @@ index 0ddf03b..34a3efa 100644
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -6053,8 +6057,8 @@ class DiffRenderable extends Renderable {
+@@ -6053,8 +6057,8 @@
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -924,7 +963,7 @@ index 0ddf03b..34a3efa 100644
    }
    get diff() {
      return this._diff;
-@@ -6313,6 +6317,9 @@ class DiffRenderable extends Renderable {
+@@ -6313,6 +6317,9 @@
      this.leftSide?.clearLineColor(line);
      this.rightSide?.clearLineColor(line);
    }
@@ -934,7 +973,7 @@ index 0ddf03b..34a3efa 100644
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11435,6 +11442,43 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11435,6 +11442,43 @@
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -978,7 +1017,7 @@ index 0ddf03b..34a3efa 100644
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11667,7 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11623,6 +11667,7 @@
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -986,7 +1025,7 @@ index 0ddf03b..34a3efa 100644
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11973,145 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11928,12 +11973,145 @@
        return this.autoScrollSpeedSlow;
      }
    }
@@ -1132,7 +1171,7 @@ index 0ddf03b..34a3efa 100644
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12136,8 @@ class ScrollBoxRenderable extends BoxRenderable {
+@@ -11958,6 +12136,8 @@
            }
          }
        }
@@ -1142,10 +1181,9 @@ index 0ddf03b..34a3efa 100644
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/parser.worker.js b/parser.worker.js
-index 1b7549e..2c94739 100644
 --- a/parser.worker.js
 +++ b/parser.worker.js
-@@ -4019,7 +4019,7 @@ class ParserWorker {
+@@ -4019,7 +4019,7 @@
    getNodeText(node, content) {
      return content.substring(node.startIndex, node.endIndex);
    }
@@ -1154,7 +1192,7 @@ index 1b7549e..2c94739 100644
      const injectionMatches = [];
      const injectionRanges = new Map;
      if (!parserState.queries.injections) {
-@@ -4030,6 +4030,14 @@ class ParserWorker {
+@@ -4030,6 +4030,14 @@
      const languageGroups = new Map;
      const injectionMapping = parserState.injectionMapping;
      for (const capture of injectionCaptures) {
@@ -1169,7 +1207,7 @@ index 1b7549e..2c94739 100644
        const captureName = capture.name;
        if (captureName === "injection.content" || captureName.includes("injection")) {
          const nodeType = capture.node.type;
-@@ -4318,6 +4326,7 @@ class ParserWorker {
+@@ -4318,6 +4326,7 @@
      this.bufferParsers.delete(bufferId);
    }
    async handleOneShotHighlight(content, filetype, messageId) {
@@ -1177,7 +1215,7 @@ index 1b7549e..2c94739 100644
      const reusableState = await this.getReusableParser(filetype);
      if (!reusableState) {
        postWorkerMessage({
-@@ -4330,7 +4339,81 @@ class ParserWorker {
+@@ -4330,7 +4339,81 @@
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
@@ -1260,7 +1298,7 @@ index 1b7549e..2c94739 100644
      if (!tree) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4341,30 +4424,94 @@ class ParserWorker {
+@@ -4341,30 +4424,94 @@
        return;
      }
      try {
@@ -1363,7 +1401,7 @@ index 1b7549e..2c94739 100644
      }
    }
    async updateDataPath(dataPath) {
-@@ -4391,6 +4538,10 @@ class ParserWorker {
+@@ -4391,6 +4538,10 @@
        this.filetypeParserPromises.clear();
        this.reusableParsers.clear();
        this.reusableParserPromises.clear();
@@ -1374,7 +1412,7 @@ index 1b7549e..2c94739 100644
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
-@@ -4509,7 +4660,24 @@ if (isWorkerRuntime) {
+@@ -4509,7 +4660,24 @@
            });
            break;
          case "ONESHOT_HIGHLIGHT":
@@ -1401,10 +1439,9 @@ index 1b7549e..2c94739 100644
          case "UPDATE_DATA_PATH":
            try {
 diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
-index 62ce331..1e922c8 100644
 --- a/renderables/Diff.d.ts
 +++ b/renderables/Diff.d.ts
-@@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
+@@ -14,6 +14,7 @@
      syntaxStyle?: SyntaxStyle;
      wrapMode?: "word" | "char" | "none";
      conceal?: boolean;
@@ -1412,7 +1449,7 @@ index 62ce331..1e922c8 100644
      selectionBg?: string | RGBA;
      selectionFg?: string | RGBA;
      treeSitterClient?: TreeSitterClient;
-@@ -44,6 +45,7 @@ export declare class DiffRenderable extends Renderable {
+@@ -44,6 +45,7 @@
      private _syntaxStyle?;
      private _wrapMode?;
      private _conceal;
@@ -1420,7 +1457,7 @@ index 62ce331..1e922c8 100644
      private _selectionBg?;
      private _selectionFg?;
      private _treeSitterClient?;
-@@ -134,6 +136,8 @@ export declare class DiffRenderable extends Renderable {
+@@ -134,6 +136,8 @@
      set selectionFg(value: string | RGBA | undefined);
      get conceal(): boolean;
      set conceal(value: boolean);
