@@ -103,10 +103,17 @@ function loaded(sessionID: SessionID) {
   })
 }
 
+// The type guard narrows the Part union to TextPart (synthetic/metadata live
+// on the text member only - the plain `p.type === "text"` predicate does not
+// propagate through find/filter, which left the assertions on `Part`).
+function fileDeltaText(p: SessionV1.Part): p is SessionV1.TextPart {
+  return p.type === "text" && p.metadata?.fileDelta !== undefined
+}
+
 function fileDeltaPart(msgs: SessionV1.WithParts[], messageID: MessageID) {
   return msgs
     .find((m) => m.info.id === messageID)
-    ?.parts.find((p) => p.type === "text" && p.metadata?.fileDelta)
+    ?.parts.find(fileDeltaText)
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +238,7 @@ describe("FileDelta.apply anchor", () => {
         // shows only the new change, not the first one again.
         const firstDelta = (yield* loaded(info.id))
           .find((m) => m.info.id === user.id)!
-          .parts.find((p) => p.type === "text" && p.metadata?.fileDelta)
+          .parts.find(fileDeltaText)
         expect((firstDelta!.metadata!.fileDelta as Record<string, { text?: string }>)[file].text).toBe("a\nB\nc")
         yield* Effect.promise(() => fs.writeFile(file, "a\nB\nC"))
         yield* Effect.promise(() => fs.utimes(file, 2000, 2000))
@@ -247,7 +254,7 @@ describe("FileDelta.apply anchor", () => {
         })
 
         const parts = (yield* loaded(info.id)).find((m) => m.info.id === assistant.id)!.parts
-        const deltas = parts.filter((p) => p.type === "text" && p.metadata?.fileDelta)
+        const deltas = parts.filter(fileDeltaText)
         expect(deltas).toHaveLength(1)
         const entry = (deltas[0]!.metadata!.fileDelta as Record<string, { text?: string }>)[file]
         // The reported window becomes the next delta's baseline.

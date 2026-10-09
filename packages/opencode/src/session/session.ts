@@ -431,6 +431,13 @@ export class BusyError extends Schema.TaggedErrorClass<BusyError>()("SessionBusy
 
 export type NotFound = NotFoundError
 
+export type UpdatePartDeltaInput = {
+  sessionID: SessionID
+  messageID: MessageID
+  partID: PartID
+  field: string
+  delta: string
+}
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
   readonly listGlobal: (input?: GlobalListInput) => Effect.Effect<GlobalInfo[]>
@@ -483,13 +490,7 @@ export interface Interface {
     parts: number
     failures: string[]
   }>
-  readonly updatePartDelta: (input: {
-    sessionID: SessionID
-    messageID: MessageID
-    partID: PartID
-    field: string
-    delta: string
-  }) => Effect.Effect<void>
+  readonly updatePartDelta: (input: UpdatePartDeltaInput) => Effect.Effect<void>
   /** Finds the first message matching the predicate, searching newest-first. */
   readonly findMessage: (
     sessionID: SessionID,
@@ -512,7 +513,11 @@ export type Patch = Omit<Partial<Info>, "time" | "share" | "summary" | "revert" 
 const layer: Layer.Layer<
   Service,
   never,
-  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service
+  | BackgroundJob.Service
+  | RuntimeFlags.Service
+  | Database.Service
+  | EventV2Bridge.Service
+  | SessionStatus.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -633,7 +638,7 @@ const layer: Layer.Layer<
     // blocks (0379). Recurses into child sessions (a killed subagent's
     // parts). Scoped: only the caller's session + children - other
     // processes' live sessions are never touched.
-    const reconcile = Effect.fn("Session.reconcile")(function* (input: {
+    const reconcile: Interface["reconcile"] = Effect.fn("Session.reconcile")(function* (input: {
       sessionID: SessionID
       // live: the new-turn-start sweep (SessionPrompt.loop) - the session was
       // IDLE when this runs, so the prior turn's corpses are provably dead,
@@ -682,7 +687,7 @@ const layer: Layer.Layer<
       const failures: string[] = []
       for (const row of staleMessages) {
         const parsed = yield* Effect.try({
-          try: () => JSON.parse(row.data) as SessionV1.Assistant,
+          try: () => JSON.parse(row.data as unknown as string) as SessionV1.Assistant,
           catch: (error) => `message ${row.id}: JSON.parse failed: ${error}`,
         }).pipe(Effect.catch((message) => Effect.sync(() => {
           failures.push(message)
@@ -716,7 +721,7 @@ const layer: Layer.Layer<
         .pipe(Effect.orDie)
       for (const row of staleParts) {
         const parsed = yield* Effect.try({
-          try: () => JSON.parse(row.data) as SessionV1.ToolPart,
+          try: () => JSON.parse(row.data as unknown as string) as SessionV1.ToolPart,
           catch: (error) => `part ${row.id}: JSON.parse failed: ${error}`,
         }).pipe(Effect.catch((message) => Effect.sync(() => {
           failures.push(message)
@@ -729,9 +734,9 @@ const layer: Layer.Layer<
         // not actually running. Non-task tools have no such escape - a prior
         // turn's inline tool cannot still be busy.
         if (part.tool === "task") {
-          const child = (part.state.metadata as { sessionId?: string } | undefined)?.sessionId
+          const child = (part.state as { metadata?: { sessionId?: string } }).metadata?.sessionId
           if (child) {
-            const childStatus = yield* sessionStatus.get(child)
+            const childStatus = yield* sessionStatus.get(child as SessionID)
             if (childStatus.type !== "idle") continue
           }
         }
@@ -741,7 +746,10 @@ const layer: Layer.Layer<
             ...part.state,
             status: "error",
             error: "Interrupted by restart",
-            time: { start: part.state.time?.start ?? Date.now(), end: Date.now() },
+            time: {
+              start: (part.state as { time?: { start?: number } }).time?.start ?? Date.now(),
+              end: Date.now(),
+            },
           },
         }).pipe(
           Effect.catch((error) => Effect.sync(() => failures.push(`part ${row.id}: ${error}`))),
@@ -1094,13 +1102,7 @@ const layer: Layer.Layer<
       return input.partID
     })
 
-    const updatePartDelta = Effect.fnUntraced(function* (input: {
-      sessionID: SessionID
-      messageID: MessageID
-      partID: PartID
-      field: string
-      delta: string
-    }) {
+    const updatePartDelta: Interface["updatePartDelta"] = Effect.fn("Session.updatePartDelta")(function* (input: UpdatePartDeltaInput) {
       yield* events.publish(MessageV2.Event.PartDelta, input)
     })
 
@@ -1130,7 +1132,7 @@ const layer: Layer.Layer<
       return Option.none<SessionV1.WithParts>()
     })
 
-    return Service.of({
+    const impl: Interface = {
       list,
       listGlobal,
       create,
@@ -1159,7 +1161,8 @@ const layer: Layer.Layer<
       getPart,
       updatePartDelta,
       findMessage,
-    })
+    }
+    return Service.of(impl)
   }),
 )
 
