@@ -126,15 +126,47 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2986,6 +2989,7 @@
+@@ -2866,6 +2869,14 @@
+     return Math.max(0, this.scrollWidth - this.width);
+   }
+   updateViewportOffset() {
++    // oc-0392: re-clamp before applying - a scroll parked at a transient
++    // maxScrollY (the streaming height lag) must not survive a later height
++    // increase; the next wheel event over this element self-heals here even
++    // if no resize fired in between.
++    const maxSy = Math.max(0, (this.textBufferView.getVirtualLineCount?.() ?? 0) - this.height);
++    if (this._scrollY > maxSy) {
++      this._scrollY = maxSy;
++    }
+     if (this.width > 0 && this.height > 0) {
+       this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height);
+     }
+@@ -2986,7 +2997,24 @@
        this.requestRender();
      }
    }
 +
    onResize(width, height) {
++    // oc-0392 (reasoning body vanishes under the cursor): a wheel event
++    // hit-tested to this element during a streaming height lag parks
++    // _scrollY at the transient maxScrollY; when the height catches up the
++    // stale offset persists (nothing re-clamps on a height change - the
++    // setter clamps only on set, updateViewportOffset only runs from the
++    // setters) and the buffer view shows a scrolled window forever: the top
++    // rows blank, the tail rows clipped. Re-clamp on every resize before
++    // re-applying the viewport.
++    const maxSy = Math.max(0, (this.textBufferView.getVirtualLineCount?.() ?? 0) - height);
++    if (this._scrollY > maxSy) {
++      this._scrollY = maxSy;
++    }
++    const maxSx = Math.max(0, (this.textBufferView.logicalLineInfo?.lineWidthColsMax ?? 0) - width);
++    if (this._scrollX > maxSx) {
++      this._scrollX = maxSx;
++    }
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3155,12 +3159,26 @@
+     this.requestRender();
+@@ -3155,12 +3183,26 @@
        this._highlightsDirty = true;
        this._highlightSnapshotId++;
        if (this._streaming && this._filetype && !this._drawUnstyledText) {
@@ -162,7 +194,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.textBuffer.setText(value);
        }
        this.setRenderedLineSources(undefined);
-@@ -3248,6 +3266,44 @@
+@@ -3248,6 +3290,44 @@
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -207,7 +239,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3366,10 @@
+@@ -3310,7 +3390,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -219,7 +251,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3377,30 @@
+@@ -3318,8 +3401,30 @@
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -251,7 +283,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      }
    }
    async startHighlight() {
-@@ -3329,13 +3410,28 @@
+@@ -3329,13 +3434,28 @@
      if (!filetype)
        return;
      const isInitialContent = this._streaming && !this._hadInitialContent;
@@ -281,7 +313,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3354,6 +3450,9 @@
+@@ -3354,6 +3474,9 @@
          }
        }
        if (snapshotId !== this._highlightSnapshotId) {
@@ -291,7 +323,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3378,6 +3477,9 @@
+@@ -3378,6 +3501,9 @@
          const renderedLineSources = this._onChunks ? undefined : this.getConcealLinesSourceMap(content, highlights);
          chunks = await this.transformChunks(chunks, context);
          if (snapshotId !== this._highlightSnapshotId) {
@@ -301,7 +333,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
            this.requestRender();
            return;
          }
-@@ -3393,10 +3495,22 @@
+@@ -3393,10 +3519,22 @@
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
@@ -324,7 +356,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3928,6 +4042,19 @@
+@@ -3928,6 +4066,19 @@
  }
  var canThrowAcrossNativeCallback = typeof process !== "undefined" && typeof process.versions === "object" && process.versions !== null && typeof process.versions.bun === "string";
  
@@ -344,7 +376,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
  class NativeSpanFeed {
    static create(options) {
      const lib = resolveRenderLib();
-@@ -7184,8 +7311,38 @@
+@@ -7184,8 +7335,38 @@
      this._feed = feed;
      if (feed) {
        this._detachFeed = feed.onData((bytes) => {
@@ -384,7 +416,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          });
        });
        this._detachFeedError = feed.onError((code) => {
-@@ -7460,7 +7617,21 @@
+@@ -7460,7 +7641,21 @@
      if (!feed || this.feedIdleRenderScheduled || this._isDestroyed)
        return;
      this.feedIdleRenderScheduled = true;
@@ -451,15 +483,47 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2985,6 +2988,7 @@
+@@ -2865,6 +2868,14 @@
+     return Math.max(0, this.scrollWidth - this.width);
+   }
+   updateViewportOffset() {
++    // oc-0392: re-clamp before applying - a scroll parked at a transient
++    // maxScrollY (the streaming height lag) must not survive a later height
++    // increase; the next wheel event over this element self-heals here even
++    // if no resize fired in between.
++    const maxSy = Math.max(0, (this.textBufferView.getVirtualLineCount?.() ?? 0) - this.height);
++    if (this._scrollY > maxSy) {
++      this._scrollY = maxSy;
++    }
+     if (this.width > 0 && this.height > 0) {
+       this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height);
+     }
+@@ -2985,7 +2996,24 @@
        this.requestRender();
      }
    }
 +
    onResize(width, height) {
++    // oc-0392 (reasoning body vanishes under the cursor): a wheel event
++    // hit-tested to this element during a streaming height lag parks
++    // _scrollY at the transient maxScrollY; when the height catches up the
++    // stale offset persists (nothing re-clamps on a height change - the
++    // setter clamps only on set, updateViewportOffset only runs from the
++    // setters) and the buffer view shows a scrolled window forever: the top
++    // rows blank, the tail rows clipped. Re-clamp on every resize before
++    // re-applying the viewport.
++    const maxSy = Math.max(0, (this.textBufferView.getVirtualLineCount?.() ?? 0) - height);
++    if (this._scrollY > maxSy) {
++      this._scrollY = maxSy;
++    }
++    const maxSx = Math.max(0, (this.textBufferView.logicalLineInfo?.lineWidthColsMax ?? 0) - width);
++    if (this._scrollX > maxSx) {
++      this._scrollX = maxSx;
++    }
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
-@@ -3309,7 +3313,10 @@
+     this.requestRender();
+@@ -3309,7 +3337,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -471,7 +535,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,7 +3325,16 @@
+@@ -3318,7 +3349,16 @@
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
      } else {
