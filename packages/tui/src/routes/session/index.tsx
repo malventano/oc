@@ -3162,6 +3162,10 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
                 traceCodeEl = el
               }}
               filetype="markdown"
+              // 0394: the session ScrollBox owns scrolling - a wheel event
+              // hit-tested to this element must never scroll its internal
+              // viewport (the reasoning-body vanish, BUG_REASONING_VANISH_MOUSE_SCROLL).
+              wheelScrollable={false}
               drawUnstyledText={false}
               streaming={true}
               syntaxStyle={syntax()}
@@ -4447,6 +4451,8 @@ function StreamSegment(props: {
       flexShrink={1}
       drawUnstyledText={false}
       streaming={props.streaming()}
+      // 0394: the session ScrollBox owns scrolling (see the reasoning code note).
+      wheelScrollable={false}
       syntaxStyle={syntax()}
       content={props.text()}
       conceal={props.conceal()}
@@ -5384,6 +5390,8 @@ function LiveEditDiff(props: {
               streaming={true}
               syntaxStyle={syntax()}
               content={unifiedText()}
+              // 0394: the session ScrollBox owns scrolling (see the reasoning code note).
+              wheelScrollable={false}
               conceal={false}
               fg={theme.textMuted}
             />
@@ -5423,6 +5431,8 @@ function LiveEditDiff(props: {
                 streaming={true}
                 syntaxStyle={syntax()}
                 content={left()}
+                // 0394: the session ScrollBox owns scrolling (see the reasoning code note).
+                wheelScrollable={false}
                 conceal={false}
                 fg={theme.textMuted}
               />
@@ -5444,6 +5454,8 @@ function LiveEditDiff(props: {
                 streaming={true}
                 syntaxStyle={syntax()}
                 content={right()}
+                // 0394: the session ScrollBox owns scrolling (see the reasoning code note).
+                wheelScrollable={false}
                 conceal={false}
                 fg={theme.textMuted}
               />
