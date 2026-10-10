@@ -126,7 +126,32 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2866,6 +2869,14 @@
+@@ -2772,6 +2775,13 @@
+     this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator;
+     this._tabIndicatorColor = options.tabIndicatorColor ? parseColor(options.tabIndicatorColor) : this._defaultOptions.tabIndicatorColor;
+     this._truncate = options.truncate ?? this._defaultOptions.truncate;
++    // oc-0394: wheel-scroll opt-out - session content elements pass
++    // wheelScrollable={false} so a wheel event hit-tested to them never
++    // scrolls the element's internal viewport (the session ScrollBox owns
++    // scrolling; the parked internal offset during a streaming height lag
++    // was the reasoning-body vanish - 0392 clamped the recovery, this
++    // removes the parking entirely).
++    this._wheelScrollable = options.wheelScrollable ?? true;
+     this.textBuffer = TextBuffer.create(this._ctx.widthMethod);
+     this.textBufferView = TextBufferView.create(this.textBuffer);
+     this._firstLineOffset = ctx.claimFirstLineOffset?.(this) ?? 0;
+@@ -2804,6 +2814,10 @@
+     }
+   }
+   handleScroll(event) {
++    // oc-0394: opt-out elements never consume wheel events (see the
++    // constructor note).
++    if (!this._wheelScrollable)
++      return;
+     if (!event.scroll)
+       return;
+     const { direction, delta } = event.scroll;
+@@ -2866,6 +2880,14 @@
      return Math.max(0, this.scrollWidth - this.width);
    }
    updateViewportOffset() {
@@ -141,7 +166,20 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      if (this.width > 0 && this.height > 0) {
        this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height);
      }
-@@ -2986,7 +2997,24 @@
+@@ -2979,6 +3001,12 @@
+   get truncate() {
+     return this._truncate;
+   }
++  get wheelScrollable() {
++    return this._wheelScrollable;
++  }
++  set wheelScrollable(value) {
++    this._wheelScrollable = value !== false;
++  }
+   set truncate(value) {
+     if (this._truncate !== value) {
+       this._truncate = value;
+@@ -2986,7 +3014,24 @@
        this.requestRender();
      }
    }
@@ -166,7 +204,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
      this.requestRender();
-@@ -3155,12 +3183,26 @@
+@@ -3155,12 +3200,26 @@
        this._highlightsDirty = true;
        this._highlightSnapshotId++;
        if (this._streaming && this._filetype && !this._drawUnstyledText) {
@@ -194,7 +232,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.textBuffer.setText(value);
        }
        this.setRenderedLineSources(undefined);
-@@ -3248,6 +3290,44 @@
+@@ -3248,6 +3307,44 @@
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -239,7 +277,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3390,10 @@
+@@ -3310,7 +3407,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -251,7 +289,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3401,30 @@
+@@ -3318,8 +3418,30 @@
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -283,7 +321,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      }
    }
    async startHighlight() {
-@@ -3329,13 +3434,28 @@
+@@ -3329,13 +3451,28 @@
      if (!filetype)
        return;
      const isInitialContent = this._streaming && !this._hadInitialContent;
@@ -313,7 +351,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3354,6 +3474,9 @@
+@@ -3354,6 +3491,9 @@
          }
        }
        if (snapshotId !== this._highlightSnapshotId) {
@@ -323,7 +361,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3378,6 +3501,9 @@
+@@ -3378,6 +3518,9 @@
          const renderedLineSources = this._onChunks ? undefined : this.getConcealLinesSourceMap(content, highlights);
          chunks = await this.transformChunks(chunks, context);
          if (snapshotId !== this._highlightSnapshotId) {
@@ -333,7 +371,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
            this.requestRender();
            return;
          }
-@@ -3393,10 +3519,22 @@
+@@ -3393,10 +3536,22 @@
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
@@ -356,7 +394,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3928,6 +4066,19 @@
+@@ -3928,6 +4083,19 @@
  }
  var canThrowAcrossNativeCallback = typeof process !== "undefined" && typeof process.versions === "object" && process.versions !== null && typeof process.versions.bun === "string";
  
@@ -376,7 +414,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
  class NativeSpanFeed {
    static create(options) {
      const lib = resolveRenderLib();
-@@ -7184,8 +7335,38 @@
+@@ -7184,8 +7352,38 @@
      this._feed = feed;
      if (feed) {
        this._detachFeed = feed.onData((bytes) => {
@@ -416,7 +454,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          });
        });
        this._detachFeedError = feed.onError((code) => {
-@@ -7460,7 +7641,21 @@
+@@ -7460,7 +7658,21 @@
      if (!feed || this.feedIdleRenderScheduled || this._isDestroyed)
        return;
      this.feedIdleRenderScheduled = true;
@@ -483,7 +521,32 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2865,6 +2868,14 @@
+@@ -2771,6 +2774,13 @@
+     this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator;
+     this._tabIndicatorColor = options.tabIndicatorColor ? parseColor(options.tabIndicatorColor) : this._defaultOptions.tabIndicatorColor;
+     this._truncate = options.truncate ?? this._defaultOptions.truncate;
++    // oc-0394: wheel-scroll opt-out - session content elements pass
++    // wheelScrollable={false} so a wheel event hit-tested to them never
++    // scrolls the element's internal viewport (the session ScrollBox owns
++    // scrolling; the parked internal offset during a streaming height lag
++    // was the reasoning-body vanish - 0392 clamped the recovery, this
++    // removes the parking entirely).
++    this._wheelScrollable = options.wheelScrollable ?? true;
+     this.textBuffer = TextBuffer.create(this._ctx.widthMethod);
+     this.textBufferView = TextBufferView.create(this.textBuffer);
+     this._firstLineOffset = ctx.claimFirstLineOffset?.(this) ?? 0;
+@@ -2803,6 +2813,10 @@
+     }
+   }
+   handleScroll(event) {
++    // oc-0394: opt-out elements never consume wheel events (see the
++    // constructor note on _wheelScrollable).
++    if (!this._wheelScrollable)
++      return;
+     if (!event.scroll)
+       return;
+     const { direction, delta } = event.scroll;
+@@ -2865,6 +2879,14 @@
      return Math.max(0, this.scrollWidth - this.width);
    }
    updateViewportOffset() {
@@ -498,7 +561,20 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      if (this.width > 0 && this.height > 0) {
        this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height);
      }
-@@ -2985,7 +2996,24 @@
+@@ -2978,6 +3000,12 @@
+   get truncate() {
+     return this._truncate;
+   }
++  get wheelScrollable() {
++    return this._wheelScrollable;
++  }
++  set wheelScrollable(value) {
++    this._wheelScrollable = value !== false;
++  }
+   set truncate(value) {
+     if (this._truncate !== value) {
+       this._truncate = value;
+@@ -2985,7 +3013,24 @@
        this.requestRender();
      }
    }
@@ -523,7 +599,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
      this.requestRender();
-@@ -3309,7 +3337,10 @@
+@@ -3309,7 +3354,10 @@
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -535,7 +611,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,7 +3349,16 @@
+@@ -3318,7 +3366,16 @@
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
      } else {
@@ -1502,6 +1578,19 @@ diff --git a/parser.worker.js b/parser.worker.js
            break;
          case "UPDATE_DATA_PATH":
            try {
+diff --git a/renderables/TextBufferRenderable.d.ts b/renderables/TextBufferRenderable.d.ts
+--- a/renderables/TextBufferRenderable.d.ts
++++ b/renderables/TextBufferRenderable.d.ts
+@@ -18,6 +18,9 @@
+     tabIndicator?: string | number;
+     tabIndicatorColor?: string | RGBA;
+     truncate?: boolean;
++    /** oc-0394: opt out of consuming mouse wheel scroll events (session
++     * content elements - the session ScrollBox owns scrolling). */
++    wheelScrollable?: boolean;
+ }
+ export declare abstract class TextBufferRenderable extends Renderable implements LineInfoProvider {
+     selectable: boolean;
 diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
 --- a/renderables/Diff.d.ts
 +++ b/renderables/Diff.d.ts
