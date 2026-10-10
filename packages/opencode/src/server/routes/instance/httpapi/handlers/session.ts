@@ -334,6 +334,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       const virtual = yield* compactSvc.virtual({ sessionID: ctx.params.sessionID, messages })
       if (virtual !== "ineligible") return virtual
 
+      // Mid-turn compaction (0395): when a turn is already in flight, the
+      // compaction behaves like an auto compaction - finalize creates the
+      // compaction_continue so the interrupted task resumes after the
+      // summary instead of ending. An idle /compact stays manual: the
+      // summary ends the turn (the user reads it, nothing pending).
+      const status = yield* statusSvc.get(ctx.params.sessionID)
+      const midTurn = status.type !== "idle"
+
       yield* compactSvc.create({
         sessionID: ctx.params.sessionID,
         agent: currentAgent,
@@ -347,7 +355,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           // is unchanged.
           variant: ctx.payload.variant ?? lastUserVariant,
         },
-        auto: ctx.payload.auto ?? false,
+        auto: ctx.payload.auto || midTurn,
+        midTurn,
       })
       yield* promptSvc.loop({ sessionID: ctx.params.sessionID })
       return "compacted" as const
