@@ -216,6 +216,11 @@ export const CompactionPart = Schema.Struct({
   // marker to ONLY the lifted marker+summary pair, then the post-marker
   // continuation; everything before the marker is folded into the summary.
   no_tail: Schema.optional(Schema.Boolean),
+  // mid_turn: true = the user invoked /compact while a turn was in flight
+  // (the session was busy at summarize time). The marker behaves like an
+  // auto compaction: finalize creates the compaction_continue so the
+  // interrupted task resumes after the summary instead of ending.
+  mid_turn: Schema.optional(Schema.Boolean),
   // clean_start: true = deliberate "start completely clean" virtual rung
   // (0341): the marker's LIFTED PAIR (its summary) and the whole
   // pre-marker history are excluded from the model chain - the model sees

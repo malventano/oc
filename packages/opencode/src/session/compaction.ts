@@ -354,6 +354,10 @@ export interface Interface {
     auto: boolean
     overflow?: boolean
     guard?: boolean
+    // mid-turn: the user invoked compaction while a turn was in flight. The
+    // marker then behaves like an auto compaction (the interrupted task
+    // resumes after the summary) with its own resume directive.
+    midTurn?: boolean
   }) => Effect.Effect<void>
   // "Virtual" compaction: drops the oldest retained pre-compaction turn
   // instead of running a new summary turn. Only eligible when the last
@@ -1217,9 +1221,11 @@ const layer = Layer.effect(
             // can distinguish them from manual post-compaction user prompts.
             metadata: { compaction_continue: true },
             synthetic: true,
-            text: compactionPart.guard
-              ? "The previous turn was interrupted by the loop guard and the conversation was compacted. The user's original request is still pending - complete it now: answer the question or perform the task. Do not stop, ask for clarification, or restate the summary."
-              : "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+            text: compactionPart.mid_turn
+              ? "The user compacted the conversation while your task was in progress. The user's original request is still pending - complete it now: answer the question or perform the task. Do not stop, ask for clarification, or restate the summary."
+              : compactionPart.guard
+                ? "The previous turn was interrupted by the loop guard and the conversation was compacted. The user's original request is still pending - complete it now: answer the question or perform the task. Do not stop, ask for clarification, or restate the summary."
+                : "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
             time: {
               start: Date.now(),
               end: Date.now(),
@@ -1238,6 +1244,7 @@ const layer = Layer.effect(
       auto: boolean
       overflow?: boolean
       guard?: boolean
+      midTurn?: boolean
     }) {
       const msg = yield* session.updateMessage({
         id: MessageID.ascending(),
@@ -1255,6 +1262,7 @@ const layer = Layer.effect(
         auto: input.auto,
         overflow: input.overflow,
         guard: input.guard,
+        mid_turn: input.midTurn,
       })
     })
 

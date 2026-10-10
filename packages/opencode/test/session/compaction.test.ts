@@ -172,7 +172,7 @@ function createSummaryAssistantMessage(sessionID: SessionID, parentID: MessageID
   )
 }
 
-function createCompactionMarker(sessionID: SessionID) {
+function createCompactionMarker(sessionID: SessionID, part: Partial<SessionV1.CompactionPart> = {}) {
   return SessionNs.Service.use((ssn) =>
     Effect.gen(function* () {
       const msg = yield* ssn.updateMessage({
@@ -189,6 +189,7 @@ function createCompactionMarker(sessionID: SessionID) {
         sessionID: msg.sessionID,
         type: "compaction",
         auto: false,
+        ...part,
       })
     }),
   )
@@ -2142,6 +2143,56 @@ it.instance(
       expect(texts[0]!.text).toBe("NORMAL SUMMARY")
     }),
   )
+
+it.instance(
+  "finalize creates the mid-turn compaction_continue with the resume directive (0395)",
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const ssn = yield* SessionNs.Service
+    const session = yield* ssn.create({})
+    // A turn was in flight when the user ran /compact: the summarize handler
+    // marks the compaction auto + mid_turn, so finalize must queue the
+    // continuation with the mid-turn resume directive (not the generic
+    // "continue if you have next steps").
+    yield* createCompactionMarker(session.id, { auto: true, mid_turn: true })
+    const all = yield* ssn.messages({ sessionID: session.id })
+    const markerId = all.at(-1)!.info.id
+    const summary = yield* createSummaryAssistantMessage(session.id, markerId, test.directory, "MIDTURN SUMMARY")
+    yield* SessionCompaction.use.finalize({
+      sessionID: session.id,
+      parentID: markerId,
+      assistantID: summary.id,
+      messages: yield* ssn.messages({ sessionID: session.id }),
+    })
+    const after = yield* ssn.messages({ sessionID: session.id })
+    const cont = after.at(-1)!
+    expect(cont.info.role).toBe("user")
+    const text = cont.parts.find((p): p is SessionV1.TextPart => p.type === "text")
+    expect(text?.text).toContain("compacted the conversation while your task was in progress")
+  }).pipe(withCompaction({ plugin: autocontinue(true) })),
+)
+
+it.instance(
+  "idle manual compaction stays manual: no compaction_continue after the summary (0395)",
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const ssn = yield* SessionNs.Service
+    const session = yield* ssn.create({})
+    yield* createCompactionMarker(session.id)
+    const all = yield* ssn.messages({ sessionID: session.id })
+    const markerId = all.at(-1)!.info.id
+    const summary = yield* createSummaryAssistantMessage(session.id, markerId, test.directory, "IDLE SUMMARY")
+    yield* SessionCompaction.use.finalize({
+      sessionID: session.id,
+      parentID: markerId,
+      assistantID: summary.id,
+      messages: yield* ssn.messages({ sessionID: session.id }),
+    })
+    const after = yield* ssn.messages({ sessionID: session.id })
+    // The newest message is still the summary assistant - no continuation.
+    expect(after.at(-1)!.info.role).toBe("assistant")
+  }).pipe(withCompaction({ plugin: autocontinue(true) })),
+)
 
 it.instance(
     "refuses the huge-count reduce when a tailless marker precedes budget-exceeding content",
