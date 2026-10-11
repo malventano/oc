@@ -2,7 +2,7 @@ import type { Argv } from "yargs"
 import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
 import { Installation } from "../../installation"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { InstallationVersion, isOcBuild } from "@opencode-ai/core/installation/version"
 
 export const UpgradeCommand = {
   command: "upgrade [target]",
@@ -25,9 +25,10 @@ export const UpgradeCommand = {
     UI.println(UI.logo("  "))
     UI.empty()
     prompts.intro("Upgrade")
-    // oc builds carry the "-oc" version suffix (set in script/build.ts);
-    // custom builds must never touch the upstream release channel.
-    if (InstallationVersion.endsWith("-oc")) {
+    // oc builds version as `<upstream>-oc-<patch id>` (set in script/build.ts);
+    // the legacy suffix was bare `-oc`. Custom builds must never touch the
+    // upstream release channel.
+    if (isOcBuild) {
       prompts.log.info("oc is a custom build; update it from its source repo (git pull/rebuild), not from the opencode release channel")
       prompts.outro("Nothing to do")
       return
