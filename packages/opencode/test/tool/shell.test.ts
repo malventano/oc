@@ -1,7 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, DateTime, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import os from "os"
 import path from "path"
@@ -1147,6 +1147,54 @@ describe("tool.shell abort", () => {
         expect(updates.length).toBeGreaterThan(1)
       }),
     ),
+  )
+})
+
+describe("tool.shell child completion repro", () => {
+  // 0396 repro harness (BUG_TURN_WEDGE_CHILD_COMPLETION): a detached
+  // grandchild inherits the output pipes and keeps them open long after bash
+  // exits or is killed. Every await on the tool's path is individually
+  // bounded; these tests pin that the tool still returns well inside the
+  // grandchild's lifetime instead of wedging on a pipe close.
+  const grandchildSleep = 10_000
+
+  it.live(
+    "returns promptly when a detached grandchild holds the output pipes open",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const started = yield* DateTime.nowAsDate
+          const result = yield* run({
+            command: `echo start; (sleep ${Math.floor(grandchildSleep / 1000)}) &`,
+            timeout: grandchildSleep * 2,
+          })
+          const elapsed = Date.now() - started.getTime()
+          expect(result.metadata.exit).toBe(0)
+          expect(result.output).toContain("start")
+          expect(elapsed).toBeLessThan(grandchildSleep)
+        }),
+      ),
+    30_000,
+  )
+
+  it.live(
+    "returns promptly after a timeout kill when a grandchild still holds the pipes",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const started = yield* DateTime.nowAsDate
+          const result = yield* run({
+            command: `(sleep ${Math.floor(grandchildSleep / 1000)}) & sleep 60`,
+            timeout: 500,
+          })
+          const elapsed = Date.now() - started.getTime()
+          expect(result.output).toContain("exceeding timeout")
+          expect(elapsed).toBeLessThan(grandchildSleep)
+        }),
+      ),
+    30_000,
   )
 })
 

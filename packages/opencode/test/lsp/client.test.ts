@@ -4,13 +4,17 @@ import { pathToFileURL } from "url"
 import { tmpdir, withTestInstance } from "../fixture/fixture"
 import { LSPClient } from "@/lsp/client"
 import * as LSPServer from "@/lsp/server"
+import { Process } from "@/util/process"
 
 function spawnFakeServer() {
-  const { spawn } = require("child_process")
   const serverPath = path.join(__dirname, "../fixture/lsp/fake-lsp-server.js")
+  // Process.spawn mirrors the production LSP launch path and attaches the
+  // exited promise the client teardown depends on.
   return {
-    process: spawn(process.execPath, [serverPath], {
-      stdio: "pipe",
+    process: Process.spawn([process.execPath, serverPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "pipe",
     }),
   }
 }
@@ -484,5 +488,92 @@ describe("LSPClient interop", () => {
         await client.shutdown()
       },
     })
+  })
+
+  // 0396 repro harness (BUG_TURN_WEDGE_CHILD_COMPLETION): a pending
+  // sendRequest must never outlive the server process. vscode-jsonrpc only
+  // rejects pending requests when the stdout stream closes, so a pipe held
+  // open by a grandchild after the server dies leaves requests pending
+  // forever - the wedge signature observed live on 2026-10-10.
+
+  test("rejects a pending request when the server exits cleanly", async () => {
+    const handle = spawnFakeServer() as any
+
+    const client = await withTestInstance({
+      directory: process.cwd(),
+      fn: (ctx) =>
+        LSPClient.create({
+          serverID: "fake",
+          server: handle as unknown as LSPServer.Handle,
+          root: process.cwd(),
+          directory: process.cwd(),
+          instance: ctx,
+        }),
+    })
+
+    const pending = client.connection.sendRequest("test/silent", {})
+    const state = { outcome: "pending" as "rejected" | "resolved" | "pending" }
+    pending.then(
+      () => {
+        state.outcome = "resolved"
+      },
+      () => {
+        state.outcome = "rejected"
+      },
+    )
+
+    await client.connection.sendNotification("test/exit")
+    const started = Date.now()
+    while (state.outcome === "pending" && Date.now() - started < 3_000) {
+      await Bun.sleep(25)
+    }
+
+    expect(state.outcome).toBe("rejected")
+    expect(Date.now() - started).toBeLessThan(3_000)
+
+    client.connection.dispose()
+    await Process.stop(handle.process)
+  })
+
+  test("rejects a pending request when the server dies and a grandchild holds the stdout pipe", async () => {
+    const handle = spawnFakeServer() as any
+
+    const client = await withTestInstance({
+      directory: process.cwd(),
+      fn: (ctx) =>
+        LSPClient.create({
+          serverID: "fake",
+          server: handle as unknown as LSPServer.Handle,
+          root: process.cwd(),
+          directory: process.cwd(),
+          instance: ctx,
+        }),
+    })
+
+    await client.connection.sendNotification("test/hold-pipe-and-exit", { holdMs: 8_000 })
+
+    const pending = client.connection.sendRequest("test/silent", {})
+    const state = { outcome: "pending" as "rejected" | "resolved" | "pending" }
+    pending.then(
+      () => {
+        state.outcome = "resolved"
+      },
+      () => {
+        state.outcome = "rejected"
+      },
+    )
+
+    const started = Date.now()
+    while (state.outcome === "pending" && Date.now() - started < 3_000) {
+      await Bun.sleep(25)
+    }
+
+    // Desired behavior: the pending request settles shortly after the server
+    // process dies, even though the stdout pipe is still held open. Today the
+    // request stays pending forever.
+    expect(state.outcome).toBe("rejected")
+
+    client.connection.dispose()
+    await Process.stop(handle.process)
   })
 })
