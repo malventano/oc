@@ -529,6 +529,120 @@ it.instance("loop exits without an LLM request for interrupted orphan tool calls
   }),
 )
 
+it.instance("0398: a post-compaction summary total larger than the window does not poison the output budget", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    // The forensic shape (BUG_CLAMP_POST_COMPACTION_POISON): the manual
+    // compaction ran on the big-window model and its summary turn read the
+    // full pre-compaction chain, storing tokens.total = 505,674. The session
+    // then switched to the 100K-window test model; the clamp input must be
+    // the chain being sent now, not the historical peak.
+    const userID = MessageID.ascending()
+    yield* sessions.updateMessage({
+      id: userID,
+      role: "user",
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      time: { created: Date.now() },
+    })
+    yield* sessions.updateMessage({
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: userID,
+      sessionID: chat.id,
+      mode: "build",
+      agent: "build",
+      cost: 0,
+      path: { cwd: "/tmp", root: "/tmp" },
+      tokens: { total: 504_538, input: 5036, output: 5198, reasoning: 0, cache: { read: 494_304, write: 0 } },
+      modelID: ref.modelID,
+      providerID: ref.providerID,
+      time: { created: Date.now(), completed: Date.now() },
+      summary: true,
+      finish: "stop",
+    })
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    expect(result).toBeDefined()
+    yield* llm.text("world")
+
+    const turned = yield* prompt.loop({ sessionID: chat.id })
+    expect(turned.info.role).toBe("assistant")
+    const hits = yield* llm.hits
+    expect(hits.length).toBeGreaterThan(0)
+    // Without 0398 the clamp bottoms out at its floor of 1
+    // (100,000 - 5,000 margin - 505,674 < 0) and every turn stall-guards.
+    expect((hits[hits.length - 1].body as { max_tokens?: number }).max_tokens).toBeGreaterThan(1)
+  }),
+)
+
+it.instance("0398: a same-model auto-compaction summary total under the window does not poison the output budget", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    // The window-3 forensic shape (BUG_CLAMP_POST_COMPACTION_POISON): an
+    // auto-compaction ran at the near-full tail, so the summary turn's total
+    // (pre-compaction chain + the summary's own generation) landed UNDER the
+    // 100K window but ABOVE the 0.95*context tail margin (95,000). The
+    // "historicalTotal > window" test does not fire, so without the summary
+    // clause the clamp still saw 98,000 and bottomed out at 1
+    // (100,000 - 5,000 - 98,000 = -3,000).
+    const userID = MessageID.ascending()
+    yield* sessions.updateMessage({
+      id: userID,
+      role: "user",
+      sessionID: chat.id,
+      agent: "build",
+      model: ref,
+      time: { created: Date.now() },
+    })
+    yield* sessions.updateMessage({
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: userID,
+      sessionID: chat.id,
+      mode: "build",
+      agent: "build",
+      cost: 0,
+      path: { cwd: "/tmp", root: "/tmp" },
+      tokens: { total: 98_000, input: 5_000, output: 5_000, reasoning: 0, cache: { read: 88_000, write: 0 } },
+      modelID: ref.modelID,
+      providerID: ref.providerID,
+      time: { created: Date.now(), completed: Date.now() },
+      summary: true,
+      finish: "stop",
+    })
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    expect(result).toBeDefined()
+    yield* llm.text("world")
+
+    const turned = yield* prompt.loop({ sessionID: chat.id })
+    expect(turned.info.role).toBe("assistant")
+    const hits = yield* llm.hits
+    expect(hits.length).toBeGreaterThan(0)
+    // Without the summary clause the clamp bottoms out at its floor of 1 and
+    // every post-compaction turn stall-guards.
+    expect((hits[hits.length - 1].body as { max_tokens?: number }).max_tokens).toBeGreaterThan(1)
+  }),
+)
+
 it.instance("loop calls LLM and returns assistant message", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
