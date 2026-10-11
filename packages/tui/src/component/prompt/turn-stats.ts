@@ -341,9 +341,16 @@ export function streamedChars(parts: Part[] | undefined): number {
     if (p.type === "reasoning") chars += p.text.length
     else if (p.type === "text") chars += p.text.length
     else if (p.type === "tool") {
+      // 0399: count a tool part ONLY while its args are actually streaming
+      // (pending raw chars growing). A completed tool part's structured
+      // input is a delivery artifact - for a non-tool-streaming model the
+      // whole call was generated over seconds but arrives as one event, so
+      // counting it measured an unmeasurable burst as tens of thousands of
+      // tok/s (and could defer the rate's first real measurement
+      // indefinitely, hiding the display). streamRateFor re-baselines its
+      // window when this count shrinks.
       const s = p.state
       if (s.status === "pending") chars += s.raw.length
-      else chars += JSON.stringify(s.input ?? {}).length
     }
   }
   return chars
@@ -425,14 +432,6 @@ type StreamRateState = {
   lastTime: number
   smoothed: number
   streamKey: string
-  // True while growth keeps arriving more than a second apart (a sparse
-  // streak). The stall re-anchor below is one-shot per streak: the first
-  // >1s gap is treated as a pause (freeze, re-anchor), but a SECOND
-  // consecutive sparse growth means the stream is not paused - it is
-  // genuinely slow (large prefill starving decode) - so subsequent sparse
-  // chunks MEASURE the inter-chunk delta, the true throughput, instead of
-  // freezing at a stale fast value forever.
-  sparse: boolean
 }
 
 // EMA time constant for the smoothed tokens/s: the display chases the raw
@@ -456,36 +455,42 @@ const streamRateStates = new Map<string, StreamRateState>()
  * Streaming tokens/s for a turn: a rolling 1-second window over the turn's
  * streamed text chars (3 chars/token), sampled ONLY when the char count
  * grows - i.e. while text is actually arriving. Between samples the last
- * computed rate is returned unchanged, so the display FREEZES during
- * tool-call and TTFT stalls (no output arriving) instead of decaying. The
- * freeze is keyed to the STREAMING STATE, not time: each mid-turn LLM call is
- * one streaming episode (a new assistant message), and passing the current
- * in-flight step id as `streamKey` means any episode change - a step
- * completing or a new one beginning - drops the window and freezes the EMA
- * through the change. The anchor sample of an episode is seeded by the FIRST
- * GROWTH CHUNK (the first streaming token after its TTFT), NOT by the
- * episode change: an anchor timestamped at the change sits at the START of
- * the next prefill, so the first post-resume delta would divide by
- * (TTFT + stream time) and the EMA plunges toward 0 - the rate "climbs back
- * up from 0" every tool-call resume (ditching BUG_FOOTER_LIVE_STATS_STALE's
- * immediate-delta seeding, which traded TTFT contamination for a "<2 chunks
- * looks frozen" shortness on very short streams). The first growth anchors
- * (zero streaming elapsed time for the EMA, no delta for the window) -
- * a new stream's slow-start raw would otherwise drag the value down with a
- * near-1 alpha over the TTFT. Tracking resumes from the second growth chunk,
- * with real inter-chunk elapsed time, moving from the frozen value. A growth
- * chunk landing >1s after the last MEASURED one is a PAUSE (tool call / TTFT
- * / user thinking): the epilogue chunk re-anchors the window once so the
- * resume never divides across the pause. But a SECOND consecutive sparse
- * growth means the stream is not paused - it is genuinely slow (a large
- * prefill starving the endpoint's decode drops the trickle to 2-4 tok/s while
- * text keeps arriving) - and every such subsequent chunk MEASURES its
- * inter-chunk delta, the true throughput, so the rate tracks down instead of
- * freezing at the stale fast value; sub-second delivery clears the sparse
- * flag and re-arms the re-anchor. The EMA spans the WHOLE agent turn (shared
- * state); only a new turn key starts fresh. The rate is the tokens received
- * over the trailing ~1s: before the window fills it is the average since
- * streaming started.
+ * computed rate is returned unchanged, so the display FREEZES at the pause
+ * boundary instead of decaying (no output arriving = nothing to measure).
+ *
+ * 0399 window semantics (user direction 2026-10-11, replacing the 0225 stall
+ * re-anchor + 0253 sparse-trickle rules): the ONLY excluded time is between
+ * semi-turns. A semi-turn = one streaming episode (one mid-turn LLM call,
+ * keyed by the in-flight step id). While the agent is responding - the
+ * semi-turn is not over - EVERY growth chunk measures its true inter-chunk
+ * delta, stutters included: a >1s in-episode gap (decode starved by a
+ * concurrent prefill, a mid-stream reasoning pause) is real client-observed
+ * throughput and drags the display to it. The window pauses at END OF STREAM
+ * (the episode change) and restarts at the NEXT stream's first received
+ * token: the episode change drops the time window and freezes the EMA (the
+ * value holds across tool execution + prefill regardless of gap length), and
+ * the first growth chunk of the new episode re-anchors with its own arrival
+ * time - never an anchor stamped at the episode change, which sits at the
+ * START of the next prefill and would divide the resumed stream's first
+ * delta by TTFT + stream time, plunging the EMA toward 0 ("climbing back up
+ * from 0" after every tool call, BUG_TUI_LIVE_RATE_TTFT_DIP). The SECOND
+ * growth chunk of an episode produces the first real measurement over clean
+ * inter-chunk time.
+ *
+ * The rate never sees tool-call delivery bursts: `streamedChars` counts a
+ * tool part only while its args are actually STREAMING (`status === "pending"`,
+ * raw chars growing). A completed tool part's structured input is a delivery
+ * artifact - for a non-tool-streaming model the whole call was generated over
+ * seconds but arrives as one event, so counting it would measure an
+ * unmeasurable burst as tens of thousands of tok/s (and defer the first real
+ * measurement indefinitely, hiding the rate). When a tool part completes its
+ * raw chars drop OUT of the counter: that shrink is a bookkeeping shift, not
+ * a stream event - every window sample shifts down by the same delta (all
+ * measured deltas stay exact) and no sample is taken.
+ *
+ * The EMA spans the WHOLE agent turn (shared state); only a new turn key
+ * starts fresh. The rate is the tokens received over the trailing ~1s: before
+ * the window fills it is the average since streaming started.
  */
 export function streamRateFor(
   turnKey: string,
@@ -495,72 +500,57 @@ export function streamRateFor(
 ): number {
   let st = streamRateStates.get(turnKey)
   if (!st) {
-    st = { cumulative: 0, samples: [], lastRate: 0, lastTime: 0, smoothed: 0, streamKey: "", sparse: false }
+    st = { cumulative: 0, samples: [], lastRate: 0, lastTime: 0, smoothed: 0, streamKey: "" }
     streamRateStates.set(turnKey, st)
     if (streamRateStates.size > 64) streamRateStates.delete(streamRateStates.keys().next().value as string)
   }
-  // A new streaming episode (a step completed, or a new one began): the old
-  // window belongs to a stream that ended. Drop the time window but keep the
-  // frozen EMA and the cumulative char count, and DO NOT seed a timestamped
-  // anchor here. An anchor stamped at the episode change sits at the START of
-  // the next prefill: a tool-call resume (worst after a read - the injected
-  // context makes the next TTFT long) would then divide its first growth
-  // delta by TTFT + stream time and the EMA plunges toward 0, "climbing back
-  // up" over the next chunks (BUG_TUI_LIVE_RATE_TTFT_DIP). The first growth
+  // END OF STREAM (the semi-turn boundary): the old window belongs to a
+  // stream that ended. Drop the time window but keep the frozen EMA and the
+  // cumulative char count, and DO NOT seed a timestamped anchor here. An
+  // anchor stamped at the episode change sits at the START of the next
+  // prefill: a tool-call resume (worst after a read - the injected context
+  // makes the next TTFT long) would then divide its first growth delta by
+  // TTFT + stream time and the EMA plunges toward 0, "climbing back up"
+  // over the next chunks (BUG_TUI_LIVE_RATE_TTFT_DIP). The first growth
   // chunk of the new episode anchors the window with ITS OWN arrival time
-  // (the anchor branch below) so the rate only resumes at the first streaming
-  // token, measured over clean inter-chunk time.
+  // (the anchor branch below) so the rate only restarts at the first
+  // received token, measured over clean inter-chunk time.
   if (streamKey !== st.streamKey) {
     st.streamKey = streamKey
     st.samples = []
     st.cumulative = chars
     st.lastTime = now
-    st.sparse = false
+    return st.smoothed
+  }
+  // COUNTER SHRINK: a tool part's streamed raw dropped out of the count (its
+  // status left "pending" - 0399 counts only actually-streaming tool chars).
+  // A bookkeeping shift, not a stream event: shift every window sample down
+  // by the same delta so all measured deltas stay exact, re-baseline, and
+  // take no sample. (Without this the window baselines would hold the
+  // dropped chars and every later growth would under-measure until the real
+  // stream caught up - or, pre-0399, the completed-tool JSON would ENTER the
+  // count as one burst chunk and spike the rate.)
+  if (chars < st.cumulative) {
+    const drop = st.cumulative - chars
+    for (const s of st.samples) s[1] -= drop
+    st.cumulative = chars
     return st.smoothed
   }
   if (chars > st.cumulative) {
-    // STALL RE-ANCHOR (BUG_FOOTER_LIVE_STATS_STALE): more than a second
-    // passed since the last MEASURED growth chunk - a real pause (tool call
-    // / TTFT / user thinking) happened. Without this check
-    // the first post-gap chunk measures dt across the ENTIRE stall and drags
-    // smoothed toward 0, so the rate "climbs back up from 0" after every tool
-    // call. Re-anchor the window so the resume measures from the resume, not
-    // across the gap. Batch delivery stays sub-second (the window widens to
-    // 1024ms only while frames are actually rendering), so live streaming
-    // never reads as a stall. (The first-ever turn has no samples yet - the
-    // anchor branch below handles it.)
-    //
-    // The re-anchor is ONE-SHOT per sparse streak: while growth chunks keep
-    // landing >1s apart the stream is not paused - a LARGE PREFILL on the
-    // endpoint is starving each decode step (the trickle drops to 2-4 tok/s
-    // but text keeps arriving). Re-anchoring every such chunk would discard
-    // every measurement and freeze the footer at the stale pre-prefill rate
-    // forever. So only the FIRST gap re-anchors; a second consecutive sparse
-    // growth falls through and measures the inter-chunk delta, which IS the
-    // true slow throughput, dragging the display down to it. Sub-second
-    // delivery (below, `gapClosed`) clears the flag so a fresh pause later
-    // re-anchors again.
-    if (st.samples.length > 0 && now - st.lastTime > 1000) {
-      if (!st.sparse) {
-        st.samples = [[now, chars]]
-        st.cumulative = chars
-        st.lastTime = now
-        st.sparse = true
-        return st.smoothed
-      }
-    }
     // The first sample of an episode anchors the window: no delta to measure
-    // and zero streaming elapsed time, so it must not move the value (the new
-    // stream's slow-start raw + near-1 alpha over the TTFT would drag the EMA
-    // down). Tracking resumes on the second sample.
+    // and zero streaming elapsed time, so it must not move the value (the
+    // new stream's slow-start raw + near-1 alpha over the TTFT would drag
+    // the EMA down). Tracking resumes on the second sample. 0399: growth
+    // landing >1s after the last measured chunk is NOT special-cased
+    // anymore - within a semi-turn every gap is real client-observed
+    // throughput (a stutter) and measures as such; the only excluded time
+    // is between semi-turns (the episode change above).
     if (st.samples.length === 0) {
       st.samples = [[now, chars]]
       st.cumulative = chars
       st.lastTime = now
-      st.sparse = false
       return st.smoothed
     }
-    const gapClosed = now - st.lastTime <= 1000
     st.cumulative = chars
     st.samples.push([now, chars])
     const cutoff = now - 1000
@@ -576,9 +566,6 @@ export function streamRateFor(
       const alpha = 1 - Math.exp(-(now - st.lastTime) / STREAM_RATE_TAU_MS)
       st.smoothed += alpha * (st.lastRate - st.smoothed)
     }
-    // Delivery density returned to sub-second: the sparse streak is over, so
-    // a future pause re-anchors fresh again.
-    if (gapClosed) st.sparse = false
     st.lastTime = now
   }
   return st.smoothed
