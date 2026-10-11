@@ -134,6 +134,15 @@ export async function create(input: {
     new StreamMessageWriter(input.server.process.stdin as any),
   )
   input.server.process.stderr?.resume()
+  // Reject pending requests when the server process dies. vscode-jsonrpc
+  // settles pending requests only on explicit teardown, and a grandchild
+  // holding the stdout pipe keeps the stream open after death, so an
+  // in-flight request would otherwise pend forever and wedge the turn.
+  const exited = (input.server.process as { exited?: Promise<number> }).exited
+  exited?.then(
+    () => connection.dispose(),
+    () => connection.dispose(),
+  )
   // --- Connection state ---
 
   const pushDiagnostics = new Map<string, Diagnostic[]>()

@@ -236,6 +236,29 @@ function handle(raw) {
     return
   }
 
+  if (data.method === "test/silent") {
+    // Deliberately never responds; used to pin pending-request behavior.
+    return
+  }
+
+  if (data.method === "test/exit") {
+    process.exit(0)
+  }
+
+  if (data.method === "test/hold-pipe-and-exit") {
+    // Spawn a grandchild that inherits stdout so the pipe write-end outlives
+    // this process, then exit. The client's stdout stream never closes.
+    const { spawn } = require("child_process")
+    const holdMs = (data.params && data.params.holdMs) || 10000
+    const child = spawn(
+      process.execPath,
+      ["-e", `setTimeout(() => {}, ${holdMs})`],
+      { stdio: ["ignore", "inherit", "inherit"] },
+    )
+    child.unref()
+    process.exit(0)
+  }
+
   if (typeof data.id !== "undefined") {
     sendResponse(data.id, null)
   }
