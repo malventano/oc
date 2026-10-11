@@ -50,6 +50,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Truncate } from "@/tool/truncate"
 import { Image } from "@/image/image"
 import { decodeDataUrl } from "@/util/data-url"
+import { Token } from "@/util/token"
 import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
@@ -1744,7 +1745,7 @@ const layer = Layer.effect(
               // auto-compaction trigger the context sits at window - output
               // limit, so an uncapped summary turn (full output budget)
               // exceeds the endpoint and falls back to the legacy method.
-              currentContextTokens: lastFinished?.tokens?.total,
+              currentContextTokens: clampContextTokens(lastFinished?.tokens?.total, model, modelMsgs),
             })
 
             if (handle.loopGuardFired) {
@@ -2353,6 +2354,29 @@ export const CommandInput = Schema.Struct({
 export type CommandInput = Schema.Schema.Type<typeof CommandInput>
 
 /** @internal Exported for testing */
+// 0398: the maxOutputTokens clamp input must reflect the prompt ACTUALLY
+// sent, not the historical peak. lastFinished.tokens.total is the previous
+// turn's provider-reported request size; after a compaction the newest
+// message is the summary turn, whose total is the FULL pre-compaction chain
+// (the summary request reads everything). On a model whose window is
+// smaller than that historical total the clamp bottoms out at its floor of
+// 1 (BUG_CLAMP_POST_COMPACTION_POISON): a 1-token budget that stall-guards
+// every retry and never recovers within the turn. When the historical total
+// cannot fit the active window the chain must have been compacted/truncated
+// to fit, so estimate the chain being sent now (chars/4 under-count errs
+// generous, the safe direction: the near-full case is owned by the overflow
+// gate, while over-clamping to 1 strands the session).
+export function clampContextTokens(
+  historicalTotal: number | undefined,
+  model: Provider.Model,
+  modelMsgs: unknown,
+): number | undefined {
+  if (historicalTotal && model.limit.context && historicalTotal > model.limit.context) {
+    return Token.estimate(JSON.stringify(modelMsgs))
+  }
+  return historicalTotal
+}
+
 export function createStructuredOutputTool(input: {
   schema: Record<string, any>
   onSuccess: (output: unknown) => void
