@@ -96,6 +96,7 @@ import { createTuiAttention } from "./attention"
 import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
+import { wrapHighlightOnce } from "./util/highlight-dedupe"
 import { disposeTerminalDimensions, initTerminalDimensions } from "./util/terminal-dimensions"
 import { cliErrorMessage, errorFormat } from "./util/error"
 
@@ -234,40 +235,18 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       // controller. The per-view size heuristics are gone - one mechanism everywhere.
       const treeSitterClient = getTreeSitterClient()
       const originalHighlightOnce = treeSitterClient.highlightOnce.bind(treeSitterClient)
-      // Content-identity dedupe: highlightOnce is pure in (filetype, content),
-      // so a call whose content equals the last one for that filetype reuses the
-      // result instead of another worker round trip. Kills the pre-stream
-      // pile-up where the flush loop re-highlights an unchanged element per
-      // flush while the worker spins up (the 243-call front bump).
-      const lastHighlights = new Map<string, { content: string; result: any }[]>()
-      treeSitterClient.highlightOnce = (async (content: string, filetype: string) => {
-        // Two slots per filetype: surfaces with the SAME filetype but DIFFERENT
-        // stable content (e.g. prompt echo + reasoning element) alternate, and a
-        // single slot would thrash - two keeps both hot.
-        const list = lastHighlights.get(filetype)
-        if (list) {
-          for (let i = 0; i < list.length; i++) {
-            if (list[i].content === content) {
-              if (i > 0) {
-                const [entry] = list.splice(i, 1)
-                list.unshift(entry)
-              }
-              return list[0].result
-            }
-          }
-        }
-        const start = performance.now()
-        const result = await originalHighlightOnce(content, filetype)
-        const workerMs = performance.now() - start
-        onStreamHighlight(performance.now(), workerMs)
-        if (!list) {
-          lastHighlights.set(filetype, [{ content, result }])
-        } else {
-          list.unshift({ content, result })
-          if (list.length > 2) list.pop()
-        }
-        return result
-      }) as typeof treeSitterClient.highlightOnce
+      // Content-identity dedupe + in-flight promise sharing (0400): highlightOnce
+      // is pure in (filetype, content), so a call whose content equals the last
+      // resolved one for that filetype reuses the result instead of another
+      // worker round trip (kills the pre-stream pile-up, the 243-call front
+      // bump) - and a BURST of identical requests issued inside one worker
+      // latency shares the single pending promise instead of queueing a full
+      // O(n) parse each (29 x 375ms measured live; the worker saturation that
+      // ratcheted the flush window and froze the pane, BUG_TUI_STREAM_STALL.md).
+      treeSitterClient.highlightOnce = wrapHighlightOnce(
+        originalHighlightOnce,
+        onStreamHighlight,
+      ) as typeof treeSitterClient.highlightOnce
       {
         // Fine settle (0307): the window tracks the measured load continuously -
         // window = 1.1 * load (the 1.1x keeps ahead of the O(n) worker growth;
