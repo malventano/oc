@@ -5130,8 +5130,11 @@ function Task(props: ToolProps) {
       const usage = mirrorUsage()
       const parts = [
         Locale.duration(mirrorElapsed()),
-        `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok`,
-        mirrorRate() > 0 ? `${formatCount(Math.round(mirrorRate()))}/s` : undefined,
+        // 0408 (user direction): the rate renders as the footer's "(x/s)"
+        // suffix on the tok segment, not a separate dot-separated segment.
+        tokens.reasoning + tokens.output > 0
+          ? `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok${mirrorRate() > 0 ? ` (${formatCount(Math.round(mirrorRate()))}/s)` : ""}`
+          : undefined,
         `${mirrorTools()} tool${mirrorTools() === 1 ? "" : "s"}`,
         usage?.context,
         usage?.cost,
@@ -5159,9 +5162,8 @@ function Task(props: ToolProps) {
       const parts = [
         Locale.duration(duration()),
         tokens.reasoning + tokens.output > 0
-          ? `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok`
+          ? `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok${rate > 0 ? ` (${formatCount(Math.round(rate))}/s)` : ""}`
           : undefined,
-        rate > 0 ? `${formatCount(Math.round(rate))}/s` : undefined,
         `${mirrorTools()} tool${mirrorTools() === 1 ? "" : "s"}`,
         usage?.context,
         usage?.cost,
