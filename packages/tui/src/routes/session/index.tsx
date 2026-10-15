@@ -4897,12 +4897,10 @@ function Task(props: ToolProps) {
   // The content-column width (sidebar-aware, via the session context) - the
   // raw terminal width ignores the sidebar and the line wraps (0390).
   const ctx = use()
-  // The scrollbox reserves viewport paddingRight 1 + the scrollbar track when
-  // the scrollbar is visible - ctx.width does not include that reserve, and a
-  // max-length running line wrapped its last ~2 cols onto the next row
-  // (2026-10-15 window-9, 398K-token session = scrollbar always visible).
+  // The scrollbox reserves viewport paddingRight 1 when the scrollbar is
+  // visible (kv toggle, default hidden) - ctx.width does not include it.
   const kv = useKV()
-  const scrollbarReserve = createMemo(() => (kv.get("scrollbar_visible", false) ? 2 : 0))
+  const scrollbarReserve = createMemo(() => (kv.get("scrollbar_visible", false) ? 1 : 0))
 
   onMount(() => {
     const sessionID = stringValue(props.metadata.sessionId)
@@ -5232,13 +5230,17 @@ export function formatSubagentToolcalls(count: number) {
 }
 
 // Line 2 (running) of the parent-view subagent block (0388, cap corrected
-// 0401): the child's current tool on one row. The whole line is truncated
+// 0401/0406): the child's current tool on one row. The whole line is truncated
 // by DISPLAY width (Bun.stringWidth) to the row's real chrome budget:
 // paddingLeft 3 + spinner glyph 1 + row gap 1 = 5 columns (the
-// animations-disabled fallback "⋯ " is also 3 + 2 = 5). The prefix is part
-// of the measured string, so wide tool names and wide command glyphs
-// (CJK/emoji) shift the visible command rather than overflowing - the line
-// cannot wrap. Multi-line commands collapse to one visual row.
+// animations-disabled fallback "⋯ " is also 3 + 2 = 5), plus ONE guard
+// column: a line that EXACTLY fills the text element's wrap width emits a
+// phantom empty wrap row - the extra LF at the bottom of the block (window 9,
+// 2026-10-15: capped line -> extra blank; shorter line -> none). Plus the
+// scrollbar viewport pad (1 col when visible). The prefix is part of the
+// measured string, so wide tool names and wide command glyphs (CJK/emoji)
+// shift the visible command rather than overflowing - the line cannot wrap.
+// Multi-line commands collapse to one visual row.
 export function formatSubagentRunningLine(
   tool: string,
   title: string | undefined,
@@ -5247,7 +5249,14 @@ export function formatSubagentRunningLine(
 ) {
   const prefix = `↳ ${Locale.titlecase(tool)} `
   const flat = (title ?? "").replace(/\s*\n\s*/g, " ")
-  return Locale.truncateWidth(prefix + flat, Math.max(20, width - 5 - reserve))
+  // 0406/0410: the guard targets the MEASURE boundary, not the paint one.
+  // The native text measure wraps at width-1 (the documented Zig-measure
+  // residual), so a line landing at the render edge still measures one row
+  // tall - the block gets a phantom blank row at its bottom ("extra LF where
+  // the middle line goes to the end", window 9 2026-10-17, reproduced with a
+  // one-column guard from 0406 in place). Two guard columns clear the
+  // measure boundary: chrome 5 + measure drift 1 + this guard 2.
+  return Locale.truncateWidth(prefix + flat, Math.max(20, width - 8 - reserve))
 }
 
 export function formatSubagentTitle(agent: string, description: string, background: boolean) {
