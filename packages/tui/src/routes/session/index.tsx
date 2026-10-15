@@ -5085,15 +5085,23 @@ function Task(props: ToolProps) {
       // counters the turn footer retains - duration, tokens (rate), tools.
       // The rate comes from the stream-rate state keyed by this call's turn
       // (zero when it was evicted or never streamed while watched).
+      // 0404 (user notes 2026-10-15): the completed line keeps the running
+      // line's exact tail - duration · tok · rate · N tools · context · cost
+      // - so completion no longer DROPS the context pair + cost and swaps in
+      // a redundant leading "N toolcalls" (the trailing "N tools" is the
+      // same count and wins; the tools segment stayed, the leading one goes).
       const tokens = mirrorTokens()
       const rate = mirrorRate()
+      const usage = mirrorUsage()
       const parts = [
-        formatCompletedSubagentDetail(tools().length, Locale.duration(duration())),
+        Locale.duration(duration()),
         tokens.reasoning + tokens.output > 0
           ? `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok`
           : undefined,
         rate > 0 ? `${formatCount(Math.round(rate))}/s` : undefined,
         `${mirrorTools()} tool${mirrorTools() === 1 ? "" : "s"}`,
+        usage?.context,
+        usage?.cost,
       ].filter((x) => x !== undefined && x !== "")
       let detail = `↳ ${parts.join(" · ")}`
       const calls = callsTotal()
@@ -5183,11 +5191,6 @@ export function formatSubagentTitle(agent: string, description: string, backgrou
 
 export function formatSubagentRetry(attempt: number, message: string) {
   return `Retrying (attempt ${attempt}) · ${message}`
-}
-
-export function formatCompletedSubagentDetail(toolcalls: number, duration: string) {
-  if (toolcalls === 0) return duration
-  return `${formatSubagentToolcalls(toolcalls)} · ${duration}`
 }
 
 type ExecuteCall = { tool: string; status: "running" | "completed" | "error"; input?: Record<string, unknown> }

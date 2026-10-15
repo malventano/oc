@@ -3,7 +3,6 @@ import { createSignal, For, Show } from "solid-js"
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
 import {
-  formatCompletedSubagentDetail,
   formatSubagentRetry,
   formatSubagentRunningLine,
   formatSubagentTitle,
@@ -275,9 +274,6 @@ describe("TUI inline tool wrapping", () => {
   })
 
   test("formats completed subagent toolcall details", () => {
-    expect(formatCompletedSubagentDetail(0, "501ms")).toBe("501ms")
-    expect(formatCompletedSubagentDetail(1, "501ms")).toBe("1 toolcall · 501ms")
-    expect(formatCompletedSubagentDetail(2, "501ms")).toBe("2 toolcalls · 501ms")
     expect(formatSubagentToolcalls(0)).toBe("0 toolcalls")
   })
 
