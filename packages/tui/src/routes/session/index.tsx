@@ -5067,7 +5067,10 @@ function Task(props: ToolProps) {
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
     const cost = sync.session.get(sessionID() ?? "")?.cost ?? 0
     const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
-    return { pct, cost: cost > 0 ? money.format(cost) : undefined }
+    // 0404: the context pair matches the footbar's - "12.3K (38%)" (the k
+    // count + pct), not the bare percent.
+    const context = pct ? `${formatCount(tokens)} (${pct})` : formatCount(tokens)
+    return { context, pct, cost: cost > 0 ? money.format(cost) : undefined }
   })
   const mirrorElapsed = createMemo(() => {
     if (!isRunning()) return 0
@@ -5132,7 +5135,7 @@ function Task(props: ToolProps) {
         `${formatCount(tokens.reasoning)}+${formatCount(tokens.output)}=${formatCount(tokens.reasoning + tokens.output)} tok`,
         mirrorRate() > 0 ? `${formatCount(Math.round(mirrorRate()))}/s` : undefined,
         `${mirrorTools()} tool${mirrorTools() === 1 ? "" : "s"}`,
-        usage?.pct,
+        usage?.context,
         usage?.cost,
       ].filter((x) => x !== undefined && x !== "")
       content.push(`↳ ${parts.join(" · ")}`)
