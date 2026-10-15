@@ -8,6 +8,7 @@ import { getStreamBatchWindow } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
+import { formatCount } from "../../component/prompt/turn-stats"
 import { abbreviateHome } from "../../runtime"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useCommandShortcut, useOpencodeKeymap } from "../../keymap"
@@ -55,7 +56,9 @@ export function SubagentFooter() {
     })
 
     return {
-      context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
+      // Footbar parity (0404): the context pair renders exactly as the main
+      // footbar's - "12.3K (38%)" (formatCount), not the raw Locale.number.
+      context: pct ? `${formatCount(tokens)} (${pct})` : formatCount(tokens),
       cost: cost > 0 ? money.format(cost) : undefined,
     }
   })
