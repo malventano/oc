@@ -5,6 +5,7 @@ import { testRender, type JSX } from "@opentui/solid"
 import {
   formatCompletedSubagentDetail,
   formatSubagentRetry,
+  formatSubagentRunningLine,
   formatSubagentTitle,
   formatSubagentToolcalls,
   InlineToolRow,
@@ -289,6 +290,44 @@ describe("TUI inline tool wrapping", () => {
 
   test("keeps retry status ahead of wrapping messages", () => {
     expect(formatSubagentRetry(2, "Rate limited by provider")).toBe("Retrying (attempt 2) · Rate limited by provider")
+  })
+
+  test("caps the running subagent tool line inside the row chrome (0401)", () => {
+    const long = "z".repeat(300)
+    // width 72: prefix "↳ Bash " (7) + cap 60 = 67 chars, + 5 chrome = 72 - fits
+    const line = formatSubagentRunningLine("bash", long, 72)
+    expect(line.length).toBe(67)
+    expect(line.startsWith("↳ Bash ")).toBe(true)
+    expect(line.endsWith("…")).toBe(true)
+    // short command passes through, newlines collapse to one visual row
+    expect(formatSubagentRunningLine("bash", "ls -la", 72)).toBe("↳ Bash ls -la")
+    expect(formatSubagentRunningLine("bash", "cd /a\nexport X=1\nls", 72)).toBe("↳ Bash cd /a export X=1 ls")
+    // the prefix is measured, so a wider tool name shifts the cap, not the fit
+    expect(formatSubagentRunningLine("webfetch", long, 72).length).toBe(67)
+    // floor at 20 display columns (prefix included) so ultra-narrow panes
+    // still show something
+    expect(Bun.stringWidth(formatSubagentRunningLine("bash", long, 10))).toBe(20)
+    // the scrollbar reserve (viewport paddingRight 1 + the track) shifts the
+    // cap - a visible scrollbar took the last ~2 cols live (window 9)
+    expect(formatSubagentRunningLine("bash", long, 72, 2).length).toBe(65)
+  })
+
+  test("the running subagent line never exceeds its column budget, wide glyphs included (0401)", () => {
+    const budget = 72 - 5
+    // wide chars count 2 columns: char-count truncation would overflow, the
+    // display-width cut must not
+    const wide = "echo 汉字测试".repeat(60)
+    for (const [tool, title] of [
+      ["bash", wide],
+      ["bash", "z".repeat(300)],
+      ["webfetch", "f".repeat(300) + "汉"],
+    ] as const) {
+      const line = formatSubagentRunningLine(tool, title, 72)
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(budget)
+      expect(line).not.toContain("\n")
+    }
+    // the composed line (prefix included) is what gets measured
+    expect(Bun.stringWidth(formatSubagentRunningLine("webfetch", wide, 72))).toBeLessThanOrEqual(budget)
   })
 
   test("snapshots consecutive grep, glob, and read rows at a narrow width", async () => {
