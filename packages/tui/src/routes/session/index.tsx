@@ -4897,6 +4897,12 @@ function Task(props: ToolProps) {
   // The content-column width (sidebar-aware, via the session context) - the
   // raw terminal width ignores the sidebar and the line wraps (0390).
   const ctx = use()
+  // The scrollbox reserves viewport paddingRight 1 + the scrollbar track when
+  // the scrollbar is visible - ctx.width does not include that reserve, and a
+  // max-length running line wrapped its last ~2 cols onto the next row
+  // (2026-10-15 window-9, 398K-token session = scrollbar always visible).
+  const kv = useKV()
+  const scrollbarReserve = createMemo(() => (kv.get("scrollbar_visible", false) ? 2 : 0))
 
   onMount(() => {
     const sessionID = stringValue(props.metadata.sessionId)
@@ -5107,15 +5113,7 @@ function Task(props: ToolProps) {
       if (current()) {
         const state = current()!.state
         const title = state.status === "running" || state.status === "completed" ? state.title : undefined
-        // Width-aware cap (0388/0390): the content column (sidebar-aware)
-        // minus ~10 for the block indent and the arrow - a long Bash command
-        // must never wrap in the parent pane. The full command stays one
-        // click away in the subagent view.
-        const cap = Math.max(20, ctx.width - 10)
-        // Multi-line commands (cd/export/... scripts) carry newlines in the
-        // title - collapse them so the line stays a single visual row.
-        const flat = (title ?? "").replace(/\s*\n\s*/g, " ")
-        content.push(`↳ ${Locale.titlecase(current()!.tool)} ${Locale.truncate(flat, cap)}`)
+        content.push(formatSubagentRunningLine(current()!.tool, title, ctx.width, scrollbarReserve()))
       } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
       // The mirror line (0388): the child's live footer counters.
       const tokens = mirrorTokens()
@@ -5211,6 +5209,25 @@ function Task(props: ToolProps) {
 
 export function formatSubagentToolcalls(count: number) {
   return `${count} toolcall${count === 1 ? "" : "s"}`
+}
+
+// Line 2 (running) of the parent-view subagent block (0388, cap corrected
+// 0401): the child's current tool on one row. The whole line is truncated
+// by DISPLAY width (Bun.stringWidth) to the row's real chrome budget:
+// paddingLeft 3 + spinner glyph 1 + row gap 1 = 5 columns (the
+// animations-disabled fallback "⋯ " is also 3 + 2 = 5). The prefix is part
+// of the measured string, so wide tool names and wide command glyphs
+// (CJK/emoji) shift the visible command rather than overflowing - the line
+// cannot wrap. Multi-line commands collapse to one visual row.
+export function formatSubagentRunningLine(
+  tool: string,
+  title: string | undefined,
+  width: number,
+  reserve = 0,
+) {
+  const prefix = `↳ ${Locale.titlecase(tool)} `
+  const flat = (title ?? "").replace(/\s*\n\s*/g, " ")
+  return Locale.truncateWidth(prefix + flat, Math.max(20, width - 5 - reserve))
 }
 
 export function formatSubagentTitle(agent: string, description: string, background: boolean) {

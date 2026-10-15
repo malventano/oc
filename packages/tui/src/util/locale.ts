@@ -63,6 +63,21 @@ export function truncate(str: string, len: number): string {
   return str.slice(0, len - 1) + "…"
 }
 
+// Display-width truncate: caps to a terminal COLUMN budget, not a character
+// count - wide glyphs (CJK, emoji) count 2+ columns, so char-count truncation
+// can still overflow and wrap a line that "fits". Measures the composed
+// prefix so the caller doesn't have to budget for it.
+export function truncateWidth(str: string, maxWidth: number): string {
+  if (Bun.stringWidth(str) <= maxWidth) return str
+  const ellipsis = "…"
+  let out = ""
+  for (const ch of str) {
+    if (Bun.stringWidth(out + ch + ellipsis) > maxWidth) break
+    out += ch
+  }
+  return out + ellipsis
+}
+
 export function truncateLeft(str: string, len: number): string {
   if (str.length <= len) return str
   return "…" + str.slice(-(len - 1))
