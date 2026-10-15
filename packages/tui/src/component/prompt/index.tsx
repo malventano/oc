@@ -2137,35 +2137,40 @@ export function Prompt(props: PromptProps) {
                       </box>
                     </Match>
                    </Switch>
-                   <Show when={subagentsText()}>
-                     <box
-                       backgroundColor={chipHover() === "subagents" ? theme.backgroundElement : undefined}
-                       onMouseOver={() => setChipHover("subagents")}
-                       onMouseOut={() => setChipHover(null)}
-                       onMouseUp={() => {
-                         if (renderer.getSelection()?.getSelectedText()) return
-                         const a = activeSubagents()
-                         if (a?.sid) route.navigate({ type: "session", sessionID: a.sid })
-                       }}
-                     >
-                       <text fg={chipHover() === "subagents" ? theme.secondary : theme.textMuted} wrapMode="none">
-                         · {subagentsText()}
-                       </text>
-                     </box>
-                   </Show>
-                   <box
-                     backgroundColor={chipHover() === "commands" ? theme.backgroundElement : undefined}
-                     onMouseOver={() => setChipHover("commands")}
-                     onMouseOut={() => setChipHover(null)}
-                     onMouseUp={() => {
-                       if (renderer.getSelection()?.getSelectedText()) return
-                       keymap.dispatchCommand("command.palette.show")
-                     }}
-                   >
-                     <text fg={chipHover() === "commands" ? theme.secondary : theme.text} wrapMode="none">
-                       <span style={{ fg: theme.textMuted }}>· </span>{paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
-                     </text>
-                   </box>
+                    <Show when={subagentsText()}>
+                      {/* 0407: the separator renders OUTSIDE the hoverable box -
+                          the chip's hover highlight (fg + backgroundElement) must
+                          not extend into the preceding space + dot. */}
+                      <text fg={theme.textMuted} wrapMode="none">·</text>
+                      <box
+                        backgroundColor={chipHover() === "subagents" ? theme.backgroundElement : undefined}
+                        onMouseOver={() => setChipHover("subagents")}
+                        onMouseOut={() => setChipHover(null)}
+                        onMouseUp={() => {
+                          if (renderer.getSelection()?.getSelectedText()) return
+                          const a = activeSubagents()
+                          if (a?.sid) route.navigate({ type: "session", sessionID: a.sid })
+                        }}
+                      >
+                        <text fg={chipHover() === "subagents" ? theme.secondary : theme.textMuted} wrapMode="none">
+                          {subagentsText()}
+                        </text>
+                      </box>
+                    </Show>
+                    <text fg={theme.textMuted} wrapMode="none">·</text>
+                    <box
+                      backgroundColor={chipHover() === "commands" ? theme.backgroundElement : undefined}
+                      onMouseOver={() => setChipHover("commands")}
+                      onMouseOut={() => setChipHover(null)}
+                      onMouseUp={() => {
+                        if (renderer.getSelection()?.getSelectedText()) return
+                        keymap.dispatchCommand("command.palette.show")
+                      }}
+                    >
+                      <text fg={chipHover() === "commands" ? theme.secondary : theme.text} wrapMode="none">
+                        {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
+                      </text>
+                    </box>
                  </Match>
                  <Match when={store.mode === "shell"}>
                    <HintChip hover={busyHintHover} setHover={setBusyHintHover} id="esc" onActivate={() => cancelShellMode()}>
