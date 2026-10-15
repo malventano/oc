@@ -1,4 +1,5 @@
 diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
+index 701d70d..0de30ee 100644
 --- a/chunk-bun-t2myhmwd.js
 +++ b/chunk-bun-t2myhmwd.js
 @@ -1,4 +1,17 @@
@@ -19,7 +20,7 @@ diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
  var __defProp = Object.defineProperty;
  var __returnValue = (v) => v;
  function __exportSetter(name, newValue) {
-@@ -8624,6 +8637,15 @@
+@@ -8624,6 +8637,15 @@ class TreeSitterClient extends EventEmitter2 {
      const messageId = `oneshot_${this.messageIdCounter++}`;
      return new Promise((resolve3, reject) => {
        this.messageCallbacks.set(messageId, { resolve: resolve3, reject });
@@ -35,7 +36,7 @@ diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
        try {
          this.sendWorkerMessage({
            type: "ONESHOT_HIGHLIGHT",
-@@ -8632,6 +8654,7 @@
+@@ -8632,6 +8654,7 @@ class TreeSitterClient extends EventEmitter2 {
            messageId
          });
        } catch (error) {
@@ -43,7 +44,7 @@ diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
          this.messageCallbacks.delete(messageId);
          reject(error instanceof Error ? error : new Error(String(error)));
        }
-@@ -8703,7 +8726,7 @@
+@@ -8703,7 +8726,7 @@ class TreeSitterClient extends EventEmitter2 {
          const callback = this.messageCallbacks.get(message.messageId);
          if (callback) {
            this.messageCallbacks.delete(message.messageId);
@@ -52,7 +53,7 @@ diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
          }
          return;
        }
-@@ -10972,6 +10995,7 @@
+@@ -10972,6 +10995,7 @@ class TextBuffer {
      if (this._destroyed)
        return;
      this._destroyed = true;
@@ -60,7 +61,7 @@ diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
      this.lib.destroyTextBuffer(this.bufferPtr);
    }
  }
-@@ -14354,11 +14378,19 @@
+@@ -14354,11 +14378,19 @@ class FFIRenderLib {
      const widthMethodCode = widthMethod === "wcwidth" ? 0 : 1;
      const bufferPtr = this.opentui.symbols.createTextBuffer(widthMethodCode);
      if (!bufferPtr) {
@@ -82,9 +83,10 @@ diff --git a/chunk-bun-t2myhmwd.js b/chunk-bun-t2myhmwd.js
    }
    textBufferGetLength(buffer) {
 diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
+index e5e5874..22ea0ca 100644
 --- a/chunk-bun-tkm837n2.js
 +++ b/chunk-bun-tkm837n2.js
-@@ -226,6 +226,7 @@
+@@ -226,6 +226,7 @@ class Renderable extends BaseRenderable {
    _position = {};
    _opacity = 1;
    _flexShrink = 1;
@@ -92,7 +94,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
    _childrenInLayoutOrder = [];
    _childrenInZIndexOrder = [];
    needsZIndexSort = false;
-@@ -519,7 +520,7 @@
+@@ -519,7 +520,7 @@ class Renderable extends BaseRenderable {
      }
      this._width = value;
      this.yogaNode.setWidth(value);
@@ -101,7 +103,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -534,7 +535,7 @@
+@@ -534,7 +535,7 @@ class Renderable extends BaseRenderable {
      }
      this._height = value;
      this.yogaNode.setHeight(value);
@@ -110,7 +112,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -593,6 +594,7 @@
+@@ -593,6 +594,7 @@ class Renderable extends BaseRenderable {
        node.setFlexGrow(0);
      }
      if (options.flexShrink !== undefined) {
@@ -118,7 +120,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
        this._flexShrink = options.flexShrink;
        node.setFlexShrink(options.flexShrink);
      } else {
-@@ -750,6 +752,7 @@
+@@ -750,6 +752,7 @@ class Renderable extends BaseRenderable {
    }
    set flexShrink(shrink) {
      const value = shrink == null ? 1 : shrink;
@@ -126,7 +128,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2772,6 +2775,13 @@
+@@ -2772,6 +2775,13 @@ class TextBufferRenderable extends Renderable {
      this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator;
      this._tabIndicatorColor = options.tabIndicatorColor ? parseColor(options.tabIndicatorColor) : this._defaultOptions.tabIndicatorColor;
      this._truncate = options.truncate ?? this._defaultOptions.truncate;
@@ -140,7 +142,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      this.textBuffer = TextBuffer.create(this._ctx.widthMethod);
      this.textBufferView = TextBufferView.create(this.textBuffer);
      this._firstLineOffset = ctx.claimFirstLineOffset?.(this) ?? 0;
-@@ -2804,6 +2814,10 @@
+@@ -2804,6 +2814,10 @@ class TextBufferRenderable extends Renderable {
      }
    }
    handleScroll(event) {
@@ -151,7 +153,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      if (!event.scroll)
        return;
      const { direction, delta } = event.scroll;
-@@ -2866,6 +2880,14 @@
+@@ -2866,6 +2880,14 @@ class TextBufferRenderable extends Renderable {
      return Math.max(0, this.scrollWidth - this.width);
    }
    updateViewportOffset() {
@@ -166,7 +168,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      if (this.width > 0 && this.height > 0) {
        this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height);
      }
-@@ -2979,6 +3001,12 @@
+@@ -2979,6 +3001,12 @@ class TextBufferRenderable extends Renderable {
    get truncate() {
      return this._truncate;
    }
@@ -179,7 +181,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
    set truncate(value) {
      if (this._truncate !== value) {
        this._truncate = value;
-@@ -2986,7 +3014,24 @@
+@@ -2986,7 +3014,24 @@ class TextBufferRenderable extends Renderable {
        this.requestRender();
      }
    }
@@ -204,7 +206,16 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
      this.requestRender();
-@@ -3155,12 +3200,26 @@
+@@ -3110,6 +3155,8 @@ class CodeRenderable extends TextBufferRenderable {
+   _initialStyledText;
+   _hadInitialContent = false;
+   _lastHighlights = [];
++  _lastAppliedContent;
++  _highlightStartedAt;
+   _baseHighlight;
+   _onHighlight;
+   _onChunks;
+@@ -3155,12 +3202,26 @@ class CodeRenderable extends TextBufferRenderable {
        this._highlightsDirty = true;
        this._highlightSnapshotId++;
        if (this._streaming && this._filetype && !this._drawUnstyledText) {
@@ -232,7 +243,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.textBuffer.setText(value);
        }
        this.setRenderedLineSources(undefined);
-@@ -3248,6 +3307,44 @@
+@@ -3248,6 +3309,44 @@ class CodeRenderable extends TextBufferRenderable {
        this._hadInitialContent = false;
        this._lastHighlights = [];
        this._highlightsDirty = true;
@@ -277,7 +288,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      }
    }
    get treeSitterClient() {
-@@ -3310,7 +3407,10 @@
+@@ -3310,7 +3409,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -289,7 +300,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,8 +3418,30 @@
+@@ -3318,24 +3420,66 @@ class CodeRenderable extends TextBufferRenderable {
        }
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
@@ -321,7 +332,14 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
      }
    }
    async startHighlight() {
-@@ -3329,13 +3451,28 @@
+     const content = this._content;
+     const filetype = this._filetype;
+     const snapshotId = ++this._highlightSnapshotId;
++    // oc-0402 self-heal bookkeeping: when this round trip started (the stale
++    // in-flight arm of the renderSelf guard uses it - 35s > the oc-0382 30s
++    // client timeout, so it only fires when the timeout itself failed to
++    // produce an apply).
++    this._highlightStartedAt = Date.now();
      if (!filetype)
        return;
      const isInitialContent = this._streaming && !this._hadInitialContent;
@@ -351,7 +369,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3354,6 +3491,9 @@
+@@ -3354,6 +3498,9 @@ class CodeRenderable extends TextBufferRenderable {
          }
        }
        if (snapshotId !== this._highlightSnapshotId) {
@@ -361,7 +379,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3378,6 +3518,9 @@
+@@ -3378,6 +3525,9 @@ class CodeRenderable extends TextBufferRenderable {
          const renderedLineSources = this._onChunks ? undefined : this.getConcealLinesSourceMap(content, highlights);
          chunks = await this.transformChunks(chunks, context);
          if (snapshotId !== this._highlightSnapshotId) {
@@ -371,7 +389,13 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
            this.requestRender();
            return;
          }
-@@ -3393,10 +3536,22 @@
+@@ -3390,13 +3540,28 @@ class CodeRenderable extends TextBufferRenderable {
+         this.textBuffer.setText(content);
+         this.setRenderedLineSources(undefined);
+       }
++      // oc-0402: the buffer now holds `content` (colored or raw) - the
++      // renderSelf self-heal guard compares against this.
++      this._lastAppliedContent = content;
        this._shouldRenderTextBuffer = true;
        this._isHighlighting = false;
        this._highlightsDirty = false;
@@ -394,7 +418,54 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          this.requestRender();
          return;
        }
-@@ -3928,6 +4083,19 @@
+@@ -3405,6 +3570,9 @@ class CodeRenderable extends TextBufferRenderable {
+         return;
+       this.textBuffer.setText(content);
+       this.setRenderedLineSources(undefined);
++      // oc-0402: the error fallback painted `content` raw - mark applied so
++      // the self-heal guard does not hot-loop on it.
++      this._lastAppliedContent = content;
+       this._shouldRenderTextBuffer = true;
+       this._isHighlighting = false;
+       this._highlightsDirty = false;
+@@ -3505,6 +3673,36 @@ class CodeRenderable extends TextBufferRenderable {
+     return this.textBuffer.getLineHighlights(lineIdx);
+   }
+   renderSelf(buffer) {
++    // oc-0402-selfheal: the streaming/completed paint depends on an async
++    // highlight apply; every known loss path re-dirties (oc-0391) but a lost
++    // FINAL highlight with no re-trigger left the buffer at the last applied
++    // prefix while the gutter counted every row ("gutters but no text",
++    // BUG_WRITE_STREAM_BLANK_TAIL - stuck minutes past completion). Guard:
++    // any render pass that finds content the last apply never covered, with
++    // nothing in flight (or an in-flight round trip older than 35s - past
++    // the oc-0382 30s timeout, so only when the timeout itself failed to
++    // produce an apply), re-fires the highlight THIS frame. Raw paints mark
++    // applied too, so a plain-text fallback never hot-loops; color recovery
++    // stays on the 0309-mfix content-change re-run.
++    if (
++      !this._highlightsDirty &&
++      this._filetype &&
++      this._content.length > 0 &&
++      this._content !== this._lastAppliedContent &&
++      (!this._isHighlighting ||
++        (this._highlightStartedAt !== undefined && Date.now() - this._highlightStartedAt > 35000))
++    ) {
++      this._highlightsDirty = true;
++      if (typeof globalThis !== "undefined" && globalThis.__ocStreamLab) {
++        try {
++          globalThis.__ocStreamLab("hl.heal", {
++            len: this._content.length,
++            applied: this._lastAppliedContent ? this._lastAppliedContent.length : -1,
++            stale: this._isHighlighting,
++          });
++        } catch {}
++      }
++    }
+     if (this._highlightsDirty) {
+       if (this.isDestroyed)
+         return;
+@@ -3928,6 +4126,19 @@ function toNumber(value) {
  }
  var canThrowAcrossNativeCallback = typeof process !== "undefined" && typeof process.versions === "object" && process.versions !== null && typeof process.versions.bun === "string";
  
@@ -414,7 +485,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
  class NativeSpanFeed {
    static create(options) {
      const lib = resolveRenderLib();
-@@ -7184,8 +7352,38 @@
+@@ -7184,8 +7395,38 @@ Captured external output:
      this._feed = feed;
      if (feed) {
        this._detachFeed = feed.onData((bytes) => {
@@ -454,7 +525,7 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
          });
        });
        this._detachFeedError = feed.onError((code) => {
-@@ -7460,7 +7658,21 @@
+@@ -7460,7 +7701,21 @@ Captured external output:
      if (!feed || this.feedIdleRenderScheduled || this._isDestroyed)
        return;
      this.feedIdleRenderScheduled = true;
@@ -477,9 +548,10 @@ diff --git a/chunk-bun-tkm837n2.js b/chunk-bun-tkm837n2.js
        const ordinaryFrameWasWaiting = this.ordinaryFrameWaitingForFeed;
        const ordinaryFrameWaitControlState = this.ordinaryFrameWaitControlState;
 diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
+index 4a2cb78..01cc080 100644
 --- a/chunk-node-51kpf0mz.js
 +++ b/chunk-node-51kpf0mz.js
-@@ -225,6 +225,7 @@
+@@ -225,6 +225,7 @@ class Renderable extends BaseRenderable {
    _position = {};
    _opacity = 1;
    _flexShrink = 1;
@@ -487,7 +559,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
    _childrenInLayoutOrder = [];
    _childrenInZIndexOrder = [];
    needsZIndexSort = false;
-@@ -518,7 +519,7 @@
+@@ -518,7 +519,7 @@ class Renderable extends BaseRenderable {
      }
      this._width = value;
      this.yogaNode.setWidth(value);
@@ -496,7 +568,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -533,7 +534,7 @@
+@@ -533,7 +534,7 @@ class Renderable extends BaseRenderable {
      }
      this._height = value;
      this.yogaNode.setHeight(value);
@@ -505,7 +577,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
        this._flexShrink = 0;
        this.yogaNode.setFlexShrink(0);
      }
-@@ -592,6 +593,7 @@
+@@ -592,6 +593,7 @@ class Renderable extends BaseRenderable {
        node.setFlexGrow(0);
      }
      if (options.flexShrink !== undefined) {
@@ -513,7 +585,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
        this._flexShrink = options.flexShrink;
        node.setFlexShrink(options.flexShrink);
      } else {
-@@ -749,6 +751,7 @@
+@@ -749,6 +751,7 @@ class Renderable extends BaseRenderable {
    }
    set flexShrink(shrink) {
      const value = shrink == null ? 1 : shrink;
@@ -521,7 +593,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      this._flexShrink = value;
      this.yogaNode.setFlexShrink(value);
      this.requestRender();
-@@ -2771,6 +2774,13 @@
+@@ -2771,6 +2774,13 @@ class TextBufferRenderable extends Renderable {
      this._tabIndicator = options.tabIndicator ?? this._defaultOptions.tabIndicator;
      this._tabIndicatorColor = options.tabIndicatorColor ? parseColor(options.tabIndicatorColor) : this._defaultOptions.tabIndicatorColor;
      this._truncate = options.truncate ?? this._defaultOptions.truncate;
@@ -535,7 +607,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      this.textBuffer = TextBuffer.create(this._ctx.widthMethod);
      this.textBufferView = TextBufferView.create(this.textBuffer);
      this._firstLineOffset = ctx.claimFirstLineOffset?.(this) ?? 0;
-@@ -2803,6 +2813,10 @@
+@@ -2803,6 +2813,10 @@ class TextBufferRenderable extends Renderable {
      }
    }
    handleScroll(event) {
@@ -546,7 +618,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      if (!event.scroll)
        return;
      const { direction, delta } = event.scroll;
-@@ -2865,6 +2879,14 @@
+@@ -2865,6 +2879,14 @@ class TextBufferRenderable extends Renderable {
      return Math.max(0, this.scrollWidth - this.width);
    }
    updateViewportOffset() {
@@ -561,7 +633,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      if (this.width > 0 && this.height > 0) {
        this.textBufferView.setViewport(this._scrollX, this._scrollY, this.width, this.height);
      }
-@@ -2978,6 +3000,12 @@
+@@ -2978,6 +3000,12 @@ class TextBufferRenderable extends Renderable {
    get truncate() {
      return this._truncate;
    }
@@ -574,7 +646,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
    set truncate(value) {
      if (this._truncate !== value) {
        this._truncate = value;
-@@ -2985,7 +3013,24 @@
+@@ -2985,7 +3013,24 @@ class TextBufferRenderable extends Renderable {
        this.requestRender();
      }
    }
@@ -599,7 +671,16 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      this.textBufferView.setViewport(this._scrollX, this._scrollY, width, height);
      this.yogaNode.markDirty();
      this.requestRender();
-@@ -3309,7 +3354,10 @@
+@@ -3109,6 +3154,8 @@ class CodeRenderable extends TextBufferRenderable {
+   _initialStyledText;
+   _hadInitialContent = false;
+   _lastHighlights = [];
++  _lastAppliedContent;
++  _highlightStartedAt;
+   _baseHighlight;
+   _onHighlight;
+   _onChunks;
+@@ -3309,7 +3356,10 @@ class CodeRenderable extends TextBufferRenderable {
      const shouldDrawUnstyledNow = this._streaming ? isInitialContent && this._drawUnstyledText : this._drawUnstyledText;
      if (this._streaming && !isInitialContent) {
        this._shouldRenderTextBuffer = true;
@@ -611,7 +692,7 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
        if (this._initialStyledText) {
          this.textBuffer.setStyledText(this._initialStyledText);
        } else {
-@@ -3318,7 +3366,16 @@
+@@ -3318,13 +3368,27 @@ class CodeRenderable extends TextBufferRenderable {
        this.setRenderedLineSources(undefined);
        this._shouldRenderTextBuffer = true;
      } else {
@@ -629,7 +710,76 @@ diff --git a/chunk-node-51kpf0mz.js b/chunk-node-51kpf0mz.js
      }
    }
    async startHighlight() {
+     const content = this._content;
+     const filetype = this._filetype;
+     const snapshotId = ++this._highlightSnapshotId;
++    // oc-0402 self-heal bookkeeping: when this round trip started (the stale
++    // in-flight arm of the renderSelf guard uses it - 35s > the oc-0382 30s
++    // client timeout, so it only fires when the timeout itself failed to
++    // produce an apply).
++    this._highlightStartedAt = Date.now();
+     if (!filetype)
+       return;
+     const isInitialContent = this._streaming && !this._hadInitialContent;
+@@ -3389,6 +3453,9 @@ class CodeRenderable extends TextBufferRenderable {
+         this.textBuffer.setText(content);
+         this.setRenderedLineSources(undefined);
+       }
++      // oc-0402: the buffer now holds `content` (colored or raw) - the
++      // renderSelf self-heal guard compares against this.
++      this._lastAppliedContent = content;
+       this._shouldRenderTextBuffer = true;
+       this._isHighlighting = false;
+       this._highlightsDirty = false;
+@@ -3404,6 +3471,9 @@ class CodeRenderable extends TextBufferRenderable {
+         return;
+       this.textBuffer.setText(content);
+       this.setRenderedLineSources(undefined);
++      // oc-0402: the error fallback painted `content` raw - mark applied so
++      // the self-heal guard does not hot-loop on it.
++      this._lastAppliedContent = content;
+       this._shouldRenderTextBuffer = true;
+       this._isHighlighting = false;
+       this._highlightsDirty = false;
+@@ -3504,6 +3574,36 @@ class CodeRenderable extends TextBufferRenderable {
+     return this.textBuffer.getLineHighlights(lineIdx);
+   }
+   renderSelf(buffer) {
++    // oc-0402-selfheal: the streaming/completed paint depends on an async
++    // highlight apply; every known loss path re-dirties (oc-0391) but a lost
++    // FINAL highlight with no re-trigger left the buffer at the last applied
++    // prefix while the gutter counted every row ("gutters but no text",
++    // BUG_WRITE_STREAM_BLANK_TAIL - stuck minutes past completion). Guard:
++    // any render pass that finds content the last apply never covered, with
++    // nothing in flight (or an in-flight round trip older than 35s - past
++    // the oc-0382 30s timeout, so only when the timeout itself failed to
++    // produce an apply), re-fires the highlight THIS frame. Raw paints mark
++    // applied too, so a plain-text fallback never hot-loops; color recovery
++    // stays on the 0309-mfix content-change re-run.
++    if (
++      !this._highlightsDirty &&
++      this._filetype &&
++      this._content.length > 0 &&
++      this._content !== this._lastAppliedContent &&
++      (!this._isHighlighting ||
++        (this._highlightStartedAt !== undefined && Date.now() - this._highlightStartedAt > 35000))
++    ) {
++      this._highlightsDirty = true;
++      if (typeof globalThis !== "undefined" && globalThis.__ocStreamLab) {
++        try {
++          globalThis.__ocStreamLab("hl.heal", {
++            len: this._content.length,
++            applied: this._lastAppliedContent ? this._lastAppliedContent.length : -1,
++            stale: this._isHighlighting,
++          });
++        } catch {}
++      }
++    }
+     if (this._highlightsDirty) {
+       if (this.isDestroyed)
+         return;
 diff --git a/chunk-node-q0cwyvm9.js b/chunk-node-q0cwyvm9.js
+index be7df0e..85d3051 100644
 --- a/chunk-node-q0cwyvm9.js
 +++ b/chunk-node-q0cwyvm9.js
 @@ -1,3 +1,16 @@
@@ -649,7 +799,7 @@ diff --git a/chunk-node-q0cwyvm9.js b/chunk-node-q0cwyvm9.js
  var __create = Object.create;
  var __getProtoOf = Object.getPrototypeOf;
  var __defProp = Object.defineProperty;
-@@ -8603,6 +8616,15 @@
+@@ -8603,6 +8616,15 @@ class TreeSitterClient extends EventEmitter2 {
      const messageId = `oneshot_${this.messageIdCounter++}`;
      return new Promise((resolve3, reject) => {
        this.messageCallbacks.set(messageId, { resolve: resolve3, reject });
@@ -665,7 +815,7 @@ diff --git a/chunk-node-q0cwyvm9.js b/chunk-node-q0cwyvm9.js
        try {
          this.sendWorkerMessage({
            type: "ONESHOT_HIGHLIGHT",
-@@ -8611,6 +8633,7 @@
+@@ -8611,6 +8633,7 @@ class TreeSitterClient extends EventEmitter2 {
            messageId
          });
        } catch (error) {
@@ -673,7 +823,7 @@ diff --git a/chunk-node-q0cwyvm9.js b/chunk-node-q0cwyvm9.js
          this.messageCallbacks.delete(messageId);
          reject(error instanceof Error ? error : new Error(String(error)));
        }
-@@ -10951,6 +10974,7 @@
+@@ -10951,6 +10974,7 @@ class TextBuffer {
      if (this._destroyed)
        return;
      this._destroyed = true;
@@ -681,7 +831,7 @@ diff --git a/chunk-node-q0cwyvm9.js b/chunk-node-q0cwyvm9.js
      this.lib.destroyTextBuffer(this.bufferPtr);
    }
  }
-@@ -14333,11 +14357,19 @@
+@@ -14333,11 +14357,19 @@ class FFIRenderLib {
      const widthMethodCode = widthMethod === "wcwidth" ? 0 : 1;
      const bufferPtr = this.opentui.symbols.createTextBuffer(widthMethodCode);
      if (!bufferPtr) {
@@ -703,9 +853,10 @@ diff --git a/chunk-node-q0cwyvm9.js b/chunk-node-q0cwyvm9.js
    }
    textBufferGetLength(buffer) {
 diff --git a/index.bun.js b/index.bun.js
+index 815856b..26b8473 100644
 --- a/index.bun.js
 +++ b/index.bun.js
-@@ -4799,6 +4799,15 @@
+@@ -4799,6 +4799,15 @@ class LineNumberRenderable extends Renderable {
      });
      super.add(this.gutter);
      super.add(this.target);
@@ -721,7 +872,7 @@ diff --git a/index.bun.js b/index.bun.js
    }
    add(child) {
      if (!this.target && "lineInfo" in child && "lineCount" in child && "virtualLineCount" in child && "scrollY" in child) {
-@@ -4911,6 +4920,9 @@
+@@ -4911,6 +4920,9 @@ class LineNumberRenderable extends Renderable {
        this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
      }
    }
@@ -731,7 +882,7 @@ diff --git a/index.bun.js b/index.bun.js
    setLineColors(lineColors) {
      this._lineColorsGutter.clear();
      this._lineColorsContent.clear();
-@@ -5347,6 +5359,7 @@
+@@ -5347,6 +5359,7 @@ class DiffRenderable extends Renderable {
    _syntaxStyle;
    _wrapMode;
    _conceal;
@@ -739,7 +890,7 @@ diff --git a/index.bun.js b/index.bun.js
    _selectionBg;
    _selectionFg;
    _treeSitterClient;
-@@ -5388,6 +5401,11 @@
+@@ -5388,6 +5401,11 @@ class DiffRenderable extends Renderable {
      this._syntaxStyle = options.syntaxStyle;
      this._wrapMode = options.wrapMode;
      this._conceal = options.conceal ?? false;
@@ -751,7 +902,7 @@ diff --git a/index.bun.js b/index.bun.js
      this._selectionBg = options.selectionBg ? parseColor(options.selectionBg) : undefined;
      this._selectionFg = options.selectionFg ? parseColor(options.selectionFg) : undefined;
      this._treeSitterClient = options.treeSitterClient;
-@@ -5665,7 +5683,8 @@
+@@ -5665,7 +5683,8 @@ class DiffRenderable extends Renderable {
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -761,7 +912,7 @@ diff --git a/index.bun.js b/index.bun.js
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -5778,7 +5797,7 @@
+@@ -5778,7 +5797,7 @@ class DiffRenderable extends Renderable {
      }
      const content = contentLines.join(`
  `);
@@ -770,7 +921,7 @@ diff --git a/index.bun.js b/index.bun.js
      this.attachLineInfoListeners();
      this.createOrUpdateSide("left", codeRenderable, lineColors, lineSigns, lineNumbers, new Set, "100%");
      if (this.rightSide && this.rightSideAdded) {
-@@ -5905,8 +5924,11 @@
+@@ -5905,8 +5924,11 @@ class DiffRenderable extends Renderable {
  `);
      const needsConsistentConcealing = (this._wrapMode === "word" || this._wrapMode === "char") && this._conceal && this._filetype;
      const drawUnstyledText = !needsConsistentConcealing;
@@ -784,7 +935,7 @@ diff --git a/index.bun.js b/index.bun.js
      this.attachLineInfoListeners();
      let finalLeftLines;
      let finalRightLines;
-@@ -6054,8 +6076,8 @@
+@@ -6054,8 +6076,8 @@ class DiffRenderable extends Renderable {
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -795,7 +946,7 @@ diff --git a/index.bun.js b/index.bun.js
    }
    get diff() {
      return this._diff;
-@@ -6291,6 +6313,20 @@
+@@ -6291,6 +6313,20 @@ class DiffRenderable extends Renderable {
        this.rebuildView();
      }
    }
@@ -816,7 +967,7 @@ diff --git a/index.bun.js b/index.bun.js
    get fg() {
      return this._fg;
    }
-@@ -6314,6 +6350,9 @@
+@@ -6314,6 +6350,9 @@ class DiffRenderable extends Renderable {
      this.leftSide?.clearLineColor(line);
      this.rightSide?.clearLineColor(line);
    }
@@ -826,7 +977,7 @@ diff --git a/index.bun.js b/index.bun.js
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11436,6 +11475,46 @@
+@@ -11436,6 +11475,46 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -873,7 +1024,7 @@ diff --git a/index.bun.js b/index.bun.js
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11624,6 +11703,7 @@
+@@ -11624,6 +11703,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -881,7 +1032,7 @@ diff --git a/index.bun.js b/index.bun.js
          this.updateStickyState();
        }
      });
-@@ -11929,12 +12009,145 @@
+@@ -11929,12 +12009,145 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -1027,7 +1178,7 @@ diff --git a/index.bun.js b/index.bun.js
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11950,7 +12163,31 @@
+@@ -11950,7 +12163,31 @@ class ScrollBoxRenderable extends BoxRenderable {
            if (this._stickyScrollTop) {
              this.scrollTop = 0;
            } else if (this._stickyScrollBottom && newMaxScrollTop > 0) {
@@ -1060,7 +1211,7 @@ diff --git a/index.bun.js b/index.bun.js
            }
            if (this._stickyScrollLeft) {
              this.scrollLeft = 0;
-@@ -11959,6 +12196,8 @@
+@@ -11959,6 +12196,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -1070,9 +1221,10 @@ diff --git a/index.bun.js b/index.bun.js
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/index.node.js b/index.node.js
+index 0ddf03b..410b873 100644
 --- a/index.node.js
 +++ b/index.node.js
-@@ -4910,6 +4910,9 @@
+@@ -4910,6 +4910,9 @@ class LineNumberRenderable extends Renderable {
        this.gutter.setLineColors(this._lineColorsGutter, this._lineColorsContent);
      }
    }
@@ -1082,7 +1234,7 @@ diff --git a/index.node.js b/index.node.js
    setLineColors(lineColors) {
      this._lineColorsGutter.clear();
      this._lineColorsContent.clear();
-@@ -5664,7 +5667,8 @@
+@@ -5664,7 +5667,8 @@ class DiffRenderable extends Renderable {
          lineNumberOffset: 0,
          hideLineNumbers,
          width,
@@ -1092,7 +1244,7 @@ diff --git a/index.node.js b/index.node.js
        });
        newSide.showLineNumbers = this._showLineNumbers;
        super.add(newSide);
-@@ -6053,8 +6057,8 @@
+@@ -6053,8 +6057,8 @@ class DiffRenderable extends Renderable {
  `);
      leftCodeRenderable.content = leftContentFinal;
      rightCodeRenderable.content = rightContentFinal;
@@ -1103,7 +1255,7 @@ diff --git a/index.node.js b/index.node.js
    }
    get diff() {
      return this._diff;
-@@ -6313,6 +6317,9 @@
+@@ -6313,6 +6317,9 @@ class DiffRenderable extends Renderable {
      this.leftSide?.clearLineColor(line);
      this.rightSide?.clearLineColor(line);
    }
@@ -1113,7 +1265,7 @@ diff --git a/index.node.js b/index.node.js
    setLineColors(lineColors) {
      this.leftSide?.setLineColors(lineColors);
      this.rightSide?.setLineColors(lineColors);
-@@ -11435,6 +11442,43 @@
+@@ -11435,6 +11442,43 @@ class ScrollBoxRenderable extends BoxRenderable {
    _stickyStart;
    _hasManualScroll = false;
    _isApplyingStickyScroll = false;
@@ -1157,7 +1309,7 @@ diff --git a/index.node.js b/index.node.js
    scrollAccel;
    get stickyScroll() {
      return this._stickyScroll;
-@@ -11623,6 +11667,7 @@
+@@ -11623,6 +11667,7 @@ class ScrollBoxRenderable extends BoxRenderable {
        orientation: "vertical",
        onChange: (position) => {
          this.content.translateY = -position;
@@ -1165,7 +1317,7 @@ diff --git a/index.node.js b/index.node.js
          this.updateStickyState();
        }
      });
-@@ -11928,12 +11973,145 @@
+@@ -11928,12 +11973,145 @@ class ScrollBoxRenderable extends BoxRenderable {
        return this.autoScrollSpeedSlow;
      }
    }
@@ -1311,7 +1463,7 @@ diff --git a/index.node.js b/index.node.js
        this.horizontalScrollBar.scrollSize = this.content.width;
        this.horizontalScrollBar.viewportSize = this.viewport.width;
        if (this._stickyScroll) {
-@@ -11958,6 +12136,8 @@
+@@ -11958,6 +12136,8 @@ class ScrollBoxRenderable extends BoxRenderable {
            }
          }
        }
@@ -1321,9 +1473,10 @@ diff --git a/index.node.js b/index.node.js
        this._isApplyingStickyScroll = wasApplyingStickyScroll;
      }
 diff --git a/parser.worker.js b/parser.worker.js
+index 1b7549e..2c94739 100644
 --- a/parser.worker.js
 +++ b/parser.worker.js
-@@ -4019,7 +4019,7 @@
+@@ -4019,7 +4019,7 @@ class ParserWorker {
    getNodeText(node, content) {
      return content.substring(node.startIndex, node.endIndex);
    }
@@ -1332,7 +1485,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      const injectionMatches = [];
      const injectionRanges = new Map;
      if (!parserState.queries.injections) {
-@@ -4030,6 +4030,14 @@
+@@ -4030,6 +4030,14 @@ class ParserWorker {
      const languageGroups = new Map;
      const injectionMapping = parserState.injectionMapping;
      for (const capture of injectionCaptures) {
@@ -1347,7 +1500,7 @@ diff --git a/parser.worker.js b/parser.worker.js
        const captureName = capture.name;
        if (captureName === "injection.content" || captureName.includes("injection")) {
          const nodeType = capture.node.type;
-@@ -4318,6 +4326,7 @@
+@@ -4318,6 +4326,7 @@ class ParserWorker {
      this.bufferParsers.delete(bufferId);
    }
    async handleOneShotHighlight(content, filetype, messageId) {
@@ -1355,7 +1508,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      const reusableState = await this.getReusableParser(filetype);
      if (!reusableState) {
        postWorkerMessage({
-@@ -4330,7 +4339,81 @@
+@@ -4330,7 +4339,81 @@ class ParserWorker {
      }
      const parseContent = filetype === "markdown" && content.endsWith("```") ? content + `
  ` : content;
@@ -1438,7 +1591,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      if (!tree) {
        postWorkerMessage({
          type: "ONESHOT_HIGHLIGHT_RESPONSE",
-@@ -4341,30 +4424,94 @@
+@@ -4341,30 +4424,94 @@ class ParserWorker {
        return;
      }
      try {
@@ -1541,7 +1694,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      }
    }
    async updateDataPath(dataPath) {
-@@ -4391,6 +4538,10 @@
+@@ -4391,6 +4538,10 @@ class ParserWorker {
        this.filetypeParserPromises.clear();
        this.reusableParsers.clear();
        this.reusableParserPromises.clear();
@@ -1552,7 +1705,7 @@ diff --git a/parser.worker.js b/parser.worker.js
      } catch (error) {
        throw new Error(`Failed to clear cache: ${error}`);
      }
-@@ -4509,7 +4660,24 @@
+@@ -4509,7 +4660,24 @@ if (isWorkerRuntime) {
            });
            break;
          case "ONESHOT_HIGHLIGHT":
@@ -1578,10 +1731,40 @@ diff --git a/parser.worker.js b/parser.worker.js
            break;
          case "UPDATE_DATA_PATH":
            try {
+diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
+index 62ce331..1e922c8 100644
+--- a/renderables/Diff.d.ts
++++ b/renderables/Diff.d.ts
+@@ -14,6 +14,7 @@ export interface DiffRenderableOptions extends RenderableOptions<DiffRenderable>
+     syntaxStyle?: SyntaxStyle;
+     wrapMode?: "word" | "char" | "none";
+     conceal?: boolean;
++    drawUnstyledText?: boolean;
+     selectionBg?: string | RGBA;
+     selectionFg?: string | RGBA;
+     treeSitterClient?: TreeSitterClient;
+@@ -44,6 +45,7 @@ export declare class DiffRenderable extends Renderable {
+     private _syntaxStyle?;
+     private _wrapMode?;
+     private _conceal;
++    private _drawUnstyledText?;
+     private _selectionBg?;
+     private _selectionFg?;
+     private _treeSitterClient?;
+@@ -134,6 +136,8 @@ export declare class DiffRenderable extends Renderable {
+     set selectionFg(value: string | RGBA | undefined);
+     get conceal(): boolean;
+     set conceal(value: boolean);
++    get drawUnstyledText(): boolean | undefined;
++    set drawUnstyledText(value: boolean | undefined);
+     get fg(): RGBA | undefined;
+     set fg(value: string | RGBA | undefined);
+     setLineColor(line: number, color: string | RGBA | LineColorConfig): void;
 diff --git a/renderables/TextBufferRenderable.d.ts b/renderables/TextBufferRenderable.d.ts
+index b5f0f56..0262099 100644
 --- a/renderables/TextBufferRenderable.d.ts
 +++ b/renderables/TextBufferRenderable.d.ts
-@@ -18,6 +18,9 @@
+@@ -18,6 +18,9 @@ export interface TextBufferOptions extends RenderableOptions<TextBufferRenderabl
      tabIndicator?: string | number;
      tabIndicatorColor?: string | RGBA;
      truncate?: boolean;
@@ -1591,31 +1774,3 @@ diff --git a/renderables/TextBufferRenderable.d.ts b/renderables/TextBufferRende
  }
  export declare abstract class TextBufferRenderable extends Renderable implements LineInfoProvider {
      selectable: boolean;
-diff --git a/renderables/Diff.d.ts b/renderables/Diff.d.ts
---- a/renderables/Diff.d.ts
-+++ b/renderables/Diff.d.ts
-@@ -14,6 +14,7 @@
-     syntaxStyle?: SyntaxStyle;
-     wrapMode?: "word" | "char" | "none";
-     conceal?: boolean;
-+    drawUnstyledText?: boolean;
-     selectionBg?: string | RGBA;
-     selectionFg?: string | RGBA;
-     treeSitterClient?: TreeSitterClient;
-@@ -44,6 +45,7 @@
-     private _syntaxStyle?;
-     private _wrapMode?;
-     private _conceal;
-+    private _drawUnstyledText?;
-     private _selectionBg?;
-     private _selectionFg?;
-     private _treeSitterClient?;
-@@ -134,6 +136,8 @@
-     set selectionFg(value: string | RGBA | undefined);
-     get conceal(): boolean;
-     set conceal(value: boolean);
-+    get drawUnstyledText(): boolean | undefined;
-+    set drawUnstyledText(value: boolean | undefined);
-     get fg(): RGBA | undefined;
-     set fg(value: string | RGBA | undefined);
-     setLineColor(line: number, color: string | RGBA | LineColorConfig): void;
