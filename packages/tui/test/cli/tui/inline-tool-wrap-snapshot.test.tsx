@@ -288,28 +288,29 @@ describe("TUI inline tool wrapping", () => {
     expect(formatSubagentRetry(2, "Rate limited by provider")).toBe("Retrying (attempt 2) · Rate limited by provider")
   })
 
-  test("caps the running subagent tool line inside the row chrome (0401)", () => {
+  test("caps the running subagent tool line inside the row chrome (0401/0406)", () => {
     const long = "z".repeat(300)
-    // width 72: prefix "↳ Bash " (7) + cap 60 = 67 chars, + 5 chrome = 72 - fits
+    // width 72: prefix "↳ Bash " (7) + cap 57 = 64 chars, + 5 chrome = 69 -
+    // two guard cols under the MEASURE boundary (the native measure wraps at
+    // width-1; a line at that boundary measures one row tall = the extra LF)
     const line = formatSubagentRunningLine("bash", long, 72)
-    expect(line.length).toBe(67)
+    expect(line.length).toBe(64)
     expect(line.startsWith("↳ Bash ")).toBe(true)
     expect(line.endsWith("…")).toBe(true)
     // short command passes through, newlines collapse to one visual row
     expect(formatSubagentRunningLine("bash", "ls -la", 72)).toBe("↳ Bash ls -la")
     expect(formatSubagentRunningLine("bash", "cd /a\nexport X=1\nls", 72)).toBe("↳ Bash cd /a export X=1 ls")
     // the prefix is measured, so a wider tool name shifts the cap, not the fit
-    expect(formatSubagentRunningLine("webfetch", long, 72).length).toBe(67)
+    expect(formatSubagentRunningLine("webfetch", long, 72).length).toBe(64)
     // floor at 20 display columns (prefix included) so ultra-narrow panes
     // still show something
     expect(Bun.stringWidth(formatSubagentRunningLine("bash", long, 10))).toBe(20)
-    // the scrollbar reserve (viewport paddingRight 1 + the track) shifts the
-    // cap - a visible scrollbar took the last ~2 cols live (window 9)
-    expect(formatSubagentRunningLine("bash", long, 72, 2).length).toBe(65)
+    // the scrollbar viewport pad (1 col when visible) shifts the cap
+    expect(formatSubagentRunningLine("bash", long, 72, 1).length).toBe(63)
   })
 
   test("the running subagent line never exceeds its column budget, wide glyphs included (0401)", () => {
-    const budget = 72 - 5
+    const budget = 72 - 8
     // wide chars count 2 columns: char-count truncation would overflow, the
     // display-width cut must not
     const wide = "echo 汉字测试".repeat(60)
