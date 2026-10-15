@@ -4972,7 +4972,16 @@ function Task(props: ToolProps) {
   const mirrorRate = createMemo(() => {
     const key = lastUser()?.id ?? ""
     if (!key) return 0
-    return streamRateFor(key, liveStep()?.id ?? "", mirrorChars())
+    // 0403: NAMESPACE the mirror's rate state. The mirror counts ONLY the
+    // live step's chars; the child session's own footer (on first click)
+    // counts completed steps + live - 100K+ chars apart. Sharing one
+    // streamRateStates key made the footer's first call measure the mount
+    // load as one growth sample = a tens-of-ktok/s spike that decayed to the
+    // real rate (the parent's mirror line stayed accurate - its counter
+    // never jumps). Separate keys: the mirror keeps its own window, the
+    // child footer fresh-anchors on mount (anchor sample = no rate move) and
+    // measures real inter-chunk deltas from its second growth chunk.
+    return streamRateFor(`mirror:${key}`, liveStep()?.id ?? "", mirrorChars())
   })
   const mirrorTools = createMemo(
     () =>

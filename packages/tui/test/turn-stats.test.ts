@@ -572,8 +572,24 @@ test("streamRateFor: the EMA spans the whole turn and is shared across the turn'
   expect(streamRateFor("t-turn2", "step-a", 440, 2200)).toBeCloseTo(666.7, 1) // raw ~666.7, snaps
 })
 
-test("streamRateFor: rolling 1s window - stale samples age out, EMA governs the display", () => {
-  streamRateFor("t-roll", "step-a", 0, 0) // episode anchor
+test("streamRateFor: the subagent mirror's namespace is isolated from the child footer's mount load (0403)", () => {
+  // The mirror tracks ONLY the live step's chars: real ~1333 tok/s.
+  expect(streamRateFor("mirror:t-ns", "step-a", 40, 1000)).toBe(0)
+  expect(streamRateFor("mirror:t-ns", "step-a", 440, 1100)).toBe(0)
+  expect(streamRateFor("mirror:t-ns", "step-a", 1240, 1300)).toBeCloseTo(1333.3, 1)
+  // The child session's own footer mounts mid-turn: its counter includes the
+  // completed steps' chars (120K jump over the mirror's counter). With the
+  // namespaced key this is a FRESH state - the mount lands as the anchor
+  // sample (no rate move), never as a 120K-char growth measurement.
+  expect(streamRateFor("t-ns", "step-a", 120000, 1400)).toBe(0)
+  expect(streamRateFor("t-ns", "step-a", 120400, 1500)).toBe(0) // anchor
+  // the third call measures real inter-chunk time: 400 chars / 100ms
+  expect(streamRateFor("t-ns", "step-a", 120800, 1600)).toBeCloseTo(1333.3, 1)
+  // the mirror's own window was untouched by the footer's big-char calls
+  expect(streamRateFor("mirror:t-ns", "step-a", 1640, 1400)).toBeCloseTo(1333.3, 1)
+})
+
+test("streamRateFor: rolling 1s window - stale samples age out, EMA governs the display", () => {  streamRateFor("t-roll", "step-a", 0, 0) // episode anchor
   streamRateFor("t-roll", "step-a", 800, 1000) // raw ~266.7, snaps
   streamRateFor("t-roll", "step-a", 1600, 2000) // steady ~266.7
   const v = streamRateFor("t-roll", "step-a", 2400, 2200) // accelerated to raw ~1333 tok/s
