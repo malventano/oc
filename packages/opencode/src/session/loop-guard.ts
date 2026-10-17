@@ -435,9 +435,20 @@ class TextLoopDetector {
     // Entropy collapse: the tail draws from a tiny alphabet. Only judged on a
     // SATURATED window - a short tail (1-50 chars) trivially has few distinct
     // characters and would fire on every message start.
+    // 0411 WHITESPACE GATE (2026-10-17 false positive, BUG_LOOP_GUARD_PLUGIN.md):
+    // a wide-terminal paste quoted verbatim (437 spaces + one glyph) collapses
+    // to 2 distinct chars exactly like the U+2580 symbol loop, but it is a
+    // formatting artifact, not self-repetition - the tail is >90% whitespace
+    // (~0.4% non-space). Real degenerate loops are glyph-dense (the U+2580
+    // loop, digit runs), so a whitespace-dominated window never fires this
+    // rule. The steer at a quote point also provokes arbitrary action rather
+    // than breaking a loop.
     const unique = new Set<string>(this.#tail).size
     if (this.#tail.length >= VERBATIM_TAIL_WINDOW && unique <= LOW_DIVERSITY_MAX_UNIQUE) {
-      return { hit: `output tail uses only ${unique} distinct characters`, trimAt: this.#tailStart }
+      const nonSpace = (this.#tail.match(/[^\s]/g) ?? []).length
+      if (nonSpace / this.#tail.length > 0.1) {
+        return { hit: `output tail uses only ${unique} distinct characters`, trimAt: this.#tailStart }
+      }
     }
 
     this.#pending += delta
