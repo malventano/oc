@@ -5,7 +5,7 @@
 // (oc-feed-watchdog, hl.heal) and reports OC_PUMP_PROBE as a warning.
 // Usage:
 //   bun script/preflight.mjs [--fast]
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import path from "node:path"
 
@@ -81,6 +81,37 @@ run("patch-series-check", process.execPath, ["script/patch-series-check.mjs", "-
       results.push({ label: "binary markers", ok, required: true })
       console.log(`${ok ? "PASS" : "FAIL"} binary markers`)
     }
+  }
+}
+
+// -- tool source/deploy drift ------------------------------------------------
+// tools/README.md: the repo copies are the source of truth, the config-dir
+// copies are deployed runtime. Drift is a WARN here (a repo edit pending a
+// deploy is normal); the 2026-09-26 incident and its 2026-10-17 recurrence
+// (deployed tmux.js 176 lines ahead) are why it is surfaced on every run.
+{
+  console.log("\n== tools drift ==")
+  const deployedDir = path.join(process.env.HOME ?? "", ".config/opencode/tools")
+  const repoDir = path.join(root, "tools")
+  if (!existsSync(deployedDir)) {
+    console.log("SKIP tools drift (no deployed tools directory)")
+  } else {
+    let drift = 0
+    for (const file of readdirSync(repoDir).filter((name) => name.endsWith(".js")).sort()) {
+      const source = path.join(repoDir, file)
+      const deployed = path.join(deployedDir, file)
+      if (!existsSync(deployed)) {
+        console.log(`  WARN ${file}: not deployed`)
+        drift++
+        continue
+      }
+      if (!readFileSync(source).equals(readFileSync(deployed))) {
+        const newer = statSync(deployed).mtimeMs > statSync(source).mtimeMs ? "deployed copy is newer" : "repo copy is newer"
+        console.log(`  WARN ${file}: differs (${newer})`)
+        drift++
+      }
+    }
+    console.log(drift ? `WARN tools drift: ${drift} file(s)` : "PASS tools in sync")
   }
 }
 
