@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# Fast pre-push gate: patchfile integrity, series hygiene, and the end-to-end
+# patch-apply check. Full provenance/tsc/binary checks live in script/preflight.mjs.
+fail() {
+  echo ""
+  echo "pre-push BLOCKED: $1"
+  echo "Fix the failure above before pushing (see script/preflight.mjs for the full gate)."
+  exit 1
+}
+echo "pre-push: checking patchfiles..."
+bun run check:patches || fail "patchfile hunk integrity (script/check-patchfiles.mjs)"
+bun script/patch-series-check.mjs || fail "patch-series hygiene (duplicate IDs / probe markers)"
+bun run verify:patches --strict || fail "patchfiles do not reproduce node_modules"
+echo "pre-push: OK"
