@@ -687,7 +687,17 @@ const layer: Layer.Layer<
       const failures: string[] = []
       for (const row of staleMessages) {
         const parsed = yield* Effect.try({
-          try: () => JSON.parse(row.data as unknown as string) as SessionV1.Assistant,
+          try: () => {
+            // `data` is a text({ mode: "json" }) column: the driver value is
+            // ALREADY decoded, and the projector strips id/sessionID before
+            // writing. JSON.parse on the object threw for every real row, so
+            // reconcile cleaned nothing (found 2026-10-17 by the new 0390
+            // test). Accept both shapes (pre-migration rows may be strings)
+            // and reattach identity from the row.
+            const data = row.data as unknown
+            const info = (typeof data === "string" ? JSON.parse(data) : data) as SessionV1.Assistant
+            return { ...info, id: row.id, sessionID: row.session_id as SessionID }
+          },
           catch: (error) => `message ${row.id}: JSON.parse failed: ${error}`,
         }).pipe(Effect.catch((message) => Effect.sync(() => {
           failures.push(message)
@@ -721,7 +731,13 @@ const layer: Layer.Layer<
         .pipe(Effect.orDie)
       for (const row of staleParts) {
         const parsed = yield* Effect.try({
-          try: () => JSON.parse(row.data as unknown as string) as SessionV1.ToolPart,
+          try: () => {
+            // Same decoded-column shape as the message loop above; identity
+            // fields come from the row because the projector strips them.
+            const data = row.data as unknown
+            const part = (typeof data === "string" ? JSON.parse(data) : data) as SessionV1.ToolPart
+            return { ...part, id: row.id, messageID: row.message_id, sessionID: row.session_id as SessionID }
+          },
           catch: (error) => `part ${row.id}: JSON.parse failed: ${error}`,
         }).pipe(Effect.catch((message) => Effect.sync(() => {
           failures.push(message)
