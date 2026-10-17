@@ -2,12 +2,59 @@
 
 import { $ } from "bun"
 import path from "path"
+import { existsSync, readdirSync, statSync } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "url"
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const dir = path.resolve(__dirname, "..")
+const repoRoot = path.resolve(dir, "../..")
+const patchDir = path.join(repoRoot, "patches")
+
+async function sha256File(file: string) {
+  const hash = new Bun.CryptoHasher("sha256")
+  hash.update(new Uint8Array(await Bun.file(file).arrayBuffer()))
+  return hash.digest("hex")
+}
+
+async function hashDir(target: string) {
+  if (!existsSync(target)) return null
+  const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: target })))
+    .map((file) => file.replaceAll("\\", "/"))
+    .sort()
+  const hash = new Bun.CryptoHasher("sha256")
+  let count = 0
+  for (const file of files) {
+    const full = path.join(target, file)
+    if (!statSync(full).isFile()) continue
+    hash.update(`${file}\0${await sha256File(full)}\0`)
+    count++
+  }
+  return { files: count, sha256: hash.digest("hex") }
+}
+
+function git(args: string[]) {
+  try {
+    const result = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8" })
+    return result.status === 0 ? (result.stdout ?? "").trim() : ""
+  } catch {
+    return ""
+  }
+}
+
+const gitHead = git(["rev-parse", "HEAD"])
+const gitBranch = git(["rev-parse", "--abbrev-ref", "HEAD"])
+const dirty = git(["status", "--porcelain"]) !== ""
+if (dirty) console.error("warning: worktree is dirty; build-manifest.json records dirty=true")
+
+const patchHashes: Record<string, string> = {}
+for (const file of existsSync(patchDir) ? readdirSync(patchDir).sort() : []) {
+  const full = path.join(patchDir, file)
+  if (!statSync(full).isFile()) continue
+  patchHashes[`patches/${file}`] = await sha256File(full)
+}
 
 process.chdir(dir)
 
@@ -49,6 +96,7 @@ const createEmbeddedWebUIBundle = async () => {
 }
 
 const embeddedFileMap = skipEmbedWebUi ? null : await createEmbeddedWebUIBundle()
+const appDistHash = await hashDir(path.join(dir, "../../app/dist"))
 const treeSitterWorker = await Bun.file(fileURLToPath(import.meta.resolve("@opentui/core/parser.worker"))).text()
 
 const allTargets: {
@@ -214,6 +262,35 @@ for (const item of targets) {
       process.exit(1)
     }
   }
+
+  // Provenance for the artifact: what source, patches, and toolchain produced it.
+  const binaryPath = [`dist/${name}/bin/oc`, `dist/${name}/bin/oc.exe`].find((candidate) => existsSync(candidate))
+  if (!binaryPath) throw new Error(`built binary not found for ${name}`)
+  await Bun.write(
+    `dist/${name}/build-manifest.json`,
+    JSON.stringify(
+      {
+        target: name,
+        version: Script.version,
+        channel: Script.channel,
+        gitHead,
+        gitBranch,
+        dirty,
+        bunVersion: Bun.version,
+        nodeVersion: process.version,
+        patches: patchHashes,
+        appDist: appDistHash,
+        binary: {
+          path: binaryPath,
+          sha256: await sha256File(binaryPath),
+          bytes: statSync(binaryPath).size,
+        },
+        builtAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ) + "\n",
+  )
 
   await $`rm -rf ./dist/${name}/bin/tui`
   await Bun.file(`dist/${name}/package.json`).write(
