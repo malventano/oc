@@ -906,12 +906,15 @@ const layer = Layer.effect(
               Stream.takeUntil(() => ctx.needsCompaction || ctx.loopGuardFired),
               Stream.runDrain,
             )
-            // 0409 NAKED-END RECONCILE: the stream ENDED without a step-finish.
-            // The 0346 idle watchdog covers a stream that goes silent; it cannot
-            // see a stream that CLOSES early - the engine dropping the request
-            // mid-tool-call (live 2026-10-17, window 12: vLLM Running:0 while the
-            // step hung forever, the tool-call args half-streamed, no finish, no
-            // error - the retry policy reacts to errors, not to a quiet close).
+            // 0409 NAKED-END RECONCILE (preventive): the stream ENDED without a
+            // step-finish. The 0346 idle watchdog covers a stream that goes
+            // silent; it cannot see a stream that CLOSES early - the engine
+            // closing the response mid-tool-call (the tool-call args
+            // half-streamed, no finish, no error - the retry policy reacts to
+            // errors, not to a quiet close). This shape has NOT been observed
+            // live: the 2026-10-17 window-12 incident previously attributed to
+            // it was loop-guard rapid-fire churn + decode starvation
+            // (oc-spec/06:284-291); the reconcile is preventive.
             // A step that ends without a finish must surface as a retryable
             // stream error, never as a silent hang: the failure flows to the
             // retry policy (a fresh attempt re-streams the step; abandoned
