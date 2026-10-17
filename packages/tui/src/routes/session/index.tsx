@@ -3082,6 +3082,7 @@ function diffIsChangeSparse(patch: string, width: number): boolean {
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme } = useTheme()
   const ctx = use()
+  const sync = useSync()
   // Collapsed by default in hide mode: a single line throughout, so the
   // layout never shifts. Click to open the full markdown block, click to close.
   const [expanded, setExpanded] = createSignal(false)
@@ -3091,9 +3092,25 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     return props.part.text.replace("[REDACTED]", "").trim()
   })
   const opaque = createMemo(() => !content() && Boolean(props.part.metadata))
+  // SUPERSEDED LATCH (0410): switching into a subagent view hydrates the
+  // child's parts in waves; a completed reasoning part whose `time.end` is
+  // still missing in an early wave rendered its RUNNING form (grey spinner
+  // "Thinking…") and flipped to the done form (white "Thought") when the wave
+  // landed - a few grey<->white flickers in the upper window right after the
+  // switch. A reasoning part that has ANY later assistant message in its
+  // session can never be running, so it renders the done form from the first
+  // frame. Only the session's active tail (the newest assistant message) may
+  // show the running form.
+  const superseded = createMemo(() => {
+    const list = sync.data.message[props.message.sessionID] ?? []
+    const mine = list.findIndex((m) => m.id === props.message.id)
+    if (mine === -1) return false
+    for (let i = mine + 1; i < list.length; i++) if (list[i].role === "assistant") return true
+    return false
+  })
   // Reasoning is finalized when the server sets `time.end` (see processor.ts).
   // Flips independently of the parent message completing.
-  const isDone = createMemo(() => props.part.time.end !== undefined)
+  const isDone = createMemo(() => superseded() || props.part.time.end !== undefined)
   const inMinimal = createMemo(() => ctx.thinkingMode() === "hide")
   const duration = createMemo(() => {
     const end = props.part.time.end
@@ -3206,7 +3223,10 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             open={!inMinimal() || expanded()}
             done={isDone()}
             title={summary().title}
-            duration={isDone() ? Locale.duration(duration()) : undefined}
+            // 0410: gate the duration on the REAL end stamp - the superseded
+            // latch forces the done form before `time.end` may have hydrated,
+            // and with a missing end duration() reads 0 ("0ms" flash).
+            duration={props.part.time.end !== undefined ? Locale.duration(duration()) : undefined}
             encrypted={opaque()}
           />
         </box>
