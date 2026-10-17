@@ -18,6 +18,7 @@ import { StallGuard } from "./stall-guard"
 import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
+import { ProviderError } from "@/provider/error"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
@@ -905,6 +906,28 @@ const layer = Layer.effect(
               Stream.takeUntil(() => ctx.needsCompaction || ctx.loopGuardFired),
               Stream.runDrain,
             )
+            // 0409 NAKED-END RECONCILE: the stream ENDED without a step-finish.
+            // The 0346 idle watchdog covers a stream that goes silent; it cannot
+            // see a stream that CLOSES early - the engine dropping the request
+            // mid-tool-call (live 2026-10-17, window 12: vLLM Running:0 while the
+            // step hung forever, the tool-call args half-streamed, no finish, no
+            // error - the retry policy reacts to errors, not to a quiet close).
+            // A step that ends without a finish must surface as a retryable
+            // stream error, never as a silent hang: the failure flows to the
+            // retry policy (a fresh attempt re-streams the step; abandoned
+            // tool_use blocks are marked by cleanup()), and on retry exhaustion
+            // halt() stamps the finish so the TUI unspins.
+            // Guarded on the two BY-DESIGN mid-step ends: takeUntil fired for a
+            // compaction continue or a loop-guard steer (the loop re-delivers
+            // and a fresh step carries the finish).
+            if (!ctx.assistantMessage.finish && !ctx.needsCompaction && !ctx.loopGuardFired) {
+              yield* status.set(ctx.sessionID, { type: "busy" })
+              yield* Effect.fail(
+                new ProviderError.ResponseStreamError(
+                  "Provider stream ended without a step finish (0409 naked-end reconcile)",
+                ),
+              )
+            }
             // Attempt completed (recovered or finished cleanly): the stash has
             // served its purpose - clear it so the NEXT step of this turn does
             // not re-announce a stale retry banner. (A failed attempt never
