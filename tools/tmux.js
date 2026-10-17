@@ -169,6 +169,120 @@ function decodeSgr(codes) {
   return { fg, bg, bold }
 }
 
+// pollFirst: watch multiple panes' DONE markers, return as soon as the FIRST pane
+// reaches a terminal state (DONE or a prompt needing input). Losers are left
+async function pollFirstDone(panes, timeoutSeconds, abort, lines = 50) {
+  const effectiveTimeout = Math.min(timeoutSeconds, 3600)
+  const captureLines = Math.min(Math.max(lines, 10), 200)
+  const markerRe = (suffix) => new RegExp(`DONE_${suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=(\\d+)`, "m")
+  const startTime = Date.now()
+
+  while (true) {
+    const elapsed = Math.round((Date.now() - startTime) / 1000)
+    if (elapsed >= effectiveTimeout) {
+      const states = []
+      for (const p of panes) {
+        let tail = "(pane gone)"
+        try {
+          const sb = await runTmux(["capture-pane", "-t", p.paneId, "-p", "-S", `-3`])
+          tail = sb.split("\n").slice(-3).join("\n")
+        } catch {}
+        states.push({ paneId: p.paneId, suffix: p.suffix, lastLines: tail })
+      }
+      return { status: "timeout", message: `No pane reached DONE within ${effectiveTimeout}s`, elapsed, panes: states }
+    }
+
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1000)
+      abort?.addEventListener("abort", () => { clearTimeout(timer); resolve() }, { once: true })
+    })
+    if (abort?.aborted) {
+      const states = []
+      for (const p of panes) {
+        let tail = ""
+        try {
+          const sb = await runTmux(["capture-pane", "-t", p.paneId, "-p", "-S", `-${captureLines}`])
+          tail = sb.split("\n").slice(-captureLines).join("\n")
+        } catch {}
+        states.push({ paneId: p.paneId, suffix: p.suffix, status: "cancelled", lastLines: tail })
+      }
+      return { status: "cancelled", message: `Client cancelled after ${elapsed}s.`, elapsed, panes: states }
+    }
+
+    const states = []
+    for (const p of panes) {
+      let scrollback = ""
+      let exists = true
+      try {
+        scrollback = await runTmux(["capture-pane", "-t", p.paneId, "-p", "-S", `-${captureLines}`])
+      } catch { exists = false }
+      states.push({ ...p, exists, scrollback })
+    }
+
+    const winner = states.find((s) => markerRe(s.suffix).test(s.scrollback))
+    if (winner) {
+      const exitCode = parseInt(winner.scrollback.match(markerRe(winner.suffix))[1])
+      pendingPanes.delete(winner.paneId)
+      const others = []
+      for (const s of states) {
+        if (s.paneId === winner.paneId) continue
+        const m = s.scrollback.match(markerRe(s.suffix))
+        others.push({
+          paneId: s.paneId, suffix: s.suffix,
+          status: !s.exists ? "pane-gone" : m ? (parseInt(m[1]) === 0 ? "complete" : "error") : "still-running",
+          lastLines: s.scrollback.split("\n").slice(-5).join("\n"),
+        })
+      }
+      return {
+        status: exitCode === 0 ? "complete" : "error",
+        winner: { paneId: winner.paneId, suffix: winner.suffix, exitCode, elapsed, lastLines: winner.scrollback.split("\n").slice(-captureLines).join("\n") },
+        others,
+      }
+    }
+
+    // Prompt states also end the race: a pane blocked on input/password/
+    // continuation will never reach DONE on its own. Report which pane needs
+    // attention so keys can be sent without losing the other panes' state.
+    for (const s of states) {
+      if (!s.exists) continue
+      const lastLineTrimmed = s.scrollback.split("\n").slice(-10).filter(l => !/[│┌┐└┘║═╗╝╚╔╣╠╦╬╧╩]/.test(l)).pop() || ""
+      let promptType = null
+      if (/^\s*>\s*$/.test(lastLineTrimmed)) promptType = "continuation"
+      else if (/password:|\bpassphrase:\b|enter password/i.test(lastLineTrimmed)) promptType = "password"
+      else if (/\[y\/[nN]\]|\[Y\/n\]|\[y\/N\]|\(y\/n\)|are you sure.*\?|proceed\?|continue\?|\(yes\/no/i.test(lastLineTrimmed)) promptType = "confirm"
+      else if (/yes|no|confirm|proceed/i.test(lastLineTrimmed) && /\?$/.test(lastLineTrimmed)) promptType = "confirm"
+      else if (/[^$#]:\s*$/.test(lastLineTrimmed)
+        && !/^\s*=>\s/.test(lastLineTrimmed)
+        && !/^(Uninstalling|Installing|Downloading|Collecting|Processing|Building|Setting up|Preparing|Removing|Upgrading)\b/i.test(lastLineTrimmed)) promptType = "input"
+      if (promptType) {
+        pendingPanes.delete(s.paneId)
+        const others = []
+        for (const t of states) {
+          if (t.paneId === s.paneId) continue
+          const m = t.scrollback.match(markerRe(t.suffix))
+          others.push({
+            paneId: t.paneId, suffix: t.suffix,
+            status: !t.exists ? "pane-gone" : m ? (parseInt(m[1]) === 0 ? "complete" : "error") : "still-running",
+            lastLines: t.scrollback.split("\n").slice(-5).join("\n"),
+          })
+        }
+        return {
+          status: "input-needed",
+          promptType,
+          pane: { paneId: s.paneId, suffix: s.suffix, lastLine: lastLineTrimmed, lastLines: s.scrollback.split("\n").slice(-captureLines).join("\n") },
+          message: `Pane ${s.paneId} is waiting for input (${promptType}). Send keys to it, or Ctrl+C. Other panes unaffected.`,
+          elapsed, others,
+        }
+      }
+    }
+
+    if (states.every((s) => !s.exists)) {
+      for (const s of states) pendingPanes.delete(s.paneId)
+      return { status: "error", message: `All ${states.length} panes no longer exist (no DONE markers seen)`, elapsed }
+    }
+  }
+}
+
 async function pollForDone(paneId, suffix, timeoutSeconds, abort, lines = 50) {
   const effectiveTimeout = Math.min(timeoutSeconds, 3600)
   const captureLines = Math.min(Math.max(lines, 10), 200)
@@ -284,16 +398,17 @@ async function pollForDone(paneId, suffix, timeoutSeconds, abort, lines = 50) {
       const isBareShellPrompt = /(^|[~\/\w:.-\]])[\$#]\s*$/.test(lastNonEmpty) || /^\s*└─\s*$/.test(lastNonEmpty)
       const nonBoxLine = isBareShellPrompt ? lastNonEmpty.replace(/^\s*└─\s*$/, "") : lastNonEmpty
       if (lastNonEmpty && isBareShellPrompt && !/[│┌┐└└└┘═║╔╗╚╝═╣╟╦╬╳╩⎧]/.test(nonBoxLine)) {
-        const bottom10 = linesArr.slice(Math.max(0, lastNonEmptyIdx - 10), lastNonEmptyIdx + 1).join("\n")
-        const hasRecentDone = /DONE_[a-z0-9]+=\d+/.test(bottom10)
-        if (!hasRecentDone) {
-          pendingPanes.delete(paneId)
-          const { promptType } = await checkPaneIdle(paneId)
-          return {
-            status: "abnormal",
-            message: `Shell prompt returned without DONE_${suffix} marker - command may have crashed or been interrupted. Inspect pane output with capture for details.`,
-            elapsed, promptType, lastLine: lastNonEmpty, lastLines,
-          }
+        // bare shell prompt = nothing is running. Returning is always more
+        // truthful than waiting out the clock: the polled suffix's marker is
+        // either scrolled away, lost, or the command died. (The old
+        // hasRecentDone suppression keyed on ANY command's marker and caused
+        // stale-suffix polls to hang until timeout. 2026-10-15)
+        pendingPanes.delete(paneId)
+        const { promptType } = await checkPaneIdle(paneId)
+        return {
+          status: "abnormal",
+          message: `Shell prompt returned without DONE_${suffix} marker - command may have crashed, been interrupted, or the suffix is stale. Inspect pane output with capture for details.`,
+          elapsed, promptType, lastLine: lastNonEmpty, lastLines,
         }
       }
     }
@@ -333,13 +448,13 @@ REQUIRED vs OPTIONAL args differ per op:
 | manage | action | paneId (kill), confirm (kill/kill-all), layout (spawn) |
 
 Operations:
-- manage: Pane lifecycle (list/spawn/kill/kill-all). Requires action. kill requires paneId+confirm="yes". kill-all requires confirm="yes". spawn's layout param applies a select-layout (e.g. 'even-vertical' = the 50/50 debug split) and exempts the pane from the width realign.
+- manage: Pane lifecycle (list/spawn/kill/kill-all). Requires action. kill requires paneId+confirm="yes". kill-all requires confirm="yes". spawn places work panes in a TOP BAND (default: oc keeps the bottom ~80%, later panes split side-by-side inside the band; band height = TMUX_WORK_BAND_PCT, default 20) - layout 'test-50' is the 50/50 visibility case (exactly one work pane, oc TUI testing); raw tmux layout names are rejected.
 - run: Run command with exit code tracking. DEFAULT (wait=true): blocks until complete, returns {status, exitCode, elapsed, lastLines}. Set wait=false to overlap a long-running command with independent work in the same turn (file writes, reads, searches), then poll for the result. Use wait=true when no parallel work exists. NEVER pipe the command's output to tail/head (the pane shows the full output; the lines param limits what you receive instead - the pane guard REJECTS such commands before execution).
 - keys: Send raw keys (Ctrl+C, password, y/n) to interactive session. NOT for commands. Special-key tokens and leader sequences ('C-x u', 'C-x r') send as raw keys; other strings send as literal text + Enter; enter=false sends literal text without Enter.
 - poll: Wait for command sent via run to complete. Requires paneId and suffix returned by run.
 - capture: Capture pane scrollback (match = return only the matching lines; ansi = raw escapes).
 - wait: Wait for shell prompt (for SSH/REPL after keys).
-- waitFor: Poll the pane capture until a regex MATCHES (or, with absent=true, DISAPPEARS). The state-based wait for TUI panes ONLY (the shell-prompt wait can't see TUI states): question panel popped ('esc dismiss'), model finished (busy spinner gone - absent), panel closed before the next hotkey (absent), compaction done ('▣  Compaction'). Polls every 500ms. NOT for shell commands or remote jobs - those end at a shell prompt and must use run (wait/poll) or capture; the tool refuses waitFor on shell panes.
+- waitFor: Poll the pane capture until a regex MATCHES (or, with absent=true, DISAPPEARS). Two modes: (1) the oc TUI pane - state-based waits (spinner gone, panel popped, compaction done); (2) any work/shell pane with an explicit pattern - content-trigger waits for long-running jobs that fire on the pattern OR the shell prompt returning (whichever first - a crashed boot reports immediately instead of timing out; pair with run(clearHistory:true) so stale scrollback cannot match first). Polls every 500ms.
 - probe: ONE capture -> {label: true/false} verdict for a map of patterns + the matching lines only. Context-light scraping (no pane dump): probe({panel: 'esc dismiss', busy: '⬝', review: '^Review$'}).
 - style: Color scrape - locate a pattern in the pane, decode the ANSI SGR at each occurrence -> [{text, fg: '#rrggbb', bg: '#rrggbb', bold}]. Opt-in color awareness (e.g. the success-green check, the diff red/green backgrounds, the muted-grey confirm) without the raw ANSI noise; match='all' for every occurrence.
 - log: Tail a file (default /tmp/oc-debug.log - the instrumented pane's stderr trail) for the PDBG-debugging loop.
@@ -371,7 +486,11 @@ USAGE NOTES:
 - Background panes for: visible long-running jobs (builds, test suites, Docker builds/logs, SSH sessions, monitoring like htop/nvtop/tail -f (follow logs)). One-shot commands (quick SSH, docker ps) run inline via Bash tool.
 - Cleanup: close panes when task done unless providing ongoing value.`,
   args: {
-    op: z.enum(["manage", "run", "keys", "poll", "capture", "wait", "waitFor", "probe", "style", "log"]).describe("Operation to perform"),
+    op: z.enum(["manage", "run", "keys", "poll", "pollFirst", "capture", "wait", "waitFor", "probe", "style", "log"]).describe("Operation to perform"),
+    panes: z.array(z.object({
+      paneId: z.string().describe("Pane ID (e.g., %123)"),
+      suffix: z.string().describe("DONE suffix from run wait=false"),
+    })).optional().describe("pollFirst: panes to watch; returns as soon as the FIRST one reaches a terminal state (DONE marker or prompt needing input)"),
     action: z.enum(["list", "spawn", "kill", "kill-all"]).optional().describe("manage action (required for manage)"),
     paneId: z.string().optional().describe("Target pane ID (e.g., %123). Required for run/poll/keys/capture/wait/waitFor/probe/style and manage kill"),
     command: z.string().optional().describe("Command to run (required for run)"),
@@ -379,10 +498,11 @@ USAGE NOTES:
     enter: z.boolean().optional().describe("keys: send literal text WITHOUT the trailing Enter (send-keys -l) - mid-turn drafts, panel picks"),
     wait: z.boolean().optional().describe("run: block until complete (default true)"),
     suffix: z.string().optional().describe("poll: suffix from run wait=false (required for poll). run: custom suffix (optional, auto-generated if omitted)"),
+    clearHistory: z.boolean().optional().describe("run: clear the pane scrollback before launching (run wait=false) so waitFor patterns cannot match stale pre-boot content"),
     timeoutSeconds: z.number().int().min(1).max(3600).optional().describe("Timeout in seconds (run/poll: 600, wait: 30, waitFor: 120)"),
     lines: z.number().int().min(10).max(200).optional().describe("Lines of scrollback to return (default 50)"),
     confirm: z.string().optional().describe("kill/kill-all: must be 'yes'"),
-    layout: z.string().optional().describe("manage spawn: tmux select-layout to apply after spawn (e.g. 'even-vertical' for the 50/50 debug split); the realign skips these panes"),
+    layout: z.enum(["top-band", "test-50"]).optional().describe("manage spawn: 'top-band' (default) = work panes in a top band with oc keeping the bottom; 'test-50' = 50/50 split, exactly one work pane, for visibility cases (oc TUI testing). Raw tmux layout names are rejected."),
     pattern: z.string().optional().describe("waitFor: regex to wait for (required). style: text/regex to locate (required)"),
     absent: z.boolean().optional().describe("waitFor: wait for the pattern to DISAPPEAR instead of appear (e.g. a spinner or a closing panel)"),
     patterns: z.record(z.string(), z.string()).optional().describe("probe: {label: regex} map - one capture, each label = true/false (required for probe)"),
@@ -402,6 +522,11 @@ USAGE NOTES:
     switch (op) {
       case "run": req("paneId"); req("command"); break
       case "poll": req("paneId"); req("suffix"); break
+      case "pollFirst": {
+        if (!Array.isArray(args.panes) || args.panes.length === 0) throw new Error("pollFirst requires a non-empty panes array of {paneId, suffix}")
+        for (const p of args.panes) { if (!p.paneId || !p.suffix) throw new Error("pollFirst panes entries need paneId and suffix") }
+        break
+      }
       case "keys": req("paneId"); req("keys"); break
       case "capture": req("paneId"); break
       case "wait": req("paneId"); break
@@ -434,11 +559,32 @@ USAGE NOTES:
       }
 
       if (action === "spawn") {
+        // Layout convention (2026-10-17): work panes live in a TOP BAND and oc
+        // keeps the bottom of the window. The default spawn path already does
+        // this: the first work pane splits above oc at TMUX_WORK_BAND_PCT
+        // (default 20%) of window height, later work panes split side-by-side
+        // (-h) inside the band. Raw tmux layouts are rejected: select-layout
+        // re-tiles the WHOLE window and starves the oc pane (even-vertical with
+        // oc + 3 work panes gives oc 25% of the height - observed 2026-10-17).
+        // 'test-50' is the visibility-case preset (oc TUI testing): exactly one
+        // work pane, oc + work at 50/50.
+        const layoutPreset = args.layout ?? "top-band"
+        if (layoutPreset !== "top-band" && layoutPreset !== "test-50") {
+          throw new Error(
+            `Unsupported layout '${args.layout}': use 'top-band' (default - work panes in a top band, oc keeps the bottom) ` +
+            `or 'test-50' (50/50 split for visibility cases such as oc TUI testing). ` +
+            `Raw tmux layout names re-tile the whole window and starve the oc pane.`)
+        }
         const wid = await getOpencodeWindowId()
         const opencodePane = process.env.TMUX_PANE
         const out = await runTmux(["list-panes", "-t", wid, "-F", "#{pane_id}"])
         const allPanes = out.split("\n").filter(Boolean)
         const bgPanes = allPanes.filter(p => p !== opencodePane)
+        if (layoutPreset === "test-50" && bgPanes.length > 0) {
+          throw new Error(
+            `layout 'test-50' must be the FIRST work pane (found ${bgPanes.length} existing work pane(s)); ` +
+            `kill the work panes first, then spawn with test-50, or use the default top-band.`)
+        }
 
         for (const p of bgPanes) {
           if (pendingPanes.has(p) || freshPanes.has(p)) continue
@@ -459,7 +605,8 @@ USAGE NOTES:
         const oldBgPanes = new Set(bgPanes)
         if (bgPanes.length === 0) {
           const winHeight = parseInt((await runTmux(["display-message", "-t", wid, "-p", "#{window_height}"])).trim())
-          const paneHeight = Math.floor(winHeight * 20 / 100)
+          const bandPct = parseInt(process.env.TMUX_WORK_BAND_PCT ?? "20") || 20
+          const paneHeight = Math.floor(winHeight * bandPct / 100)
           await runTmux(["split-window", "-t", opencodePane, "-v", "-b", "-l", String(paneHeight), "-d"])
         } else {
           await runTmux(["split-window", "-t", bgPanes[0], "-h", "-d"])
@@ -469,19 +616,22 @@ USAGE NOTES:
         const newPaneId = newBgPanes.find(p => !oldBgPanes.has(p))
         freshPanes.add(newPaneId)
         await realignPanes()
-        if (args.layout) {
-          await runTmux(["select-layout", "-t", wid, args.layout]).catch(() => {})
-          layoutPanes.set(newPaneId, args.layout)
+        if (layoutPreset === "test-50") {
+          // oc + exactly one work pane -> equal rows (50/50). layoutPanes keeps
+          // the realign from touching it (width equalization is moot with one
+          // work pane, but the marker documents intent).
+          await runTmux(["select-layout", "-t", wid, "even-vertical"]).catch(() => {})
+          layoutPanes.set(newPaneId, "test-50")
         }
         await runTmux(["select-pane", "-t", opencodePane]).catch(() => {})
         return {
           title: `Spawned pane ${newPaneId}`,
           output: JSON.stringify({
             paneId: newPaneId,
-            layout: args.layout ?? undefined,
-            info: "Pane opened. Use run to run a command with automatic DONE marker and completion tracking, or keys for special keys (Ctrl+C, prompt responses).",
+            layout: layoutPreset,
+            info: "Pane opened in the top work band. Use run to run a command with automatic DONE marker and completion tracking, or keys for special keys (Ctrl+C, prompt responses).",
           }, null, 2),
-          metadata: { paneId: newPaneId, reused: false, layout: args.layout },
+          metadata: { paneId: newPaneId, reused: false, layout: layoutPreset },
         }
       }
 
@@ -537,6 +687,9 @@ USAGE NOTES:
 
       freshPanes.delete(args.paneId)
       paneGuardReject(args.command)
+      if (args.clearHistory) {
+        await runTmux(["clear-history", "-t", args.paneId])
+      }
       const suffix = args.suffix || uniqueSuffix()
       const cmd = `bash -c '${args.command.replace(/'/g, "'\\''")}' ; echo "DONE_${suffix}=$?"`
       await runTmux(["send-keys", "-t", args.paneId, cmd, "Enter"])
@@ -595,6 +748,16 @@ USAGE NOTES:
       }
     }
 
+    if (op === "pollFirst") {
+      const timeoutSeconds = Math.min(args.timeoutSeconds ?? 600, 3600)
+      const result = await pollFirstDone(args.panes, timeoutSeconds, abort, args.lines)
+      return {
+        title: `pollFirst ${result.status}`,
+        output: JSON.stringify(result, null, 2),
+        metadata: result,
+      }
+    }
+
     if (op === "capture") {
       const lines = args.lines ?? 50
       const captureArgs = ["capture-pane", "-t", args.paneId, "-p"]
@@ -610,31 +773,29 @@ USAGE NOTES:
     }
 
     if (op === "waitFor") {
-      // TUI-only enforcement, enforced at the pane level: waitFor watches pane
-      // states of the oc TUI window (spinner/panel) and nothing else. The only
-      // pane it may run on is the one opencode itself lives in (TMUX_PANE);
-      // every other pane is a work/shell pane whose commands end at a prompt
-      // and must be tracked with run (wait/poll) or capture. Refusing non-TUI
-      // panes removes both the stale-marker instant-match and the blind-wait
-      // failure modes on shell output.
+      // Two modes. (1) oc TUI pane (TMUX_PANE): watches TUI states (spinner,
+      // panels, compaction) - unchanged. (2) ANY other pane with an explicit
+      // pattern: content-trigger wait for long-running shell jobs (e.g. a
+      // foreground server emitting "Application startup complete"). Stale-marker
+      // caveat: a previous occurrence of the pattern in scrollback matches
+      // instantly - pair with run(clearHistory:true) before launching, or use a
+      // pattern unique to this event.
       const tuiPane = (process.env.TMUX_PANE || "").trim()
-      if (!tuiPane || args.paneId !== tuiPane) {
-        return {
-          title: "waitFor refused (non-TUI pane)",
-          output: JSON.stringify({ status: "error", message: `waitFor is for the oc TUI pane only (TMUX_PANE=${tuiPane || "(unset)"}); pane ${args.paneId} is a work/shell pane. Track shell commands with run (wait=true/false + poll) or capture.`, elapsed: 0 }, null, 2),
-          metadata: { status: "error", elapsed: 0 },
-        }
-      }
-      try {
-        const paneState = await checkPaneIdle(args.paneId)
-        if (paneState.promptType === "shell") {
-          return {
-            title: "waitFor refused (oc pane at shell prompt)",
-            output: JSON.stringify({ status: "error", message: `oc pane is at a shell prompt; nothing to wait for TUI-state on.`, elapsed: 0 }, null, 2),
-            metadata: { status: "error", elapsed: 0 },
+      const isTuiPane = tuiPane && args.paneId === tuiPane
+      if (isTuiPane) {
+        try {
+          const paneState = await checkPaneIdle(args.paneId)
+          if (paneState.promptType === "shell") {
+            return {
+              title: "waitFor refused (oc pane at shell prompt)",
+              output: JSON.stringify({ status: "error", message: `oc pane is at a shell prompt; nothing to wait for TUI-state on.`, elapsed: 0 }, null, 2),
+              metadata: { status: "error", elapsed: 0 },
+            }
           }
-        }
-      } catch { /* pane may vanish; the loop below reports it */ }
+        } catch { /* pane may vanish; the loop below reports it */ }
+      }
+      // Non-TUI panes fall through: explicit-pattern content wait (see mode
+      // comment above).
       const timeoutSeconds = Math.min(args.timeoutSeconds ?? 120, 3600)
       const pattern = new RegExp(args.pattern)
       const captureLines = Math.min(Math.max(args.lines ?? 50, 10), 200)
@@ -655,6 +816,21 @@ USAGE NOTES:
             output: JSON.stringify({ status: "matched", message: `Pattern ${args.absent ? "cleared" : "matched"} in ${elapsed}s`, elapsed, matchedLines }, null, 2),
             metadata: { status: "matched", elapsed, matchedLines },
           }
+        }
+        if (!isTuiPane) {
+          // Second trigger for shell panes: if the command exits (prompt
+          // returns) before the pattern appears, report immediately instead of
+          // blind-waiting to timeout - e.g. a server boot that crashed.
+          try {
+            const paneState = await checkPaneIdle(args.paneId)
+            if (paneState.idle && paneState.promptType === "shell") {
+              return {
+                title: `waitFor prompt (pattern unmatched)`,
+                output: JSON.stringify({ status: "prompt", message: `Shell prompt returned after ${elapsed}s before the pattern matched (command exited early - check the pane for the error).`, elapsed, matchedLines: "" }, null, 2),
+                metadata: { status: "prompt", elapsed },
+              }
+            }
+          } catch { /* pane vanished; the capture above handles the next loop */ }
         }
         if (abort?.aborted) {
           return {
