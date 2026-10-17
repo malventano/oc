@@ -212,6 +212,16 @@ describe("LoopGuard new signatures (2026-08-15 evidence)", () => {
       expect(guard.pushText(distinctParagraph(i) + SEP)).toBeNull()
     }
   })
+
+  test("0411: a whitespace padding run quoted from a paste never fires the entropy rule", () => {
+    const guard = LoopGuard.make()
+    // the live false positive (2026-10-17): 437-space run + one braille glyph
+    const paste = " ".repeat(437) + "\u280F"
+    expect(guard.pushText("The massive blank run in the paste after block 2: \"" + paste)).toBeNull()
+    // a glyph-dense symbol loop still fires (the rule's actual target)
+    const glyphs = LoopGuard.make()
+    expect(glyphs.pushText("\u2580".repeat(250))?.hit).toContain("distinct characters")
+  })
 })
 
 describe("LoopGuard short-frame intent recycling (2026-08-21 evidence)", () => {
