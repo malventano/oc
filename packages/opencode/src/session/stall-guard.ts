@@ -133,7 +133,19 @@ export type StallDetection = {
 // as text, `</parameter>\n</invoke>\n</tool_calls>`) fell through to
 // stray-closer. `\s*` between the three tags + `\s*$` at the end covers both
 // the contiguous and the multi-line shapes.
-const EATEN_CALL_END = /<\/parameter>\s*<\/invoke>\s*<\/tool_calls>\s*$/
+//
+// 2026-10-18 (window 8 miss): the current model emits the DSML dialect
+// `<｜DSML｜ parameter>` / `<｜DSML｜invoke>` / `<｜DSML｜calls>` - U+FF5C separators,
+// an optional space before the tag name, and `calls` (not `tool_calls`).
+// After the bar-to-slash normalization the closer reads `<// parameter>`.
+// The original literal `</parameter>` pattern plus the no-space stray-closer
+// regex both missed it, so a leaked full chain ended a real turn silently.
+// The tolerant closer covers canonical, DSML, and space-separated forms; the
+// normalization stays length-preserving so trim indices remain valid.
+const closer = (name: string) => `<\\/[\\/\\s]*(?:DSML[\\/\\s]*)?${name}\\s*>`
+const EATEN_CALL_END = new RegExp(
+  `${closer("parameter")}\\s*${closer("invoke")}\\s*${closer("(?:tool_)?calls")}\\s*$`,
+)
 
 // Strip the WHOLE leaked call, not just its closed tail: walk back from the
 // stranded closer over the contiguous markup lines (each starts with '<' and
@@ -172,6 +184,10 @@ function wholeCallTrimAt(text: string, closeIndex: number): number {
 // interleaved - still matches) and checked on a fullwidth-slash-normalized
 // copy (the model's slash homoglyph U+FF5C reads as a real slash).
 const STRAY_CLOSER_END = /<\/[^\s<>]{0,40}>\s*$/
+// DSML closers carry separators/spaces inside the tag body: the raw
+// `</` + U+FF5C + ` parameter>` becomes `<// parameter>` after the bar
+// normalization, which the no-space regex above cannot match.
+const DSML_CLOSER_END = /<\/[\/\s]*(?:DSML[\/\s]*)?[a-z_][\w-]*\s*>\s*$/i
 
 // Fullwidth vertical bar: the model's slash homoglyph in degenerate output.
 const FULLWIDTH_BAR = "\uff5c"
@@ -350,7 +366,7 @@ export function detect(
       trimAt: wholeCallTrimAt(norm, eaten.index),
     }
   }
-  const stray = STRAY_CLOSER_END.exec(norm)
+  const stray = STRAY_CLOSER_END.exec(norm) ?? DSML_CLOSER_END.exec(norm)
   if (stray) {
     return {
       signature: "stray-closer",
