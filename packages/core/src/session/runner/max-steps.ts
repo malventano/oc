@@ -15,7 +15,7 @@ Response must include:
 
 Any attempt to use tools is a critical violation. Respond with text ONLY.`
 
-// Default hard step budget for subagents when their agent config does not set
-// `steps`. The main agent cap is untouched (Infinity unless configured).
-export const DEFAULT_SUBAGENT_STEPS = 200
+// No default step budget: both main and subagent runs are Infinity unless the
+// agent config sets `steps`. A 200-step subagent default (B1, 0424) was removed
+// after the eval data showed legitimate single-turn audits reaching 305 steps.
 
