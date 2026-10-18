@@ -368,4 +368,28 @@ describe("stall-guard detect", () => {
   })
 })
 
+describe("stall-guard mid-stream leaked-closer probe", () => {
+  test("fires on a tail-ending DSML closer chain", () => {
+    const bar = "\uff5c"
+    const text =
+      "The dispatch table is modelled, not executed." +
+      "\n\n</" + bar + " parameter>\n</" + bar + " invoke>\n</" + bar + " calls>"
+    const hit = StallGuard.detectLeakedCloserTail(text)
+    expect(hit).not.toBeNull()
+    expect(hit!.trimAt).toBe(text.indexOf("</" + bar + " parameter>"))
+  })
+
+  test("fires on a lone leaked parameter closer in the tail", () => {
+    const hit = StallGuard.detectLeakedCloserTail("Checking next.\n</parameter>")
+    expect(hit).not.toBeNull()
+    expect(hit!.trimAt).toBe("Checking next.\n".length)
+  })
+
+  test("does not fire on ordinary markdown/html closers", () => {
+    expect(StallGuard.detectLeakedCloserTail("<div>content</div>")).toBeNull()
+    expect(StallGuard.detectLeakedCloserTail("A finished sentence.")).toBeNull()
+  })
+})
+
+
 

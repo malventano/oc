@@ -212,6 +212,8 @@ function fake(
     loopGuardHit: null,
     loopGuardChannel: null,
     loopTrimAt: null,
+    actionAdvisory: null,
+    livenessAction: null,
     stallText: "",
     stallHadToolCall: false,
     stallFired: false,

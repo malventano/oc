@@ -177,6 +177,12 @@ function wholeCallTrimAt(text: string, closeIndex: number): number {
   return blockStart
 }
 
+// Mid-stream leaked-closer probe (action-guard patch 0425): the same DSML
+// shapes, checked on a short rolling tail of the accumulated text. Only the
+// tool-call tag names qualify - generic HTML closers (`</div>`) are normal
+// prose/markdown and must not cut a live stream.
+const DSML_LEAK_END = new RegExp(`${closer("(?:parameter|invoke|calls|tool_calls)")}\\s*$`, "i")
+
 // Any other closing tag at the very end of the text: degenerate-end family
 // (gibberish with a stray fragment) or an unrecognized remnant shape. Since
 // 2026-08-18: junk-tolerant (non-space chars allowed inside the tag, so a
@@ -275,6 +281,37 @@ function trailingLetMeIntent(text: string): boolean {
   // An inline delivery delimiter ends the intent before the response does.
   if (/[:;]/.test(sent)) return false
   return true
+}
+
+/**
+ * Mid-stream leaked-closer probe (0425): check only the last `tailChars` of
+ * accumulated text, end-anchored, so a leaked DSML tool-call closer fires the
+ * loop-guard cut immediately instead of waiting for finish=stop. Returns the
+ * absolute trim point (full text coordinates) or null.
+ */
+export function detectLeakedCloserTail(
+  text: string,
+  tailChars = 300,
+): { hit: string; trimAt: number } | null {
+  if (text.length === 0 || tailChars <= 0) return null
+  const base = Math.max(0, text.length - tailChars)
+  const tail = text.slice(base)
+  const norm = tail.replaceAll(FULLWIDTH_BAR, "/")
+  const eaten = EATEN_CALL_END.exec(norm)
+  if (eaten) {
+    return {
+      hit: "stranded tool-call closing chain in the output tail",
+      trimAt: base + wholeCallTrimAt(norm, eaten.index),
+    }
+  }
+  const dsml = DSML_LEAK_END.exec(norm)
+  if (dsml) {
+    return {
+      hit: "leaked DSML tool-call closer in the output tail",
+      trimAt: base + wholeCallTrimAt(norm, dsml.index),
+    }
+  }
+  return null
 }
 
 /**

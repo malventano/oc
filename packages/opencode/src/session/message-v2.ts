@@ -389,7 +389,11 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           if (part.state.status === "completed") {
             const outputText = part.state.time.compacted
               ? "[Old tool result content cleared]"
-              : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
+              : typeof part.state.metadata?.actionGuardStub === "string"
+                ? // Action guard (0425): model-visible stub for a byte-identical
+                  // repeat; state.output keeps the full result in the log.
+                  part.state.metadata.actionGuardStub
+                : truncateToolOutput(part.state.output, options?.toolOutputMaxChars)
             const attachments =
               part.state.time.compacted || options?.stripMedia
                 ? []

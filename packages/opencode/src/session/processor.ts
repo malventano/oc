@@ -13,6 +13,8 @@ import { Session } from "./session"
 import { LLM } from "./llm"
 import { MessageV2 } from "./message-v2"
 
+import { ActionGuard } from "./action-guard"
+import { Liveness } from "./liveness"
 import { LoopGuard } from "./loop-guard"
 import { StallGuard } from "./stall-guard"
 import { isOverflow } from "./overflow"
@@ -54,6 +56,8 @@ export interface Handle {
   readonly loopGuardHit: string | null
   readonly loopGuardChannel: "reasoning" | "text" | "tool-input" | null
   readonly loopTrimAt: number | null
+  readonly actionAdvisory: string | null
+  readonly livenessAction: Liveness.LivenessAction | null
   readonly stallText: string
   readonly stallHadToolCall: boolean
   readonly stallFired: boolean
@@ -67,6 +71,10 @@ type Input = {
 
   loopGuardEnabled?: boolean
   stallGuardEnabled?: boolean
+  /** Cross-step action ledger (patch 0425); undefined disables the guard. */
+  actionGuard?: ActionGuard.State
+  /** Per-turn liveness watchdog (patch 0427); undefined disables it. */
+  liveness?: Liveness.State
   /**
    * The step's parent is the synthetic compaction-continue message (0214):
    * the stall guard is exempted for it (see stall-guard.ts detect()). The
@@ -102,6 +110,12 @@ interface ProcessorContext extends Input {
   loopGuardChannel: "reasoning" | "text" | "tool-input" | null
   loopTrimAt: number | null
   toolInputDetector: ReturnType<typeof LoopGuard.makeDetector> | undefined
+  actionGuard: ActionGuard.State | undefined
+  /** Per-tool-call action key (set only for non-exempt calls). */
+  toolActionKeys: Record<string, string>
+  liveness: Liveness.State | undefined
+  livenessAction: Liveness.LivenessAction | null
+  livenessStepEnded: boolean
   stallGuardCompactionContinue: boolean
   stallText: string
   stallHadToolCall: boolean
@@ -174,6 +188,11 @@ const layer = Layer.effect(
         loopGuardChannel: null,
         loopTrimAt: null,
         toolInputDetector: undefined,
+        actionGuard: input.actionGuard,
+        toolActionKeys: {},
+        liveness: input.liveness,
+        livenessAction: null,
+        livenessStepEnded: false,
         stallText: "",
         stallHadToolCall: false,
         stallFired: false,
@@ -456,6 +475,10 @@ const layer = Layer.effect(
             ctx.loopGuard.reset()
             ctx.toolInputDetector = undefined
             const input = isRecord(value.input) ? value.input : { value: value.input }
+            if (ctx.actionGuard && !ActionGuard.isExempt(value.name, input)) {
+              ctx.toolActionKeys[value.id] = ActionGuard.keyFor(value.name, input)
+              ctx.actionGuard.recordCall(value.name, input)
+            }
             yield* updateToolCall(value.id, (match) => ({
               ...match,
               tool: value.name,
@@ -531,6 +554,18 @@ const layer = Layer.effect(
                   : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
               attachments: attachments.length ? attachments : undefined,
             }
+            // Action ledger (0425): identical (key, result-hash) streaks. The
+            // stub is model-visible only (metadata), so state.output keeps the
+            // full result in the session log; read-repeat hints append to the
+            // output itself.
+            const actionKey = ctx.toolActionKeys[value.id]
+            const action = actionKey && ctx.actionGuard ? ctx.actionGuard.recordResult(value.name, output.output, actionKey) : undefined
+            if (action?.suffix) output.output += action.suffix
+            if (action?.stub) output.metadata = { ...output.metadata, actionGuardStub: action.stub }
+            delete ctx.toolActionKeys[value.id]
+            // Liveness (0427): mutations count directly; every other completed
+            // result counts only when its hash is new.
+            if (ctx.liveness) Liveness.observeResult(ctx.liveness, value.name, rawOutput.output)
             yield* completeToolCall(value.id, output)
             // Open-ended question tool: the turn ends with the question
             // asked (the answers arrive later as a new user prompt), so the
@@ -580,6 +615,11 @@ const layer = Layer.effect(
             return
 
           case "step-finish": {
+            // Liveness window boundary (0427): one decision per completed step.
+            if (ctx.liveness && !ctx.livenessStepEnded) {
+              ctx.livenessStepEnded = true
+              ctx.livenessAction = ctx.liveness.endStep()
+            }
             const completedSnapshot = yield* snapshot.track()
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             // Anthropic reports thinking blocks it removed before the model saw the
@@ -693,6 +733,19 @@ const layer = Layer.effect(
             // Accumulate the step's full text for the stall guard: the last
             // text-delta tail is what a mid-sentence stop would cut off.
             ctx.stallText += value.text
+            // Mid-stream leaked-closer nudge (0425): a DSML tool-call closer
+            // landing in the output tail is already fatal at finish=stop; cut
+            // and steer now instead of waiting for the step to end. Reuses the
+            // loop-guard trim/fired state so prompt.ts needs no new path.
+            if (ctx.loopGuardEnabled && !ctx.loopGuardFired) {
+              const leak = StallGuard.detectLeakedCloserTail(ctx.stallText)
+              if (leak) {
+                ctx.loopGuardFired = true
+                ctx.loopGuardHit = leak.hit
+                ctx.loopGuardChannel = "text"
+                ctx.loopTrimAt = leak.trimAt
+              }
+            }
             return
 
 
@@ -857,6 +910,9 @@ const layer = Layer.effect(
         ctx.loopGuardChannel = null
         ctx.loopTrimAt = null
         ctx.toolInputDetector = undefined
+        ctx.toolActionKeys = {}
+        ctx.livenessAction = null
+        ctx.livenessStepEnded = false
         ctx.stallText = ""
         ctx.stallHadToolCall = false
         ctx.stallFired = false
@@ -1019,6 +1075,12 @@ const layer = Layer.effect(
         },
         get loopTrimAt() {
           return ctx.loopTrimAt
+        },
+        get actionAdvisory() {
+          return ctx.actionGuard?.takeAdvisory() ?? null
+        },
+        get livenessAction() {
+          return ctx.livenessAction
         },
         get stallText() {
           return ctx.stallText

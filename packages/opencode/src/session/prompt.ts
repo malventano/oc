@@ -22,10 +22,13 @@ import { Provider } from "@/provider/provider"
 import { type Tool as AITool, tool, jsonSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction, hasAbortedCompaction, hasNewerPrompt } from "./compaction"
+import { ActionGuard } from "./action-guard"
+import { Liveness } from "./liveness"
+import { StepAdvisory } from "./step-advisory"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
-import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
+import { MAX_STEPS_PROMPT, DEFAULT_SUBAGENT_STEPS } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
@@ -1250,6 +1253,48 @@ const layer = Layer.effect(
         let stallFires = 0
         let autoCompactRounds = 0
         let guardsHalted = false
+        // 0425/0426/0427 per-turn state: the action ledger and liveness
+        // watchdog span steps, so they live here and are passed into every
+        // processor step. Step advisories are emitted once each per turn.
+        const actionGuard = ActionGuard.guardEnabled() ? ActionGuard.make() : undefined
+        const liveness = Liveness.make()
+        const livenessEnabled = Liveness.enabled()
+        const stepAdvisories = new Set<number>()
+        // Auto-compaction circuit breaker: consecutive auto attempts whose
+        // reported context did not shrink. Three strikes halts the turn.
+        let autoCompactNoReduce = 0
+        let lastAutoCompactTokens: number | undefined
+        const noteAutoCompaction = (tokens: number | undefined) => {
+          if (tokens === undefined) return
+          if (lastAutoCompactTokens !== undefined && tokens >= lastAutoCompactTokens) autoCompactNoReduce++
+          else autoCompactNoReduce = 0
+          lastAutoCompactTokens = tokens
+        }
+        // Called before every auto-compaction create. Returns true when the
+        // breaker trips (3 consecutive attempts whose reported context did not
+        // shrink) - the caller halts the turn instead of retrying forever.
+        const autoCompactBreaker = (tokens: number | undefined, lastMessage: SessionV1.Assistant | undefined) =>
+          Effect.gen(function* () {
+            noteAutoCompaction(tokens)
+            if (autoCompactNoReduce < 3) return false
+            const message =
+              "Auto-compaction stopped after 3 consecutive attempts that did not reduce context. The turn is halting so it does not retry in a loop; re-prompt to continue or compact manually."
+            yield* events
+              .publish(TuiEvent.ToastShow, {
+                title: "Auto-compaction halted",
+                message,
+                variant: "error",
+                duration: 8000,
+              })
+              .pipe(Effect.ignore)
+            if (lastMessage) {
+              lastMessage.error ??= new NamedError.Unknown({ message }).toObject()
+              lastMessage.finish ??= "stop"
+              if (lastMessage.time) lastMessage.time.completed = Date.now()
+              yield* sessions.updateMessage(lastMessage)
+            }
+            return true
+          })
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
         const initialFlags = Session.guardFlags(session.metadata)
         loopGuardEnabled = initialFlags.loop
@@ -1427,6 +1472,14 @@ const layer = Layer.effect(
             // the carried-over context past that room and the summary turn
             // 400s. Take the legacy method (head-trim + replay) when there is
             // no room, so the first post-switch compaction actually succeeds.
+            if (
+              yield* autoCompactBreaker(
+                lastFinished.tokens.total,
+                lastAssistantMsg?.info as SessionV1.Assistant | undefined,
+              )
+            ) {
+              break
+            }
             yield* compaction.create({
               sessionID,
               agent: lastUser.agent,
@@ -1445,7 +1498,11 @@ const layer = Layer.effect(
             yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
-          const maxSteps = agent.steps ?? Infinity
+          // Subagent budget (0426): child sessions default to a finite cap when
+          // their agent config does not set `steps`; the main agent stays at
+          // Infinity. The default is applied here (child runLoop) rather than
+          // mutating the shared Agent.Info object.
+          const maxSteps = agent.steps ?? (session.parentID ? DEFAULT_SUBAGENT_STEPS : Infinity)
           const isLastStep = step >= maxSteps
           // Compaction turns skip mode reminders: the injected summary prompt is
           // the turn's content, and plan/build reminders target the last user
@@ -1538,6 +1595,8 @@ const layer = Layer.effect(
               loopGuardEnabled,
               stallGuardEnabled: stallGuardEnabled && !compactingPrompt,
               stallGuardCompactionContinue,
+              actionGuard,
+              liveness,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1704,6 +1763,13 @@ const layer = Layer.effect(
               }
             }
 
+            const stepAdvisory = compactingPrompt
+              ? null
+              : StepAdvisory.stepAdvisory(step, maxSteps, stepAdvisories)
+            if (stepAdvisory) {
+              stepAdvisories.add(stepAdvisory.threshold)
+              steerPrompt = steerPrompt ? `${steerPrompt}\n\n${stepAdvisory.message}` : stepAdvisory.message
+            }
             if (steerPrompt) {
               modelMsgs.push({ role: "user", content: [{ type: "text", text: steerPrompt }] })
               steerPrompt = undefined
@@ -2043,6 +2109,48 @@ const layer = Layer.effect(
               return "continue" as const
             }
 
+            // Action advisory (0425): a sourced, request-only steer for a
+            // repeated action or identical result streak. Advisory only - the
+            // turn continues and nothing is dropped.
+            const actionAdvisory = handle.actionAdvisory
+            if (actionAdvisory) {
+              yield* Effect.logWarning("action guard advisory", {
+                "session.id": sessionID,
+                detail: actionAdvisory,
+              })
+              steerPrompt = steerPrompt ? `${steerPrompt}\n\n${actionAdvisory}` : actionAdvisory
+            }
+
+            // Liveness watchdog (0427): default OFF. Decisions are still
+            // computed (observe-only logging) but only acted on when
+            // OC_ENABLE_LIVENESS=1.
+            const livenessAction = handle.livenessAction
+            if (livenessAction && livenessAction !== "none") {
+              if (livenessEnabled) {
+                if (livenessAction === "halt") {
+                  const message =
+                    "Liveness watchdog halted the turn: two consecutive observation windows produced no progress (no file mutation and no new tool result). Re-prompt with a different approach."
+                  yield* events.publish(TuiEvent.ToastShow, {
+                    title: "Liveness watchdog halted",
+                    message,
+                    variant: "error",
+                    duration: 8000,
+                  }).pipe(Effect.ignore)
+                  handle.message.error ??= new NamedError.Unknown({ message }).toObject()
+                  handle.message.finish = "stop"
+                  if (handle.message.time) handle.message.time.completed = Date.now()
+                  yield* sessions.updateMessage(handle.message)
+                  return "break" as const
+                }
+                steerPrompt = steerPrompt ? `${steerPrompt}\n\n${Liveness.LIVENESS_ADVISORY}` : Liveness.LIVENESS_ADVISORY
+              } else {
+                yield* Effect.logInfo("liveness watchdog observe-only", {
+                  "session.id": sessionID,
+                  action: livenessAction,
+                })
+              }
+            }
+
             if (structured !== undefined) {
               handle.message.structured = structured
               handle.message.finish = handle.message.finish ?? "stop"
@@ -2103,6 +2211,14 @@ const layer = Layer.effect(
                 })
                 compactingPrompt = undefined
               } else {
+                if (
+                  yield* autoCompactBreaker(
+                    lastFinished?.tokens.total,
+                    lastAssistantMsg?.info as SessionV1.Assistant | undefined,
+                  )
+                ) {
+                  return "break" as const
+                }
                 yield* compaction.create({
                   sessionID,
                   agent: lastUser.agent,
