@@ -5461,14 +5461,14 @@ function LiveEditDiff(props: {
               {...(lang() ? { filetype: lang() } : {})}
               width="100%"
               flexShrink={1}
-              drawUnstyledText={false}
+              drawUnstyledText={isNoGrammar(lang())}
               streaming={true}
               syntaxStyle={syntax()}
               content={unifiedText()}
               // 0394: the session ScrollBox owns scrolling (see the reasoning code note).
               wheelScrollable={false}
               conceal={false}
-              fg={theme.textMuted}
+              fg={lang() && isNoGrammar(lang()) ? theme.text : theme.textMuted}
             />
           </line_number>
         ) : (
@@ -5502,14 +5502,14 @@ function LiveEditDiff(props: {
                 // 50% box by the gutter count - spilling into the sibling
                 // column and past the box edge (2026-09-07 wrap regression).
                 flexShrink={1}
-                drawUnstyledText={false}
+                drawUnstyledText={isNoGrammar(lang())}
                 streaming={true}
                 syntaxStyle={syntax()}
                 content={left()}
                 // 0394: the session ScrollBox owns scrolling (see the reasoning code note).
                 wheelScrollable={false}
                 conceal={false}
-                fg={theme.textMuted}
+                fg={lang() && isNoGrammar(lang()) ? theme.text : theme.textMuted}
               />
             </line_number>
           </box>
@@ -5525,14 +5525,14 @@ function LiveEditDiff(props: {
                 // past the box edge (the numeric height driver defaulted it
                 // to flexShrink=0, overflowing by the gutter count).
                 flexShrink={1}
-                drawUnstyledText={false}
+                drawUnstyledText={isNoGrammar(lang())}
                 streaming={true}
                 syntaxStyle={syntax()}
                 content={right()}
                 // 0394: the session ScrollBox owns scrolling (see the reasoning code note).
                 wheelScrollable={false}
                 conceal={false}
-                fg={theme.textMuted}
+                fg={lang() && isNoGrammar(lang()) ? theme.text : theme.textMuted}
               />
             </line_number>
           </box>

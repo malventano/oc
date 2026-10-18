@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
-import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode } from "../src/theme"
+import { DEFAULT_THEMES, addTheme, allThemes, generateSyntax, hasTheme, resolveTheme, terminalMode } from "../src/theme"
 import { discoverThemes } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
 
@@ -10,6 +10,30 @@ test("addTheme writes into module theme store", () => {
   const name = `plugin-theme-${Date.now()}`
   expect(addTheme(name, DEFAULT_THEMES.opencode)).toBe(true)
   expect(allThemes()[name]).toBeDefined()
+})
+
+test("alternate capture vocabularies resolve to theme colors", () => {
+  const theme = resolveTheme(DEFAULT_THEMES.opencode, "dark")
+  const syntax = generateSyntax(theme)
+  const channels = (color?: { r: number; g: number; b: number; a: number }) =>
+    color ? [color.r, color.g, color.b, color.a] : undefined
+  const fg = (scope: string) => channels(syntax.getStyle(scope)?.fg)
+
+  // Existing intentional scheme: tags red, attributes orange.
+  expect(fg("tag")).toEqual(channels(theme.error))
+  expect(fg("attribute")).toEqual(channels(theme.warning))
+  expect(fg("namespace")).toEqual(channels(theme.syntaxType))
+  expect(fg("field")).toEqual(channels(theme.syntaxVariable))
+  expect(fg("label")).toEqual(channels(theme.markdownLinkText))
+  expect(fg("float")).toEqual(channels(theme.syntaxNumber))
+  // 0430 aliases for the alternate capture families.
+  expect(fg("conditional")).toEqual(channels(theme.syntaxKeyword))
+  expect(fg("method")).toEqual(channels(theme.syntaxFunction))
+  expect(fg("delimiter")).toEqual(channels(theme.syntaxPunctuation))
+  expect(fg("identifier")).toEqual(channels(theme.syntaxVariable))
+  expect(fg("cImport")).toEqual(channels(theme.syntaxKeyword))
+  expect(fg("error")).toEqual(channels(theme.error))
+  expect(fg("warning")).toEqual(channels(theme.warning))
 })
 
 test("addTheme keeps first theme for duplicate names", () => {

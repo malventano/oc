@@ -1088,5 +1088,123 @@ function getSyntaxRules(theme: Theme) {
         foreground: theme.textMuted,
       },
     },
+    // 0430: alternate capture vocabularies. The nvim-treesitter queries use
+    // the scopes above; the Helix, npm-grammar, and lumis queries added in
+    // 0429 use shorter family names (label, conditional, method, ...).
+    // These aliases point at the same theme color as their nvim counterpart.
+    // Deliberately NOT aliased: tag/attribute/tag.attribute/tag.delimiter,
+    // namespace, field, error, warning (already defined above with
+    // intentional colors) and the utility captures
+    // spell/nospell/none/text/conceal plus private _parent/_name (unstyled
+    // on purpose).
+    {
+      scope: ["markup.heading.marker"],
+      style: {
+        foreground: theme.markdownHeading,
+      },
+    },
+    {
+      scope: ["conditional", "repeat", "return", "while", "for", "each"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["exception", "try", "catch", "finally", "throw"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["include", "import"],
+      style: {
+        foreground: theme.syntaxKeyword,
+      },
+    },
+    {
+      scope: [
+        "preproc",
+        "media",
+        "charset",
+        "keyframes",
+        "supports",
+        "at-root",
+        "extend",
+        "forward",
+        "mixin",
+        "use",
+        "warn",
+      ],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["storageclass", "optional", "required"],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
+    {
+      scope: ["interface"],
+      style: {
+        foreground: theme.syntaxType,
+        bold: true,
+        italic: true,
+      },
+    },
+    {
+      scope: ["method"],
+      style: {
+        foreground: theme.syntaxFunction,
+      },
+    },
+    {
+      scope: ["identifier", "assignvalue"],
+      style: {
+        foreground: theme.syntaxVariable,
+      },
+    },
+    {
+      scope: ["array"],
+      style: {
+        foreground: theme.syntaxType,
+      },
+    },
+    {
+      scope: ["delimiter"],
+      style: {
+        foreground: theme.syntaxPunctuation,
+      },
+    },
+    {
+      scope: ["cImport"],
+      style: {
+        foreground: theme.syntaxKeyword,
+      },
+    },
+    {
+      scope: [
+        "autoreleasepool",
+        "synthesize",
+        "dynamic",
+        "synchronized",
+        "available",
+        "selector",
+        "defs",
+        "end",
+        "compatibility_alias",
+        "implementation",
+        "protocol",
+      ],
+      style: {
+        foreground: theme.syntaxKeyword,
+        italic: true,
+      },
+    },
   ]
 }
