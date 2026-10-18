@@ -1,5 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, DateTime, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
@@ -7,7 +7,7 @@ import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "@opencode-ai/core/shell"
-import { ShellTool } from "../../src/tool/shell"
+import { ShellTool, longSleepSeconds } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { Agent } from "../../src/agent/agent"
@@ -1262,4 +1262,30 @@ describe("tool.shell truncation", () => {
       }),
     ),
   )
+})
+
+describe("long sleep guard", () => {
+  test("blocks sleeps at or above 300 seconds", () => {
+    expect(longSleepSeconds("sleep 300")).toBe(300)
+    expect(longSleepSeconds("sleep 300s")).toBe(300)
+    expect(longSleepSeconds("sleep 5m")).toBe(300)
+    expect(longSleepSeconds("sleep 1h")).toBe(3600)
+    expect(longSleepSeconds("echo start; sleep 900; echo done")).toBe(900)
+    expect(longSleepSeconds("for i in 1 2; do sleep 600; done")).toBe(600)
+    expect(longSleepSeconds("ssh host 'sleep 3400; check'")).toBe(3400)
+  })
+
+  test("allows short and backgrounded sleeps", () => {
+    expect(longSleepSeconds("sleep 299")).toBeUndefined()
+    expect(longSleepSeconds("sleep 4.9m")).toBeUndefined()
+    expect(longSleepSeconds("sleep 900 &")).toBeUndefined()
+  })
+
+  test("the escape hatch wins", () => {
+    expect(longSleepSeconds("OC_ALLOW_LONG_SLEEP=1 sleep 900")).toBeUndefined()
+  })
+
+  test("quoted prose is an accepted false positive", () => {
+    expect(longSleepSeconds('echo "sleep 900"')).toBe(900)
+  })
 })

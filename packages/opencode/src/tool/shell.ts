@@ -335,6 +335,25 @@ const parser = lazy(async () => {
   return { bash, ps }
 })
 
+// Long blocking sleeps hold the turn and are never the right way to await a
+// long job (0428). Detached work with its own log and completion marker is
+// the sanctioned path. Plugin-free by design: no pane/multiplexer tool is
+// assumed. Returns the offending duration in seconds, or undefined.
+export function longSleepSeconds(command: string): number | undefined {
+  if (/OC_ALLOW_LONG_SLEEP=1/.test(command)) return undefined
+  const re =
+    /(?:^|&&|\|\||[;&|'"()]|\bdo\b|\bthen\b|\belse\b)\s*(?:sudo\s+)?sleep\s+(\d+(?:\.\d+)?)\s*([smh]?)\b/gm
+  for (const match of command.matchAll(re)) {
+    const seconds = Number(match[1]) * (match[2] === "h" ? 3600 : match[2] === "m" ? 60 : 1)
+    if (seconds < 300) continue
+    // A backgrounded sleep returns immediately - not a blocking wait.
+    const rest = command.slice((match.index ?? 0) + match[0].length)
+    if (/^\s*&(?![&])/.test(rest)) continue
+    return seconds
+  }
+  return undefined
+}
+
 export const ShellTool = Tool.define(
   ShellID.ToolID,
   Effect.gen(function* () {
@@ -640,6 +659,17 @@ export const ShellTool = Tool.define(
                   "Use one of these safe alternatives:\n" +
                   "1. kill -9 <pid> - use PID from pgrep\n" +
                   "2. run \"kill -9 $$\" - isolated in tmux pane"
+                )
+              }
+              // 0428: a 300 s+ blocking sleep holds the turn. Detached work
+              // with a completion marker is plugin-free and checkable later.
+              const longSleep = longSleepSeconds(params.command)
+              if (longSleep !== undefined) {
+                throw new Error(
+                  `BLOCKED: a ${longSleep}s blocking sleep holds the turn and delays every call after it. ` +
+                  "Do not sleep-poll. Run the work as a detached job with its own log and completion marker " +
+                  "(`nohup setsid <cmd> > <log> 2>&1 < /dev/null &`), then check the log in a later call; " +
+                  "or shorten the wait and re-check. Escape hatch: prefix the command with OC_ALLOW_LONG_SLEEP=1."
                 )
               }
 
