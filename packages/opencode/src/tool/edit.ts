@@ -4,12 +4,14 @@
 //   - 0213 diffPatch                thin 1-line hunk context for long-line files
 //   - 0301 rebaseIndentation        tolerance-match indentation adoption + ladder echo
 //   - 0116/0120 post-write stat     fileDelta staleness contract
+//   - 0423 file-write safety        lock + stale assert + atomic + verify
+//   - 0424 feedback/match/validate  typography, mixed EOL, syntax gate, hints
 //   - files[]/paths/noop metadata   the oc TUI per-file diff view + changed-lines echo
 // The retired fence text-grammar method is archived at
 // /root/oc/opencode/archive/retired-edit-fence/ (recoverable from git 2cd4d1a9a1).
 
 import * as path from "path"
-import { Effect, Schema, Semaphore } from "effect"
+import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -23,6 +25,19 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
+import { acquireFileLock, assertUnchanged, atomicWrite, verifyWritten } from "./edit-write"
+import {
+  ALREADY_APPLIED_MESSAGE,
+  isAlreadyApplied,
+  missGuidance,
+  multiMatchError,
+  noMatchError,
+  occurrenceCount,
+  recordMiss,
+  resetMisses,
+} from "./edit-feedback"
+import { TypographyReplacer, hasMixedLineEndings, lfView, restoreLineEndings } from "./edit-match"
+import { validateEditSyntax } from "./edit-validate"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -35,18 +50,6 @@ function detectLineEnding(text: string): "\n" | "\r\n" {
 function convertToLineEnding(text: string, ending: "\n" | "\r\n"): string {
   if (ending === "\n") return text
   return text.replaceAll("\n", "\r\n")
-}
-
-const locks = new Map<string, Semaphore.Semaphore>()
-
-function lock(filePath: string) {
-  const resolvedFilePath = FSUtil.resolve(filePath)
-  const hit = locks.get(resolvedFilePath)
-  if (hit) return hit
-
-  const next = Semaphore.makeUnsafe(1)
-  locks.set(resolvedFilePath, next)
-  return next
 }
 
 export const Parameters = Schema.Struct({
@@ -92,22 +95,118 @@ export const EditTool = Tool.define(
           let contentNew = ""
           let rebased = 0
           let tierNote: string | undefined
-          yield* lock(filePath).withPermits(1)(
-            Effect.gen(function* () {
-              if (params.oldString === "") {
-                // New-file create (upstream semantics): oldString empty = the
-                // file does not exist yet (or was deleted).
-                const existed = yield* afs.existsSafe(filePath)
-                if (existed) {
-                  throw new Error(
-                    "oldString cannot be empty when editing an existing file. Provide the exact text to replace, or use write for an intentional full-file replacement.",
-                  )
+          let alreadyApplied = false
+          let replacedCount = 0
+          let syntaxNote: string | undefined
+          yield* Effect.acquireUseRelease(
+            Effect.tryPromise(() => acquireFileLock(filePath)),
+            () =>
+              Effect.gen(function* () {
+                if (params.oldString === "") {
+                  // New-file create (upstream semantics): oldString empty = the
+                  // file does not exist yet (or was deleted).
+                  const existed = yield* afs.existsSafe(filePath)
+                  if (existed) {
+                    throw new Error(
+                      "oldString cannot be empty when editing an existing file. Provide the exact text to replace, or use write for an intentional full-file replacement.",
+                    )
+                  }
+                  const next = Bom.split(params.newString)
+                  const desiredBom = next.bom
+                  contentOld = ""
+                  contentNew = next.text
+                  diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
+                  yield* ctx.ask({
+                    permission: "edit",
+                    patterns: [path.relative(instance.worktree, filePath)],
+                    always: ["*"],
+                    metadata: {
+                      filepath: filePath,
+                      diff,
+                    },
+                  })
+                  const bytes = Bom.join(contentNew, desiredBom)
+                  yield* Effect.tryPromise(() => assertUnchanged(filePath, null))
+                  yield* Effect.tryPromise(() => atomicWrite(filePath, bytes, 0o644))
+                  yield* Effect.tryPromise(() => verifyWritten(filePath, bytes))
+                  if (yield* format.file(filePath)) {
+                    contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
+                  }
+                  yield* events.publish(FileSystem.Event.Edited, { file: filePath })
+                  yield* events.publish(Watcher.Event.Updated, {
+                    file: filePath,
+                    event: "add",
+                  })
+                  return
                 }
-                const next = Bom.split(params.newString)
-                const desiredBom = next.bom
-                contentOld = ""
+
+                const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
+                if (!info) throw new Error(`File ${filePath} not found`)
+                if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
+                const source = yield* Bom.readFile(afs, filePath)
+                contentOld = source.text
+                const expectedBytes = Bom.join(source.text, source.bom)
+
+                // Mixed CRLF/LF files cannot be matched after homogenizing to
+                // one ending: match on the LF view, then restore each region
+                // line's original ending onto the replacement.
+                const mixed = hasMixedLineEndings(contentOld)
+                const view = mixed ? lfView(contentOld) : undefined
+                const ending = detectLineEnding(contentOld)
+                const old = mixed
+                  ? normalizeLineEndings(params.oldString)
+                  : convertToLineEnding(normalizeLineEndings(params.oldString), ending)
+                const replacement = mixed
+                  ? normalizeLineEndings(params.newString)
+                  : convertToLineEnding(normalizeLineEndings(params.newString), ending)
+                const matchContent = view?.text ?? contentOld
+
+                // 0424: a retry whose old bytes are already gone and whose new
+                // bytes are present exactly once is a success-shaped no-op.
+                if (isAlreadyApplied(matchContent, old, replacement)) {
+                  alreadyApplied = true
+                  contentNew = contentOld
+                  resetMisses(filePath)
+                  return
+                }
+
+                // 0301/0131: replaceOutcome does the upstream tolerance ladder
+                // AND rebases NEW's leading whitespace onto the matched file
+                // region whenever a non-byte-exact tier matched (the tier
+                // ladder cannot see whitespace - without the rebase a model
+                // mis-copying the region indent lands its drift verbatim).
+                let outcome: ReplaceOutcome
+                try {
+                  outcome = replaceOutcome(matchContent, old, replacement, params.replaceAll)
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : String(error)
+                  const misses = recordMiss(filePath)
+                  let refined: string | undefined
+                  if (/multiple matches/i.test(message)) refined = multiMatchError(matchContent, old)
+                  else if (/Could not find oldString/i.test(message)) refined = noMatchError(matchContent, old)
+                  if (!refined) throw error
+                  const guidance = missGuidance(misses)
+                  throw new Error(guidance ? `${refined}\n\n${guidance}` : refined)
+                }
+                resetMisses(filePath)
+                rebased = outcome.rebased
+                replacedCount = outcome.count
+                if (outcome.tier !== "Simple" && !params.replaceAll) {
+                  tierNote = `oldString matched via ${outcome.tier} at line ${lineOf(outcome.spanIndex, matchContent)}`
+                }
+
+                const replaced = mixed ? restoreLineEndings(contentOld, outcome.text) : outcome.text
+                const next = Bom.split(replaced)
+                const desiredBom = source.bom || next.bom
                 contentNew = next.text
-                diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
+
+                // 0424: reject an edit that would turn a currently-parseable
+                // config file into a syntactically invalid one. Runs before
+                // the permission ask so the diff shown is the one checked.
+                const gate = yield* Effect.tryPromise(() => validateEditSyntax(filePath, contentOld, contentNew))
+                syntaxNote = gate.skipped
+
+                diff = diffPatch(filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew))
                 yield* ctx.ask({
                   permission: "edit",
                   patterns: [path.relative(instance.worktree, filePath)],
@@ -117,66 +216,23 @@ export const EditTool = Tool.define(
                     diff,
                   },
                 })
-                yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
+
+                const bytes = Bom.join(contentNew, desiredBom)
+                yield* Effect.tryPromise(() => assertUnchanged(filePath, expectedBytes))
+                yield* Effect.tryPromise(() => atomicWrite(filePath, bytes))
+                yield* Effect.tryPromise(() => verifyWritten(filePath, bytes))
                 if (yield* format.file(filePath)) {
                   contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
                 }
                 yield* events.publish(FileSystem.Event.Edited, { file: filePath })
                 yield* events.publish(Watcher.Event.Updated, {
                   file: filePath,
-                  event: "add",
+                  event: "change",
                 })
-                return
-              }
-
-              const info = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
-              if (!info) throw new Error(`File ${filePath} not found`)
-              if (info.type === "Directory") throw new Error(`Path is a directory, not a file: ${filePath}`)
-              const source = yield* Bom.readFile(afs, filePath)
-              contentOld = source.text
-
-              const ending = detectLineEnding(contentOld)
-              const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
-              const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
-
-              // 0301/0131: replaceOutcome does the upstream tolerance ladder
-              // AND rebases NEW's leading whitespace onto the matched file
-              // region whenever a non-byte-exact tier matched (the tier
-              // ladder cannot see whitespace - without the rebase a model
-              // mis-copying the region indent lands its drift verbatim).
-              const outcome = replaceOutcome(contentOld, old, replacement, params.replaceAll)
-              rebased = outcome.rebased
-              if (outcome.tier !== "Simple" && !params.replaceAll) {
-                tierNote = `oldString matched via ${outcome.tier} at line ${lineOf(outcome.spanIndex, contentOld)}`
-              }
-
-              const next = Bom.split(outcome.text)
-              const desiredBom = source.bom || next.bom
-              contentNew = next.text
-
-              diff = diffPatch(filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew))
-              yield* ctx.ask({
-                permission: "edit",
-                patterns: [path.relative(instance.worktree, filePath)],
-                always: ["*"],
-                metadata: {
-                  filepath: filePath,
-                  diff,
-                },
-              })
-
-              yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
-              if (yield* format.file(filePath)) {
-                contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
-              }
-              yield* events.publish(FileSystem.Event.Edited, { file: filePath })
-              yield* events.publish(Watcher.Event.Updated, {
-                file: filePath,
-                event: "change",
-              })
-              diff = diffPatch(filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew))
-            }).pipe(Effect.orDie),
-          )
+                diff = diffPatch(filePath, normalizeLineEndings(contentOld), normalizeLineEndings(contentNew))
+              }).pipe(Effect.orDie),
+            (release) => Effect.sync(release),
+          ).pipe(Effect.orDie)
 
           let additions = 0
           let deletions = 0
@@ -225,26 +281,32 @@ export const EditTool = Tool.define(
           }
           yield* ctx.metadata({ metadata })
 
-          let output = "Edit applied successfully."
+          let output = alreadyApplied ? ALREADY_APPLIED_MESSAGE : "Edit applied successfully."
           // Changed-lines echo (0160/0257): the changed line ranges derived
           // from the actual line diff - the one thing the model needs to
           // know on the success path. A deletion-only change must report the
           // deleted lines' OLD positions, never collapse to "no change".
-          if (!noop) {
+          if (!alreadyApplied && !noop) {
             const ranges = changedPositions(contentOld, contentNew)
             const counts = `(+${additions}/-${deletions})`
             const label = ranges.length > 0 ? `${ranges.join(", ")} ${counts}` : counts
             output += `\nChanged lines: ${relativePath}: ${label}`
           }
-          if (tierNote) {
+          if (!alreadyApplied && params.replaceAll) {
+            output += `\nreplaced ${replacedCount} occurrence(s)`
+          }
+          if (!alreadyApplied && tierNote) {
             output += `\nMatched with tolerance (not byte-exact): ${tierNote}`
             output += `\nApplied change:\n${diff}`
           }
-          if (rebased > 0) {
+          if (!alreadyApplied && rebased > 0) {
             output += `\nIndentation note: ${rebased} line(s) adopted the file's leading whitespace (the match tolerated a block whose indent differed from the file)`
           }
-          if (noop) {
+          if (!alreadyApplied && noop) {
             output += `\nNo net change for ${relativePath}: the edit applied but produced no difference on disk (typically a whitespace-only intent that the indentation note adopted at the file's indent). To change indentation deliberately, change content too, or use a single-line replacement.`
+          }
+          if (syntaxNote) {
+            output += `\nSyntax check skipped for ${relativePath}: ${syntaxNote}`
           }
 
           yield* lsp.touchFile(filePath, "document")
@@ -361,6 +423,7 @@ export type ReplaceOutcome = {
   tier: string
   rebased: number
   spanIndex: number
+  count: number
 }
 
 export type Replacer = (content: string, find: string) => Generator<string, void, unknown>
@@ -817,6 +880,8 @@ export function replaceOutcome(
 
   for (const [tier, replacer] of [
     ["Simple", SimpleReplacer],
+    // 0424: typography fold sits between byte-exact and the whitespace tiers.
+    ["Typography", TypographyReplacer],
     ["LineTrimmed", LineTrimmedReplacer],
     ["BlockAnchor", BlockAnchorReplacer],
     ["WhitespaceNormalized", WhitespaceNormalizedReplacer],
@@ -847,7 +912,13 @@ export function replaceOutcome(
         rebased = rb.rebased
       }
       if (replaceAll) {
-        return { text: content.replaceAll(search, replacement), tier, rebased, spanIndex: 0 }
+        return {
+          text: content.replaceAll(search, replacement),
+          tier,
+          rebased,
+          spanIndex: 0,
+          count: occurrenceCount(content, search),
+        }
       }
       const lastIndex = content.lastIndexOf(search)
       if (index !== lastIndex) continue
@@ -856,6 +927,7 @@ export function replaceOutcome(
         tier,
         rebased,
         spanIndex: index,
+        count: 1,
       }
     }
   }

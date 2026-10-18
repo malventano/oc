@@ -14,6 +14,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
+import { acquireFileLock, assertUnchanged, atomicWrite, verifyWritten } from "./edit-write"
+import { validateEditSyntax } from "./edit-validate"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -47,33 +49,57 @@ export const WriteTool = Tool.define(
             : path.join(instance.directory, params.filePath)
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
-          const exists = yield* fs.existsSafe(filepath)
-          const source = exists ? yield* Bom.readFile(fs, filepath) : { bom: false, text: "" }
-          const next = Bom.split(params.content)
-          const desiredBom = source.bom || next.bom
-          const contentOld = source.text
-          const contentNew = next.text
+          let exists = false
+          let syntaxNote: string | undefined
+          yield* Effect.acquireUseRelease(
+            Effect.tryPromise(() => acquireFileLock(filepath)),
+            () =>
+              Effect.gen(function* () {
+                exists = yield* fs.existsSafe(filepath)
+                const source = exists ? yield* Bom.readFile(fs, filepath) : { bom: false, text: "" }
+                const expected = exists ? Bom.join(source.text, source.bom) : null
+                const next = Bom.split(params.content)
+                const desiredBom = source.bom || next.bom
+                const contentOld = source.text
+                const contentNew = next.text
 
-          const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
-          yield* ctx.ask({
-            permission: "edit",
-            patterns: [path.relative(instance.worktree, filepath)],
-            always: ["*"],
-            metadata: {
-              filepath,
-              diff,
-            },
-          })
+                // 0424: reject valid -> invalid config transitions before the
+                // permission ask, so the diff shown is the one that was checked.
+                const gate = yield* Effect.tryPromise(() =>
+                  validateEditSyntax(filepath, exists ? contentOld : null, contentNew),
+                )
+                syntaxNote = gate.skipped
 
-          yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
-          if (yield* format.file(filepath)) {
-            yield* Bom.syncFile(fs, filepath, desiredBom)
-          }
-          yield* events.publish(FileSystem.Event.Edited, { file: filepath })
-          yield* events.publish(Watcher.Event.Updated, {
-            file: filepath,
-            event: exists ? "change" : "add",
-          })
+                const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
+                yield* ctx.ask({
+                  permission: "edit",
+                  patterns: [path.relative(instance.worktree, filepath)],
+                  always: ["*"],
+                  metadata: {
+                    filepath,
+                    diff,
+                  },
+                })
+
+                const bytes = Bom.join(contentNew, desiredBom)
+                // 0423: whole-file mtime preconditions against read stamps are
+                // deferred; read stamps live in session parts consumed by the
+                // FileDelta prompt walk and are not exposed to the tool. The
+                // byte-level assert below covers the read -> write race.
+                yield* Effect.tryPromise(() => assertUnchanged(filepath, expected))
+                yield* Effect.tryPromise(() => atomicWrite(filepath, bytes, exists ? undefined : 0o644))
+                yield* Effect.tryPromise(() => verifyWritten(filepath, bytes))
+                if (yield* format.file(filepath)) {
+                  yield* Bom.syncFile(fs, filepath, desiredBom)
+                }
+                yield* events.publish(FileSystem.Event.Edited, { file: filepath })
+                yield* events.publish(Watcher.Event.Updated, {
+                  file: filepath,
+                  event: exists ? "change" : "add",
+                })
+              }).pipe(Effect.orDie),
+            (release) => Effect.sync(release),
+          )
 
           // Post-write stat backing fileDelta staleness detection (0116):
           // session self-edits are never re-reminded; the walk treats this
@@ -84,6 +110,7 @@ export const WriteTool = Tool.define(
           )
 
           let output = "Wrote file successfully."
+          if (syntaxNote) output += `\nSyntax check skipped: ${syntaxNote}`
           yield* lsp.touchFile(filepath, "document")
           const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
