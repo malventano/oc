@@ -178,6 +178,8 @@ export default {
     },
     {
       filetype: "hcl",
+      // terraform and terraform-vars use the HCL grammar (0429).
+      aliases: ["terraform", "terraform-vars"],
       wasm: "https://github.com/tree-sitter-grammars/tree-sitter-hcl/releases/download/v1.2.0/tree-sitter-hcl.wasm",
       queries: {
         highlights: [
@@ -264,9 +266,11 @@ export default {
       wasm: "https://github.com/alex-pinkus/tree-sitter-swift/releases/download/0.7.1/tree-sitter-swift.wasm",
       queries: {
         highlights: [
-          // NOTE: Using parser repo queries instead of nvim-treesitter due to incompatible #lua-match? predicates
+          // NOTE: Using parser repo queries instead of nvim-treesitter due to incompatible #lua-match? predicates.
+          // 0429: pinned to the 0.7.1 tag - the main-branch query references
+          // unsafe_expression, which the 0.7.1 wasm does not have.
           // "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/highlights.scm
-          "https://raw.githubusercontent.com/alex-pinkus/tree-sitter-swift/main/queries/highlights.scm",
+          "https://raw.githubusercontent.com/alex-pinkus/tree-sitter-swift/0.7.1/queries/highlights.scm",
         ],
         locals: [
           "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/swift/locals.scm",
@@ -368,6 +372,8 @@ export default {
     },
     {
       filetype: "xml",
+      // XSL stylesheets are XML (0429).
+      aliases: ["xsl"],
       wasm: "https://github.com/tree-sitter-grammars/tree-sitter-xml/releases/download/v0.7.0/tree-sitter-xml.wasm",
       queries: {
         highlights: [
@@ -384,6 +390,232 @@ export default {
       queries: {
         highlights: [
           "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/agda/highlights.scm",
+        ],
+      },
+    },
+
+    // 0429: grammar coverage for the remaining LANGUAGE_EXTENSIONS values.
+    // Every wasm and query below was loaded and compiled together with
+    // web-tree-sitter 0.25.10 before landing (Language.load + Query compile).
+    // Queries come from the same release/tag as the wasm; where the only
+    // usable wasm is a pinned bundle, the query is the bundle's own or is
+    // pinned to the exact build commit. Languages with no usable grammar are
+    // intentionally absent and resolve as no-grammar (plain on both sides).
+    {
+      filetype: "astro",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/astro/tree-sitter-astro.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/astro/highlights.scm"],
+      },
+    },
+    {
+      filetype: "batch",
+      aliases: ["bat"],
+      // 0.4.2: 0.5.0+ queries use (?i) inside #match?, which web-tree-sitter 0.25.10 rejects.
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-batch@0.4.2/tree-sitter-batch.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-batch@0.4.2/queries/highlights.scm"],
+      },
+    },
+    {
+      filetype: "bibtex",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/bibtex/tree-sitter-bibtex.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/bibtex/highlights.scm"],
+      },
+    },
+    {
+      filetype: "d",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/d/tree-sitter-d.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/d/highlights.scm"],
+      },
+    },
+    {
+      filetype: "dart",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-dart@1.0.0/tree-sitter-dart.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-dart@1.0.0/queries/highlights.scm"],
+      },
+    },
+    {
+      filetype: "dockerfile",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/dockerfile/tree-sitter-dockerfile.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/dockerfile/highlights.scm"],
+      },
+    },
+    {
+      filetype: "embedded_template",
+      aliases: ["erb"],
+      wasm: "https://github.com/tree-sitter/tree-sitter-embedded-template/releases/download/v0.25.0/tree-sitter-embedded_template.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-embedded-template/v0.25.0/queries/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "erlang",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/erlang/tree-sitter-erlang.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/erlang/highlights.scm"],
+      },
+    },
+    {
+      filetype: "git_rebase",
+      aliases: ["git-rebase"],
+      wasm: "https://github.com/the-mikedavis/tree-sitter-git-rebase/releases/download/v1.0.0/tree-sitter-git_rebase.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/the-mikedavis/tree-sitter-git-rebase/v1.0.0/queries/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "gleam",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/gleam/tree-sitter-gleam.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/gleam/highlights.scm"],
+      },
+    },
+    {
+      filetype: "groovy",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/groovy/tree-sitter-groovy.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/groovy/highlights.scm"],
+      },
+    },
+    {
+      filetype: "handlebars",
+      wasm: "https://github.com/bennypowers/tree-sitter-handlebars/releases/download/v0.1.1/tree-sitter-handlebars.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/bennypowers/tree-sitter-handlebars/v0.1.1/queries/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "ini",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/ini/tree-sitter-ini.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/ini/highlights.scm"],
+      },
+    },
+    {
+      filetype: "pug",
+      aliases: ["jade"],
+      // codemirror-treesitter wasm + the version-matched npm query.
+      wasm: "https://cdn.jsdelivr.net/gh/Eric-Song-Nop/codemirror-treesitter@d91b8e13b21abde718caa56bd64e2891da997b0d/packages/language-data/src/wasm/tree-sitter-pug.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-pug@1.0.12/queries/highlights.scm"],
+      },
+    },
+    {
+      filetype: "latex",
+      // treelight pins wasm and query to the same build; the tree-sitter-wasm
+      // 2.0.4 latex query uses 3-arg #set!, which this runtime rejects.
+      wasm: "https://cdn.jsdelivr.net/gh/matoous/treelight@14a71e455a4800b789ce1d27960d74d9b048ba82/packages/languages/latex/src/wasm/tree-sitter-latex.wasm",
+      queries: {
+        highlights: [
+          "https://cdn.jsdelivr.net/gh/matoous/treelight@14a71e455a4800b789ce1d27960d74d9b048ba82/packages/languages/latex/src/queries/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "less",
+      wasm: "https://cdn.jsdelivr.net/gh/Eric-Song-Nop/codemirror-treesitter@d91b8e13b21abde718caa56bd64e2891da997b0d/packages/language-data/src/wasm/tree-sitter-less.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/helix-editor/helix/ba40e547426b0f9896c8bdc699a4ab11f2b37dbc/runtime/queries/less/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "objc",
+      aliases: ["objective-c"],
+      wasm: "https://github.com/tree-sitter-grammars/tree-sitter-objc/releases/download/v3.0.2/tree-sitter-objc.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-objc/v3.0.2/queries/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "pascal",
+      wasm: "https://cdn.jsdelivr.net/gh/Eric-Song-Nop/codemirror-treesitter@d91b8e13b21abde718caa56bd64e2891da997b0d/packages/language-data/src/wasm/tree-sitter-pascal.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-pascal@0.0.1/queries/highlights.scm"],
+      },
+    },
+    {
+      filetype: "perl",
+      wasm: "https://github.com/tree-sitter-perl/tree-sitter-perl/releases/download/v2.0.0/tree-sitter-perl.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/tree-sitter-perl/tree-sitter-perl/v2.0.0/queries/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "powershell",
+      // The npm package ships the wasm and the matching query. The
+      // nvim-treesitter query does not compile against this grammar
+      // (Bad node name 'class').
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-powershell@0.25.10/tree-sitter-powershell.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-powershell@0.25.10/queries/highlights.scm"],
+      },
+    },
+    {
+      filetype: "razor",
+      wasm: "https://github.com/meloncholera/tree-sitter-razor-modern/releases/download/v0.1.0/tree-sitter-razor.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/meloncholera/tree-sitter-razor-modern/v0.1.0/queries/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "scss",
+      // lumis wasm + its processed query pinned to the same build revision.
+      wasm: "https://cdn.jsdelivr.net/npm/@lumis-sh/wasm-scss@0.26.2/tree-sitter-scss.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/leandrocp/lumis/ba127578eb8580b903106cc8b75769b69b0b248a/queries/processed/scss/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "sql",
+      wasm: "https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/sql/tree-sitter-sql.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/tree-sitter-wasm@2.0.4/out/sql/highlights.scm"],
+      },
+    },
+    {
+      filetype: "svelte",
+      wasm: "https://cdn.jsdelivr.net/npm/@tree-sitter-grammars/tree-sitter-svelte@1.0.2/tree-sitter-svelte.wasm",
+      queries: {
+        highlights: ["https://cdn.jsdelivr.net/npm/@tree-sitter-grammars/tree-sitter-svelte@1.0.2/queries/highlights.scm"],
+      },
+    },
+    {
+      filetype: "typst",
+      // lumis wasm built from uben0 46cf4de; query pinned to that revision.
+      wasm: "https://cdn.jsdelivr.net/npm/@lumis-sh/wasm-typst@0.26.3/tree-sitter-typst.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/uben0/tree-sitter-typst/46cf4ded12ee974a70bf8457263b67ad7ee0379d/queries/typst/highlights.scm",
+        ],
+      },
+    },
+    {
+      filetype: "zig",
+      wasm: "https://github.com/tree-sitter-grammars/tree-sitter-zig/releases/download/v1.1.2/tree-sitter-zig.wasm",
+      queries: {
+        highlights: [
+          "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-zig/v1.1.2/queries/highlights.scm",
         ],
       },
     },

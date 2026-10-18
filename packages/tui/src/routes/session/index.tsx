@@ -4061,7 +4061,7 @@ function useToolStream(
 // from the first lines of the body so code writes stream colored instead
 // of plain. Heuristic only - the authoritative filetype applies once the
 // path lands, and a wrong guess flips silently at the end.
-function sniffFiletype(content: string, minLength = 60): string | undefined {
+export function sniffFiletype(content: string, minLength = 60): string | undefined {
   if (content.length < minLength) return undefined
   // 1500-char window: comment-headed files (license/doc headers) put their
   // first code line well past 600 chars - the window must reach it.
@@ -4081,6 +4081,18 @@ function sniffFiletype(content: string, minLength = 60): string | undefined {
   if (/^<\?xml/.test(head)) return "xml"
   if (/^<!DOCTYPE html|<html[\s>]/i.test(head)) return "html"
   if (/^<\?php/m.test(head)) return "php"
+  // PowerShell (0429): attributes/param block, Verb-Noun functions, automatic
+  // variables, Write-* cmdlets, and #requires. Checked before csharp/java so
+  // `using namespace` still resolves csharp.
+  if (
+    /^\[(?:CmdletBinding|Parameter)\(/m.test(head) ||
+    /^param\s*\(/m.test(head) ||
+    /^function\s+[A-Z][A-Za-z0-9]*-[A-Za-z]/m.test(head) ||
+    /^Write-(?:Host|Output|Error|Warning|Verbose)\b/m.test(head) ||
+    /\$env:[A-Za-z_]/m.test(head) ||
+    /^#requires\s+-/m.test(head)
+  )
+    return "powershell"
   if (/^using [A-Za-z0-9_.]+;|^namespace [A-Za-z0-9_.]+\s*\{/m.test(head)) return "csharp"
   if (/^export (?:function|const|class|interface|type|default)\b|^interface \w+\s*\{/m.test(head)) return "typescript"
   if (/^import .* from ['"]/m.test(head) && /:\s*(?:string|number|boolean|Record|Array|Promise|Map)</m.test(head)) return "typescript"

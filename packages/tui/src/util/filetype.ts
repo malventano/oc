@@ -1,4 +1,5 @@
 import path from "node:path"
+import parsersConfig from "../parsers-config"
 
 export const LANGUAGE_EXTENSIONS: Record<string, string> = {
   ".abap": "abap",
@@ -151,13 +152,32 @@ export function coalesceFiletype(language: string | undefined) {
   return language
 }
 
+// Grammar coverage is derived from the parser registry (0429) so a mapped
+// language can never color while streaming and then snap to unstyled when
+// the completed view resolves its real filetype. Built-ins ship with
+// opentui; everything else must have an entry (or an alias) in
+// parsers-config. Languages with no usable grammar (abap, coffeescript,
+// git-commit, objective-cpp, perl6, sass, shaderlab) are absent by design
+// and render unstyled on both sides.
+const GRAMMAR_LANGUAGES = new Set<string>()
+for (const parser of parsersConfig.parsers) {
+  GRAMMAR_LANGUAGES.add(parser.filetype)
+  for (const alias of (parser as { aliases?: string[] }).aliases ?? []) GRAMMAR_LANGUAGES.add(alias)
+}
+for (const builtin of ["markdown", "javascript", "typescript", "typescriptreact"]) GRAMMAR_LANGUAGES.add(builtin)
+
+export function hasGrammar(language: string | undefined) {
+  return language !== undefined && GRAMMAR_LANGUAGES.has(language)
+}
+
 // No-grammar types: no tree-sitter grammar exists for these, so a consumer
 // that defers to an async highlight would wait on a highlight that never
 // fires (permanent blank) - it must render unstyled instead. "none" = no
 // LANGUAGE_EXTENSIONS match (unknown/extensionless); "text" = the explicit
-// plain-text type (no grammar by design, 2026-09-08).
+// plain-text type (no grammar by design, 2026-09-08); everything outside
+// the parser registry is no-grammar for the same reason (0429).
 export function isNoGrammar(language: string | undefined) {
-  return language === undefined || language === "none" || language === "text"
+  return language === undefined || language === "none" || language === "text" || !GRAMMAR_LANGUAGES.has(language)
 }
 
 export function filetype(input?: string) {
