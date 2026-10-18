@@ -1,11 +1,12 @@
 // Pre-push/pre-build gate.
 // Steps: check:patches -> verify:patches --strict -> patch-series-check
-//        (with --require-ancestor) -> tsc against the known 11-error baseline.
+//        (with --require-ancestor) -> tsc against the known 11-error baseline
+//        (incremental buildinfo under packages/opencode/node_modules/.cache/oc-tsc).
 // Non-fast also greps the installed/built binary for the patched-core markers
 // (oc-feed-watchdog, hl.heal) and reports OC_PUMP_PROBE as a warning.
 // Usage:
 //   bun script/preflight.mjs [--fast]
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import path from "node:path"
 
@@ -33,10 +34,15 @@ run("patch-series-check", process.execPath, ["script/patch-series-check.mjs", "-
 {
   const cwd = path.join(root, "packages/opencode")
   console.log("\n== tsc (baseline 11) ==")
+  // 0427: incremental cache. Same diagnostics, but a warm run is ~4.4 s
+  // instead of ~26 s (cold). The cache is under node_modules, gitignored.
+  const cache = path.join(cwd, "node_modules/.cache/oc-tsc")
+  mkdirSync(cache, { recursive: true })
+  const args = ["tsc", "--noEmit", "--incremental", "--tsBuildInfoFile", path.join(cache, "tsconfig.tsbuildinfo")]
   const hasBunx = spawnSync("bunx", ["--version"], { encoding: "utf8" }).status === 0
   const result = hasBunx
-    ? spawnSync("bunx", ["tsc", "--noEmit"], { cwd, encoding: "utf8", env: process.env })
-    : spawnSync(process.execPath, ["x", "tsc", "--noEmit"], { cwd, encoding: "utf8", env: process.env })
+    ? spawnSync("bunx", args, { cwd, encoding: "utf8", env: process.env })
+    : spawnSync(process.execPath, ["x", ...args], { cwd, encoding: "utf8", env: process.env })
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`
   const strip = (line) => line.replace(/\x1b\[[0-9;]*m/g, "")
   const errors = output
