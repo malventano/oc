@@ -28,7 +28,7 @@ import { StepAdvisory } from "./step-advisory"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
-import { MAX_STEPS_PROMPT, DEFAULT_SUBAGENT_STEPS } from "@opencode-ai/core/session/runner/max-steps"
+import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
 import { LSP } from "@/lsp/lsp"
@@ -1498,11 +1498,10 @@ const layer = Layer.effect(
             yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
-          // Subagent budget (0426): child sessions default to a finite cap when
-          // their agent config does not set `steps`; the main agent stays at
-          // Infinity. The default is applied here (child runLoop) rather than
-          // mutating the shared Agent.Info object.
-          const maxSteps = agent.steps ?? (session.parentID ? DEFAULT_SUBAGENT_STEPS : Infinity)
+          // Step budget: opt-in only. Both main and subagent runs are Infinity
+          // unless the agent config sets `steps` (the 200-step subagent default
+          // from 0424 was removed after the eval showed 305-step audits).
+          const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
           // Compaction turns skip mode reminders: the injected summary prompt is
           // the turn's content, and plan/build reminders target the last user
