@@ -52,6 +52,26 @@ describe("stall-guard detect", () => {
     expect(hit!.trimAt).toBe(text.indexOf("<tool_calls"))
   })
 
+  test("eaten-call signature: DSV4 DSML dialect with U+FF5C separators (2026-10-18 live miss)", () => {
+    // Window 8: the model leaked `</<bar> parameter>` / `</<bar> invoke>` /
+    // `</<bar> calls>` (bar = U+FF5C, a space before the name, and `calls`
+    // rather than `tool_calls`). Both the literal chain pattern and the
+    // no-space stray-closer regex missed it, ending a real turn silently.
+    const bar = "\uff5c"
+    const text =
+      "The pass-18 claim may be overstated: the dispatch table is modelled, not executed." +
+      "\n\n</" + bar + " parameter>\n</" + bar + " invoke>\n</" + bar + " calls>"
+    const hit = StallGuard.detect("stop", text, false)
+    expect(hit).not.toBeNull()
+    expect(hit!.signature).toBe("eaten-call")
+    // The leaked closer block leaves context; the prose before it survives.
+    expect(hit!.trimAt).toBe(text.indexOf("</" + bar + " parameter>"))
+    // The opener form with the DSML marker is also recognized.
+    expect(
+      StallGuard.detect("stop", "Checking next.\n<" + bar + "DSML" + bar + " calls>", false)!.signature,
+    ).toBe("stray-closer")
+  })
+
   test("eaten-call / stray-closer: contiguous leaked call trims to the whole block (0216)", () => {
     const text =
       "Let me verify the install.\n\n<tool_calls>\n<invoke name=\"bash\">\n<parameter name=\"command\" string=\"true\">cd /root/oc && cat status.json</parameter>\n</invoke>\n</tool_calls>"
