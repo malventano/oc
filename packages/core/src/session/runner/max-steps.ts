@@ -14,3 +14,8 @@ Response must include:
 - Recommendations for what should be done next
 
 Any attempt to use tools is a critical violation. Respond with text ONLY.`
+
+// Default hard step budget for subagents when their agent config does not set
+// `steps`. The main agent cap is untouched (Infinity unless configured).
+export const DEFAULT_SUBAGENT_STEPS = 200
+
