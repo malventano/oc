@@ -59,9 +59,14 @@ export const GrepTool = Tool.define(
 
           const search = FSUtil.resolve(requested)
           const info = yield* fs.stat(search).pipe(Effect.catch(() => Effect.succeed(undefined)))
-          const cwd = info?.type === "Directory" ? search : path.dirname(search)
+          // A file path means THAT file: run ripgrep with cwd = its directory
+          // and the file as the target. Passing only the directory made every
+          // single-file grep recursively scan the whole parent tree (0426).
+          const isFile = info?.type === "File"
+          const cwd = isFile ? path.dirname(search) : search
           const result = yield* ripgrep.grep({
             cwd,
+            file: isFile ? path.basename(search) : undefined,
             pattern: params.pattern,
             include: params.include,
             limit: 100,

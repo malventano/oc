@@ -170,6 +170,27 @@ describe("tool.grep", () => {
     }),
   )
 
+  it.instance("does not scan sibling files when path is a file", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "target.md")
+      yield* Effect.promise(() => Bun.write(target, "needle in target"))
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "sibling.md"), "needle in sibling"))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* grep.execute(
+        {
+          pattern: "needle",
+          path: target,
+        },
+        ctx,
+      )
+      expect(result.metadata.matches).toBe(1)
+      expect(result.output).toContain(target)
+      expect(result.output).not.toContain("sibling.md")
+    }),
+  )
+
   it.instance("does not ask for external_directory when alias path is allowed", () =>
     Effect.gen(function* () {
       if (process.platform === "win32") return
