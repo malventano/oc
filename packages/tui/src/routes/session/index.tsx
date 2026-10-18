@@ -4920,9 +4920,15 @@ function Task(props: ToolProps) {
     )
   })
 
-  const current = createMemo(() =>
-    tools().findLast((x) => (x.state.status === "running" || x.state.status === "completed") && x.state.title),
-  )
+  // Current tool = the LATEST tool part in the call's turn, regardless of
+  // status or title. A running part has title null until the tool returns
+  // (2026-10-18, window 8: the mirror showed the prior completed tool while
+  // the child was running a new one). The title is filled from the input
+  // below when the part has none.
+  const current = createMemo(() => {
+    const list = tools()
+    return list.length > 0 ? list[list.length - 1] : undefined
+  })
 
   const status = createMemo(() => sync.data.session_status[sessionID() ?? ""])
   const isRunning = createMemo(() => {
@@ -5089,7 +5095,7 @@ function Task(props: ToolProps) {
     } else if (isRunning() && tools().length > 0) {
       if (current()) {
         const state = current()!.state
-        const title = state.status === "running" || state.status === "completed" ? state.title : undefined
+        const title = subagentRunningTitle(state)
         content.push(formatSubagentRunningLine(current()!.tool, title, ctx.width, scrollbarReserve()))
       } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
       // The mirror line (0388): the child's live footer counters.
@@ -5210,6 +5216,22 @@ export function formatSubagentToolcalls(count: number) {
 // measured string, so wide tool names and wide command glyphs (CJK/emoji)
 // shift the visible command rather than overflowing - the line cannot wrap.
 // Multi-line commands collapse to one visual row.
+// 0431: a running tool part carries title null until the tool returns, so the
+// mirror must derive its status-line label from the primary input field.
+// Without this the title filter fell back to the prior completed tool and the
+// mirror lagged one call behind the running child (window 8, 2026-10-18).
+export function subagentRunningTitle(state: ToolPart["state"]): string | undefined {
+  const title = (state as { title?: string }).title
+  if ((state.status === "running" || state.status === "completed") && title) return title
+  const input = recordValue((state as { input?: unknown }).input)
+  if (!input) return undefined
+  for (const key of ["command", "filePath", "path", "pattern", "query", "url", "description"]) {
+    const value = input[key]
+    if (typeof value === "string" && value.trim()) return value
+  }
+  return undefined
+}
+
 export function formatSubagentRunningLine(
   tool: string,
   title: string | undefined,
