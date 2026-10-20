@@ -125,7 +125,8 @@ const live: Layer.Layer<
       // previous_response_id chaining (wire win). Chain state is in-memory per
       // session; a restart falls back to a full-send, which is the seed path.
       let transportModel: LanguageModelV3 = language
-      if (RDT.enabled(item)) {
+      const rdtMode = RDT.mode(item, input.model)
+      if (rdtMode) {
         transportModel = RDT.wrap(language, {
           sessionID: input.sessionID,
           modelID: input.model.id,
@@ -138,6 +139,10 @@ const live: Layer.Layer<
                 : undefined,
           providerKey: input.model.providerID.split(".")[0],
           headers: prepared.headers,
+          mode: rdtMode,
+          warn: (message, fields) => {
+            Effect.runFork(Effect.logWarning(message, fields))
+          },
         })
       }
 

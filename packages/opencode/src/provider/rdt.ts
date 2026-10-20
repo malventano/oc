@@ -74,7 +74,7 @@ const states = new Map<string, ChainState>()
 // Per-session debug/metrics introspection (oc-spec 17 B5): compact, not the
 // full request body. Underscore-prefixed; not part of the API.
 type RequestDebug = {
-  mode: "chained" | "seed"
+  mode: "chained" | "seed" | "nostore"
   previousResponseId: string | undefined
   itemCount: number
   bytes: number
@@ -126,10 +126,37 @@ const logDebug = (sessionID: string, d: RequestDebug) => {
 
 export const MAX_CONSECUTIVE_FAILURES = 3
 
-/** Provider opt-in: options.deltaTransport === "responses"; env override off. */
-export const enabled = (info: Provider.Info): boolean =>
-  info.options?.["deltaTransport"] === "responses" &&
-  process.env.OC_DELTA_TRANSPORT !== "off"
+export type RDTMode = "responses" | "responses-nostore"
+
+/**
+ * Transport selection (0433): env override first (`off` kills every mode;
+ * `responses` / `responses-nostore` are per-launch overrides), then the model
+ * option, then the provider option. `"chat"` and unknown values mean no RDT.
+ */
+export const mode = (info: Provider.Info, model?: { options?: Record<string, any> }): RDTMode | undefined => {
+  const env = process.env.OC_DELTA_TRANSPORT
+  if (env === "off") return undefined
+  const value =
+    (env === "responses" || env === "responses-nostore" ? env : undefined) ??
+    model?.options?.["deltaTransport"] ??
+    info.options?.["deltaTransport"]
+  return value === "responses" || value === "responses-nostore" ? value : undefined
+}
+
+/** Back-compat helper: any RDT mode enabled (provider-level view). */
+export const enabled = (info: Provider.Info) => mode(info) !== undefined
+
+// Unsupported-endpoint latch (0433): a 400 for store or previous_response_id
+// means the endpoint cannot do stateful responses. Latch once per
+// baseURL+modelID for the process; later turns go straight to chat.
+const unsupported = new Map<string, true>()
+const latchKey = (baseURL: string, modelID: string) => `${baseURL.replace(/\/+$/, "")}|${modelID}`
+
+export const _testReset = () => {
+  states.clear()
+  lastRequests.clear()
+  unsupported.clear()
+}
 
 const getState = (sessionID: string) => states.get(sessionID)
 const setState = (sessionID: string, state: ChainState) => states.set(sessionID, state)
@@ -402,12 +429,20 @@ const makeStreamParser = (
     string,
     { name: string; callID: string; args: string; started: boolean; completed: boolean }
   >()
+  /** 0433: output_index -> item id, for servers whose argument deltas carry
+   *  only the index (FLARE-style sequential indices). */
+  const itemIDs = new Map<string, string>()
 
   const handleEvent = (
     controller: TransformStreamDefaultController<LanguageModelV3StreamPart>,
     ev: Record<string, any>,
   ) => {
     switch (ev.type) {
+      case "response.created":
+        responseId = (ev.response ?? {}).id ?? responseId
+        break
+      case "response.in_progress":
+        break
       case "response.output_item.added": {
         const item = ev.item ?? {}
         if (item.type === "reasoning") {
@@ -415,8 +450,10 @@ const makeStreamParser = (
           controller.enqueue({ type: "reasoning-start", id: "reasoning-0" })
         } else if (item.type === "function_call") {
           // Function-call items arrive here WITH their item_id + call_id +
-          // name; the incremental argument deltas reference the item_id.
+          // name; the incremental argument deltas reference the item_id (or
+          // only the output_index on lean servers).
           const itemID = String(item.id ?? "")
+          if (ev.output_index !== undefined && itemID) itemIDs.set(String(ev.output_index), itemID)
           if (itemID && !toolCalls.has(itemID)) {
             toolCalls.set(itemID, {
               name: String(item.name ?? ""),
@@ -446,6 +483,12 @@ const makeStreamParser = (
           controller.enqueue({ type: "text-start", id: "txt-0" })
         }
         break
+      case "response.content_part.done":
+        if (inText) {
+          controller.enqueue({ type: "text-end", id: "txt-0" })
+          inText = false
+        }
+        break
       case "response.output_text.delta":
         controller.enqueue({ type: "text-delta", id: "txt-0", delta: String(ev.delta ?? "") })
         break
@@ -456,7 +499,7 @@ const makeStreamParser = (
         }
         break
       case "response.function_call_arguments.delta": {
-        const itemID = String(ev.item_id ?? "")
+        const itemID = String(ev.item_id ?? itemIDs.get(String(ev.output_index ?? "")) ?? "")
         if (!itemID) break
         let tc = toolCalls.get(itemID)
         if (!tc) {
@@ -473,7 +516,7 @@ const makeStreamParser = (
         break
       }
       case "response.function_call_arguments.done": {
-        const itemID = String(ev.item_id ?? "")
+        const itemID = String(ev.item_id ?? itemIDs.get(String(ev.output_index ?? "")) ?? "")
         const tc = toolCalls.get(itemID)
         if (tc) {
           // The done event carries the FULL assembled arguments (the server
@@ -486,12 +529,16 @@ const makeStreamParser = (
       }
       case "response.output_item.done": {
         const item = ev.item ?? {}
-        if (item.type === "function_call") {
+        if (item.type === "reasoning") {
+          if (inReasoning) {
+            controller.enqueue({ type: "reasoning-end", id: "reasoning-0" })
+            inReasoning = false
+          }
+        } else if (item.type === "function_call") {
           sawToolCall = true
           const callID = String(item.call_id ?? "")
           const itemID = String(item.id ?? "")
           const name = String(item.name ?? "")
-          const args = String(item.arguments ?? "{}")
           // Resolve the accumulation record by item_id (the delta/done events
           // key on it); fall back to call_id for lean-server compat.
           const key = toolCalls.has(itemID) ? itemID : callID
@@ -501,7 +548,10 @@ const makeStreamParser = (
             tc = { name, callID, args: "", started: false, completed: false }
             toolCalls.set(key, tc)
           }
-          // The done blob is the authoritative assembled arguments.
+          // The done blob is the authoritative assembled arguments. Some
+          // servers omit arguments on output_item.done; keep the .done/delta
+          // accumulation instead of clobbering it with "{}" (0433, FLARE).
+          const args = typeof item.arguments === "string" ? item.arguments : tc.args || "{}"
           tc.args = args
           tc.name = name
           if (!tc.callID && callID) tc.callID = callID
@@ -524,6 +574,14 @@ const makeStreamParser = (
       }
       case "response.completed": {
         responseId = (ev.response ?? {}).id
+        if (inReasoning) {
+          controller.enqueue({ type: "reasoning-end", id: "reasoning-0" })
+          inReasoning = false
+        }
+        if (inText) {
+          controller.enqueue({ type: "text-end", id: "txt-0" })
+          inText = false
+        }
         // advanceBy is 1 for ALL responses (2026-08-20, deep-dive finding):
         // the server's chained reconstruction (construct_input_messages) re-adds
         // the FULL previous output - reasoning + text + tool calls - via
@@ -548,9 +606,40 @@ const makeStreamParser = (
         })
         break
       }
-      case "response.failed":
-        controller.enqueue({ type: "error", error: new Error("responses stream failed") })
+      case "response.incomplete": {
+        responseId = (ev.response ?? {}).id ?? responseId
+        if (inReasoning) {
+          controller.enqueue({ type: "reasoning-end", id: "reasoning-0" })
+          inReasoning = false
+        }
+        if (inText) {
+          controller.enqueue({ type: "text-end", id: "txt-0" })
+          inText = false
+        }
+        // FLARE/OpenAI max-output-tokens finish: a normal truncation, not an
+        // error. The partial output already streamed; finalize the chain (a
+        // no-op for responses-nostore) and report the reason.
+        const reason = String(ev.incomplete_details?.reason ?? ev.response?.incomplete_details?.reason ?? "")
+        const unified: LanguageModelV3FinishReason["unified"] =
+          reason === "max_output_tokens" ? "length" : reason === "content_filter" ? "content-filter" : "other"
+        finalize(responseId)
+        controller.enqueue({
+          type: "finish",
+          finishReason: { unified, raw: reason || undefined },
+          usage: mapUsage((ev.response ?? {}).usage),
+          providerMetadata: {},
+        })
         break
+      }
+      case "server_error":
+      case "response.failed": {
+        const message =
+          typeof ev.error === "string"
+            ? ev.error
+            : String(ev.error?.message ?? ev.message ?? "responses stream failed")
+        controller.enqueue({ type: "error", error: new Error(message) })
+        break
+      }
     }
   }
 
@@ -589,6 +678,11 @@ export type RDTContext = {
    *  variant's chat_template_kwargs from the merged variant body. */
   providerKey: string
   headers?: Record<string, string | undefined>
+  /** 0433: stateful responses (store + previous_response_id) or stateless. */
+  mode?: RDTMode
+  /** 0433: one warning per unsupported baseURL+modelID; llm.ts routes this
+   *  through Effect.logWarning (never stderr). */
+  warn?: (message: string, fields?: Record<string, unknown>) => void
 }
 
 const lowerTool = (tool: { name: string; description?: string; inputSchema?: unknown }) => ({
@@ -616,6 +710,13 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
   supportedUrls: language.supportedUrls,
   doGenerate: (options) => language.doGenerate(options),
   async doStream(options: LanguageModelV3CallOptions) {
+    const rdtMode = ctx.mode ?? "responses"
+    // A stateful probe already failed for this endpoint: skip RDT entirely.
+    // `responses-nostore` is not affected - it never sends the rejected
+    // fields, so an explicit stateless mode must still be honored.
+    if (rdtMode === "responses" && unsupported.has(latchKey(ctx.baseURL, ctx.modelID))) {
+      return language.doStream(options)
+    }
     // v1: structured-output (responseFormat) falls back to the chat transport.
     if (options.responseFormat !== undefined) {
       return language.doStream(options)
@@ -629,8 +730,8 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
     const inputMsgs = prompt.filter((m): m is Extract<V3Message, { role: "user" | "tool" | "assistant" }> => {
       return m.role !== "system"
     })
-    const state = getState(ctx.sessionID)
-    const chainId = chainIdOf(inputMsgs, ctx.sessionID)
+    const state = rdtMode === "responses" ? getState(ctx.sessionID) : undefined
+    const chainId = rdtMode === "responses" ? chainIdOf(inputMsgs, ctx.sessionID) : ""
 
     // Forward the variant's chat_template_kwargs verbatim, exactly as the
     // chat-completions transport does (transform.ts providerOptions -> body).
@@ -688,20 +789,23 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
       0,
     )
     const chainBasis =
-      state === undefined
-        ? "noState"
-        : state.disabled
-          ? "disabled"
-          : state.modelID !== ctx.modelID
-            ? "model"
-            : state.chainId !== chainId
-              ? "chainId"
-              : state.hwm > inputMsgs.length
-                ? `hwm(${state.hwm} > ${inputMsgs.length})`
-                : state.prefixHash === hashInput(inputMsgs.slice(0, state.hwm))
-                  ? "ok"
-                  : "prefixHash"
+      rdtMode === "responses-nostore"
+        ? "nostore"
+        : state === undefined
+          ? "noState"
+          : state.disabled
+            ? "disabled"
+            : state.modelID !== ctx.modelID
+              ? "model"
+              : state.chainId !== chainId
+                ? "chainId"
+                : state.hwm > inputMsgs.length
+                  ? `hwm(${state.hwm} > ${inputMsgs.length})`
+                  : state.prefixHash === hashInput(inputMsgs.slice(0, state.hwm))
+                    ? "ok"
+                    : "prefixHash"
     const canChain =
+      rdtMode === "responses" &&
       state !== undefined &&
       !state.disabled &&
       state.modelID === ctx.modelID &&
@@ -740,7 +844,9 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         ...sampling,
         stream: true,
         ...(options.maxOutputTokens != null ? { max_output_tokens: options.maxOutputTokens } : {}),
-        store: true,
+        // 0433: stateful chaining is opt-in. A stateless endpoint gets no
+        // store field at all (FLARE rejects it; vLLM accepts false/omitted).
+        ...(rdtMode === "responses" ? { store: true } : {}),
       }
       return body
     }
@@ -791,7 +897,7 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
           })
         : []
       logDebug(ctx.sessionID, {
-        mode: chained ? "chained" : "seed",
+        mode: rdtMode === "responses-nostore" ? "nostore" : chained ? "chained" : "seed",
         previousResponseId: chained ? state!.responseId : undefined,
         itemCount: inputItems.length,
         bytes: JSON.stringify(body).length,
@@ -830,6 +936,17 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
           const failures = state.failures + 1
           const disabled = failures >= MAX_CONSECUTIVE_FAILURES
           setState(ctx.sessionID, { ...state, failures, disabled })
+          // 0433: do not fail the turn on the cap. Finish this turn on chat;
+          // the session's `disabled` flag makes the next turn full-send
+          // responses (and a completed response clears it).
+          if (disabled) {
+            ctx.warn?.("RDT chained transport failed repeatedly; chat fallback for this turn", {
+              baseURL: ctx.baseURL,
+              modelID: ctx.modelID,
+              failures,
+            })
+            return language.doStream(options)
+          }
         }
         if (isAbort) throw err
         // Wrap the raw fetch failure as a retryable APICallError (parity
@@ -852,7 +969,7 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
           setState(ctx.sessionID, { ...state, failures: 0 })
         }
         const finalize = (responseId: string | undefined) => {
-          if (responseId !== undefined) {
+          if (rdtMode === "responses" && responseId !== undefined) {
             setState(ctx.sessionID, {
               responseId,
               hwm: inputMsgs.length,
@@ -875,16 +992,33 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         }
       }
 
-      // Non-OK. Expired/unknown previous_response_id -> clear + retry full.
+      // Non-OK. Read the body once: an endpoint that rejects stateful fields
+      // is latched and the SAME turn falls back to chat; an expired/unknown
+      // previous_response_id keeps the existing clear + full retry.
+      const text = await res.text().catch(() => "")
+      if (res.status === 400 && /store is not supported|previous_response_id is not supported/i.test(text)) {
+        const key = latchKey(ctx.baseURL, ctx.modelID)
+        const first = !unsupported.has(key)
+        unsupported.set(key, true)
+        clearState(ctx.sessionID)
+        if (first) {
+          ctx.warn?.("RDT responses transport unsupported by endpoint; using chat completions", {
+            baseURL: ctx.baseURL,
+            modelID: ctx.modelID,
+            status: res.status,
+            body: text.slice(0, 160),
+          })
+        }
+        return language.doStream(options)
+      }
       if (chained && (res.status === 404 || res.status === 400)) {
         clearState(ctx.sessionID)
         continue
       }
       // Other non-OK (validation, server error): surface to the caller.
-      const text = await res.text().catch(() => "")
       throw new Error(
         `responses API ${res.status}: ${text.slice(0, 400)} ` +
-          `[mode=${chained ? "chained" : "seed"} tools=${tools?.length ?? 0} toolChoice=${JSON.stringify(options.toolChoice)}]`,
+          `[mode=${rdtMode === "responses-nostore" ? "nostore" : chained ? "chained" : "seed"} tools=${tools?.length ?? 0} toolChoice=${JSON.stringify(options.toolChoice)}]`,
       )
     }
 
