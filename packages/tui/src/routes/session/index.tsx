@@ -4151,6 +4151,20 @@ export function sniffFiletype(content: string, minLength = 60): string | undefin
   return undefined
 }
 
+// 0432: at completion a path that resolves "none" (extensionless or an
+// unknown extension) must NOT rebase the stream's confident sniff to
+// no-grammar - that is the 2026-10-20 flare-start snap (colored while
+// streaming, white at completion). A REAL path type (including the explicit
+// "text" type) still wins; "none" falls back to the content sniff, then the
+// stream-time latch. The completion sniff has no length gate: the content is
+// final, and a short shebang script should still color. Only a file with no
+// signature at all ends unstyled.
+export function completedWriteFiletype(path: string, content: string, latched?: string): string {
+  const ft = filetype(path)
+  if (ft && ft !== "none") return ft
+  return coalesceFiletype(sniffFiletype(content, 0)) ?? latched ?? "none"
+}
+
 // Heredoc body language resolution for the bash streaming view: a command
 // containing heredocs is split into segments - the shell parts stay bash,
 // each heredoc body is colored with the language its delimiter names
@@ -4703,14 +4717,12 @@ function Write(props: ToolProps) {
   let latched: string | undefined
   const liveFiletype = createMemo(() => {
     const p = stream.livePath() ?? path()
-    if (completed()) {
-      // Rebase on the now-known name (0302): the finished file's real
-      // language wins over any stream-time guess. No path -> fall through
-      // to the latched/default (should not happen; write has a filePath).
-      if (p) {
-        const ft = filetype(p)
-        if (ft) return ft
-      }
+    if (completed() && p) {
+      // Rebase on the now-known name (0302): a REAL path type wins over any
+      // stream-time guess. A name that resolves "none" (extensionless) is
+      // NOT a type - keep the sniff/latch or the colored stream snaps white
+      // at completion (0432, 2026-10-20 flare-start).
+      return completedWriteFiletype(p, stream.display(), latched)
     }
     // 0360: a path whose EXTENSION has not streamed yet resolves
     // filetype "none" - a FALSE no-grammar signal (the model emits the
@@ -4722,8 +4734,8 @@ function Write(props: ToolProps) {
     // (white) for the frames until the extension landed, then re-colored it
     // = the remaining write flash. Treat "none" as NOT confident while
     // streaming: fall through to the sniff and the latch, exactly like the
-    // low-content markdown default. The completed view still rebases on the
-    // real name, where a genuinely extensionless file resolves "none" (raw).
+    // low-content markdown default. The completed view rebases on a REAL
+    // path type; a name resolving "none" keeps the sniff/latch (0432).
     const pathFt = p ? filetype(p) : undefined
     const confident = pathFt && pathFt !== "none" ? pathFt : undefined
     const sniffed = coalesceFiletype(sniffFiletype(stream.display()))

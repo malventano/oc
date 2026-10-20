@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { sniffFiletype } from "../src/routes/session"
+import { completedWriteFiletype, sniffFiletype } from "../src/routes/session"
 
 const sniff = (content: string) => sniffFiletype(content, 0)
 
@@ -26,5 +26,27 @@ describe("write content sniffer", () => {
   test("bash shebang and markdown fallback still resolve", () => {
     expect(sniff("#!/usr/bin/env bash\nset -e\necho hi\n")).toBe("bash")
     expect(sniff("## Heading\n\n- one\n- two\n")).toBe("markdown")
+  })
+})
+
+describe("completed write filetype", () => {
+  test("an extensionless script keeps the content sniff at completion", () => {
+    expect(completedWriteFiletype("/root/oc/opencode/vllm_scripts/flare-start", "#!/usr/bin/env bash\nset -e\n")).toBe(
+      "bash",
+    )
+  })
+
+  test("the completion sniff is not length-gated", () => {
+    expect(completedWriteFiletype("/tmp/flare-start", "#!/bin/sh\n")).toBe("bash")
+  })
+
+  test("a real path type still wins", () => {
+    expect(completedWriteFiletype("/tmp/a.ts", "#!/usr/bin/env bash\n")).toBe("typescript")
+    expect(completedWriteFiletype("/tmp/a.txt", "#!/usr/bin/env bash\n")).toBe("text")
+  })
+
+  test("extensionless with no signature falls back to the latch, then none", () => {
+    expect(completedWriteFiletype("/tmp/flare-start", "plain words only", "markdown")).toBe("markdown")
+    expect(completedWriteFiletype("/tmp/flare-start", "plain words only")).toBe("none")
   })
 })
