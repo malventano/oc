@@ -282,6 +282,9 @@ describe("TUI inline tool wrapping", () => {
     expect(formatSubagentTitle("Explore", "Inspect renderer", true)).toBe(
       "Explore Task (background) — Inspect renderer",
     )
+    expect(formatSubagentTitle("Explore", "Inspect renderer", false, true)).toBe(
+      "Continue subagent — Inspect renderer",
+    )
   })
 
   test("keeps retry status ahead of wrapping messages", () => {

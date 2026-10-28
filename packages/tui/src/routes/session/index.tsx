@@ -4928,17 +4928,41 @@ function Task(props: ToolProps) {
     return list.length > 0 ? list[list.length - 1] : undefined
   })
 
+  // Every task call keeps its own row. Only the newest call is live; older
+  // calls freeze at their last state so an aborted call remains visible after
+  // a resume. The previous 0390 form hid every non-latest call, which erased
+  // the aborted row and left only the resumed row.
+  const isLatestCall = createMemo(() => {
+    const child = sessionID()
+    if (!child) return true
+    const parentMsgs = sync.data.message[ctx.sessionID] ?? []
+    let lastId = ""
+    for (const m of parentMsgs) {
+      if (m.role !== "assistant") continue
+      for (const p of sync.data.part[m.id] ?? []) {
+        if (p.type !== "tool" || p.tool !== "task") continue
+        const sid = (p.state as { metadata?: { sessionId?: string } }).metadata?.sessionId
+        if (sid !== child) continue
+        lastId = p.id
+      }
+    }
+    return props.part.id === lastId
+  })
   const status = createMemo(() => sync.data.session_status[sessionID() ?? ""])
   const isRunning = createMemo(() => {
     const value = status()
-    // A task part is only live if its CHILD session is live: a killed run
-    // (restart/crash) leaves the part "running" in the store forever - the
-    // ghost-spinner family (0390). The child status is the truth; the part
-    // status alone can never resurrect a dead child.
-    if (props.part.tool === "task") return value !== undefined && value.type !== "idle"
+    // A task part is only live if its CHILD session is live AND this is the
+    // newest call for that child: a killed run (restart/crash) leaves the part
+    // "running" in the store forever - the ghost-spinner family (0390) - and
+    // every older call must stay frozen after a re-call.
+    if (props.part.tool === "task") {
+      if (!isLatestCall()) return false
+      return value !== undefined && value.type !== "idle"
+    }
     return props.part.state.status === "running"
   })
   const retry = createMemo(() => {
+    if (!isLatestCall()) return
     const value = status()
     if (value?.type !== "retry") return
     return value
@@ -5025,7 +5049,11 @@ function Task(props: ToolProps) {
       ),
   )
   const mirrorUsage = createMemo(() => {
-    const last = [...messages()].findLast(
+    // The latest call reads the child's live, session-wide usage. Older calls
+    // read only their own turn window and freeze the cumulative spend at that
+    // call's last message, so a later resume cannot rewrite the frozen row.
+    const pool = isLatestCall() ? messages() : turnMessages()
+    const last = [...pool].findLast(
       (m): m is AssistantMessage => m.role === "assistant" && m.tokens.output > 0,
     )
     if (!last) return undefined
@@ -5034,7 +5062,14 @@ function Task(props: ToolProps) {
     if (tokens <= 0) return undefined
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
-    const cost = sync.session.get(sessionID() ?? "")?.cost ?? 0
+    const cost = isLatestCall()
+      ? (sync.session.get(sessionID() ?? "")?.cost ?? 0)
+      : messages().length >= 100
+        ? 0
+        : messages().reduce(
+            (sum, m) => sum + (m.role === "assistant" && m.time.created <= last.time.created ? m.cost : 0),
+            0,
+          )
     const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
     // 0404: the context pair matches the footbar's - "12.3K (38%)" (the k
     // count + pct), not the bare percent.
@@ -5076,6 +5111,7 @@ function Task(props: ToolProps) {
     return { total, calls: users.length }
   })
 
+  const resumed = createMemo(() => Boolean(stringValue(props.input.task_id)))
   const content = createMemo(() => {
     const description = stringValue(props.input.description)
     if (!description) return ""
@@ -5084,6 +5120,7 @@ function Task(props: ToolProps) {
         Locale.titlecase(stringValue(props.input.subagent_type) ?? "General"),
         description,
         props.metadata.background === true,
+        resumed(),
       ),
     ]
 
@@ -5140,7 +5177,9 @@ function Task(props: ToolProps) {
         usage?.cost,
       ].filter((x) => x !== undefined && x !== "")
       let detail = `↳ ${parts.join(" · ")}`
-      const calls = callsTotal()
+      // The aggregate total belongs to the live/latest row. Older calls keep
+      // the frozen per-call detail they had when the next call took over.
+      const calls = isLatestCall() ? callsTotal() : undefined
       if (calls) detail += ` · total ${Locale.duration(calls.total)} (${calls.calls} calls)`
       content.push(detail)
     }
@@ -5148,30 +5187,7 @@ function Task(props: ToolProps) {
     return content.join("\n")
   })
 
-  // ONE LINE PER SUBAGENT (0390): a re-called subagent reuses the child
-  // session, so the parent stream would render one row per call - the
-  // original plus every resume looked like duplicate subagents. Only the
-  // LATEST call's row renders; the prior calls fold into its aggregate
-  // total (the calls count on the detail line).
-  const isLatestCall = createMemo(() => {
-    const child = sessionID()
-    if (!child) return true
-    const parentMsgs = sync.data.message[ctx.sessionID] ?? []
-    let lastId = ""
-    for (const m of parentMsgs) {
-      if (m.role !== "assistant") continue
-      for (const p of sync.data.part[m.id] ?? []) {
-        if (p.type !== "tool" || p.tool !== "task") continue
-        const sid = (p.state as { metadata?: { sessionId?: string } }).metadata?.sessionId
-        if (sid !== child) continue
-        lastId = p.id
-      }
-    }
-    return props.part.id === lastId
-  })
-
   return (
-    <Show when={isLatestCall()}>
     <InlineTool
       icon={props.part.state.status === "completed" ? "✓" : "│"}
       separate={true}
@@ -5194,7 +5210,6 @@ function Task(props: ToolProps) {
     >
       {content()}
     </InlineTool>
-    </Show>
   )
 }
 
@@ -5248,7 +5263,8 @@ export function formatSubagentRunningLine(
   return Locale.truncateWidth(prefix + flat, Math.max(20, width - 8 - reserve))
 }
 
-export function formatSubagentTitle(agent: string, description: string, background: boolean) {
+export function formatSubagentTitle(agent: string, description: string, background: boolean, resumed = false) {
+  if (resumed) return `Continue subagent${background ? " (background)" : ""} — ${description}`
   return `${agent} Task${background ? " (background)" : ""} — ${description}`
 }
 
