@@ -383,6 +383,7 @@ export type CompactionPart = {
   auto: boolean
   estimated_next_transcript_tokens?: number
   estimated_context_base_tokens?: number
+  summary_only?: boolean
 }
 
 export type Part =

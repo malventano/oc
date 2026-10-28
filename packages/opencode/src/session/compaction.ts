@@ -1076,6 +1076,7 @@ const layer = Layer.effect(
 
       let nextTail: MessageID
       let cleanStart = false
+      let summaryOnly = false
       if (count === 0) {
         if (part?.clean_start === true || floorId === undefined) return "virtual_empty" as const
         const boundaryIdx = idxOf(part.tail_start_id ?? floorId)
@@ -1083,6 +1084,7 @@ const layer = Layer.effect(
           // Rung 3 (summary-only): land on the newest marker (past the floor)
           // so the fold folds the compaction turn's work but keeps the pair.
           nextTail = user.id
+          summaryOnly = true
         } else if (boundaryIdx > floorIdx) {
           // Rung 4 (clean start): the clean_start flag makes filterCompacted
           // exclude the marker + summary pair from the model chain.
@@ -1117,6 +1119,7 @@ const layer = Layer.effect(
         tail_start_id: nextTail,
         virtual: true,
         ...(cleanStart ? { clean_start: true } : {}),
+        ...(summaryOnly ? { summary_only: true } : {}),
       }
       yield* session.updatePart(markerPart)
 

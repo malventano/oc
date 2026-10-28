@@ -766,6 +766,27 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
   }
 })
 
+// The summary is the final semi-turn's output text. Drop reasoning/tool work
+// from earlier steps as well as the final step's non-text parts.
+function finalSummaryTextParts(parts: Part[]) {
+  let lastText = -1
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i]?.type === "text") {
+      lastText = i
+      break
+    }
+  }
+  if (lastText < 0) return []
+  let start = 0
+  for (let i = lastText; i >= 0; i--) {
+    if (parts[i]?.type === "step-start") {
+      start = i
+      break
+    }
+  }
+  return parts.slice(start).filter((part): part is Part & { type: "text" } => part.type === "text")
+}
+
 export function filterCompacted(msgs: Iterable<WithParts>) {
   const all = [...msgs]
   // Serial-fold model: the raw log IS the event stream (message.time_created
@@ -911,6 +932,27 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   }
   if (realMarker && !cleanStart && !out.some((m) => m.info.id === realMarker!.info.id)) {
     out.unshift(...(realSummary ? [realMarker, realSummary] : [realMarker]))
+  }
+
+  // Rung-3 summary-only is the one case that crops the real summary pair to
+  // its literal text. A normal real pair or a normal virtual compact keeps
+  // the summary assistant's parts untouched, so existing chains are
+  // byte-identical after this feature ships. The marker is virtual and
+  // undoable; removing it restores the full pair.
+  const summaryOnly =
+    newestMarker?.parts.some(
+      (part): part is CompactionPart =>
+        part.type === "compaction" && part.virtual === true && part.summary_only === true,
+    ) === true
+  if (summaryOnly) {
+    for (let i = 0; i < out.length; i++) {
+      const msg = out[i]!
+      if (msg.info.role !== "assistant" || msg.info.summary !== true) continue
+      out[i] = {
+        ...msg,
+        parts: finalSummaryTextParts(msg.parts),
+      }
+    }
   }
 
   // Frozen-system epochs: a delta part announces drift against the snapshot

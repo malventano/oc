@@ -236,6 +236,11 @@ export const CompactionPart = Schema.Struct({
   // lets the first post-compaction forecast include the base even when the
   // session has never produced a fresh-session measurement.
   estimated_context_base_tokens: Schema.optional(NonNegativeInt),
+  // summary_only: true marks the lossy rung-3 virtual compaction. When this
+  // marker is the active boundary, the model chain keeps only the real
+  // summary's TEXT parts; the compaction turn's reasoning/tool calls are
+  // cropped. Other markers keep the full summary pair.
+  summary_only: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "CompactionPart" })
 export type CompactionPart = Types.DeepMutable<Schema.Schema.Type<typeof CompactionPart>>
 

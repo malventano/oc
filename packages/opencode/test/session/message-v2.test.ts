@@ -2407,6 +2407,76 @@ describe("session.message-v2.filterCompacted epochs", () => {
     expect(out.some((m) => m.info.id === T)).toBe(true)
   })
 
+  test("a normal compaction summary keeps its parts", () => {
+    const { tailWithDelta, compactionUser, summaryAssistant, continueUser } = makeChain()
+    summaryAssistant.parts = [
+      { ...basePart(S, "p1"), type: "text", text: "summary" } as SessionV1.Part,
+      { ...basePart(S, "p2"), type: "reasoning", text: "thinking" } as unknown as SessionV1.Part,
+      {
+        ...basePart(S, "p3"),
+        type: "tool",
+        tool: "bash",
+        callID: "call",
+        state: { status: "error", input: {}, error: "boom", metadata: {}, time: { start: 0, end: 0 } },
+      } as unknown as SessionV1.Part,
+    ]
+    const out = MessageV2.filterCompacted([continueUser, summaryAssistant, compactionUser, tailWithDelta])
+    const summary = out.find((m) => m.info.id === S)!
+    expect(summary.parts.map((part) => part.type)).toEqual(["text", "reasoning", "tool"])
+  })
+
+  test("a summary-only virtual marker keeps only the final semi-turn text", () => {
+    const { tailWithDelta, compactionUser, summaryAssistant, continueUser } = makeChain()
+    summaryAssistant.parts = [
+      { ...basePart(S, "p1"), type: "text", text: "early work" } as SessionV1.Part,
+      { ...basePart(S, "p2"), type: "step-start" } as SessionV1.Part,
+      { ...basePart(S, "p3"), type: "text", text: "summary" } as SessionV1.Part,
+      { ...basePart(S, "p4"), type: "reasoning", text: "thinking" } as unknown as SessionV1.Part,
+      {
+        ...basePart(S, "p5"),
+        type: "tool",
+        tool: "bash",
+        callID: "call",
+        state: { status: "error", input: {}, error: "boom", metadata: {}, time: { start: 0, end: 0 } },
+      } as unknown as SessionV1.Part,
+    ]
+    const V = MessageID.make("msg_epoch_v")
+    const VS = MessageID.make("msg_epoch_vs")
+    const virtualMarker: SessionV1.WithParts = {
+      info: { ...userInfo(V), time: { created: 500 } },
+      parts: [
+        {
+          ...basePart(V, "p1"),
+          type: "compaction",
+          auto: false,
+          virtual: true,
+          summary_only: true,
+          tail_start_id: C,
+        } as SessionV1.Part,
+      ],
+    }
+    const virtualSummary: SessionV1.WithParts = {
+      info: {
+        ...assistantInfo(VS, V),
+        time: { created: 600 },
+        summary: true,
+        finish: "end_turn",
+      } as SessionV1.Assistant,
+      parts: [{ ...basePart(VS, "p1"), type: "text", text: "summary only" } as SessionV1.Part],
+    }
+    const out = MessageV2.filterCompacted([
+      virtualSummary,
+      virtualMarker,
+      continueUser,
+      summaryAssistant,
+      compactionUser,
+      tailWithDelta,
+    ])
+    const summary = out.find((m) => m.info.id === S)!
+    expect(summary.parts.map((part) => part.type)).toEqual(["text"])
+    expect((summary.parts[0] as SessionV1.TextPart).text).toBe("summary")
+  })
+
   test("undo past the compaction restores the delta parts (boundary reverts)", () => {
     const { tailWithDelta, continueUser } = makeChain()
     const out = MessageV2.filterCompacted([continueUser, tailWithDelta])
