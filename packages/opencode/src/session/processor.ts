@@ -934,10 +934,13 @@ const layer = Layer.effect(
             return { name, description: item.description, inputSchema: item.inputSchema ?? item.parameters }
           }),
         }
-        ctx.estimatedBaseTokens = Token.estimateDisplay(JSON.stringify(requestBase))
-        ctx.estimatedInputTokens = Token.estimateDisplay(
-          JSON.stringify({ ...requestBase, messages: streamInput.messages }),
-        )
+        // The base is system + tool schemas: JSON-heavy, and the 3 chars/token
+        // text divisor overestimates it by ~40%. Use the existing 4 chars/token
+        // serialized-JSON estimator for the base; keep the calibrated 3 divisor
+        // for the message text the footbar already models.
+        ctx.estimatedBaseTokens = Token.estimate(JSON.stringify(requestBase))
+        ctx.estimatedInputTokens =
+          ctx.estimatedBaseTokens + Token.estimateDisplay(JSON.stringify(streamInput.messages))
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
