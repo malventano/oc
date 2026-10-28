@@ -16,7 +16,7 @@ HOW: call it in the message right after the big output arrives, before other wor
 
 Your summary permanently replaces the original - include anything you might need later; non-hint reminders survive. The TUI record stays; only future prompts see the summary. Cannot shrink this tool's own output.
 
-Target: omit for the most recent completed output, { part_id } for precision, { tool, input_contains } for a pattern, or "one"/"all" as a shorthand for match (match: "all" requires a pattern). minLength matches only outputs at least that many chars - use it to isolate one big output when input_contains also matches smaller ones. Depth (default 3): last 3 user turns; -1 reaches deeper incl. below the compaction boundary.`
+Target: omit for the newest unprocessed completed output, { part_id } or { part_ids } for precision, { tool, input_contains } for a pattern, or "one"/"all" as a shorthand for match. "all" walks newest-first and stops at the first already-shrunk part; use part_ids for an explicit group. minLength matches only outputs at least that many chars - use it to isolate one big output when input_contains also matches smaller ones. Depth (default 3): last 3 user turns and only the live context after the last compaction; -1 reaches deeper incl. below the compaction boundary.`
 
 // SELF ids over time (2026-09-08 rename squash-output -> shrink): the
 // plugin-era id was "squash_output", the built-in was "squash-output", now
@@ -38,6 +38,9 @@ export const Parameters = Schema.Struct({
         part_id: Schema.optional(Schema.String).annotate({
           description: "Exact part id to shrink (ids appear in sessions-browse/search output). Cannot be combined with tool/input_contains.",
         }),
+        part_ids: Schema.optional(Schema.Array(Schema.String)).annotate({
+          description: "Exact part ids to shrink as one group (prt_... ids). Use this for parallel outputs; cannot be combined with part_id or tool/input_contains.",
+        }),
         tool: Schema.optional(Schema.String).annotate({ description: "Tool name to match (e.g., 'bash', 'read')." }),
         input_contains: Schema.optional(Schema.String).annotate({
           description: "Substring matched against the tool's input JSON (e.g., 'serial-debug' matches a read whose filePath contains it). Backslashes are auto-doubled to match the JSON-escaped stored form.",
@@ -45,13 +48,13 @@ export const Parameters = Schema.Struct({
       }),
     ]),
   ).annotate({
-    description: "What to shrink: omit for the most recent completed tool output, { part_id } for precision, { tool, input_contains } for a pattern, or 'one'/'all' as a shorthand for match.",
+    description: "What to shrink: omit for the newest unprocessed completed tool output, { part_id } or { part_ids } for precision, { tool, input_contains } for a pattern, or 'one'/'all' as a shorthand for match.",
   }),
   minLength: Schema.optional(Schema.Number).annotate({
     description: "Only match tool outputs whose raw output is at least this many chars - excludes smaller outputs that also match the pattern (e.g. isolate a 49K dump from a 266-char check).",
   }),
   match: Schema.optional(Schema.Literals(["one", "all"])).annotate({
-    description: "'one' (default) shrinks the single most recent match; 'all' shrinks every match (requires a pattern target; aggregate length check).",
+    description: "'one' (default) shrinks the newest unprocessed match; 'all' shrinks the newest unprocessed group and stops at the first already-shrunk part (requires a pattern target or part_ids; aggregate and per-part length checks).",
   }),
   depth: Schema.optional(Schema.Number).annotate({
     description: "Max user turns back from the most recent user message (default 3). Deeper targets are refused; -1 reaches any depth incl. below the compaction boundary (large prefix-cache invalidation).",
@@ -78,6 +81,36 @@ export function extractOutput(data: any) {
   return { stripped, stamp, originalLen: stripped.length }
 }
 
+/** A part's own output has been replaced by a shrink summary. */
+export function isShrunkPart(data: any): boolean {
+  return data?.state?.metadata?.shrunk === true
+}
+
+/** Mark the TARGET part (not the shrink call) as processed. */
+export function markShrunkPart(data: any): void {
+  if (!data?.state) return
+  const metadata = data.state.metadata
+  data.state.metadata = {
+    ...(metadata && typeof metadata === "object" ? metadata : {}),
+    shrunk: true,
+  }
+}
+
+/**
+ * Walk candidates newest-first. `one` skips processed parts and takes the
+ * newest unprocessed part. `all` stops at the first processed part, so a
+ * shrink aimed at the current group cannot land on an older summarized group.
+ */
+export function selectCandidateRows<T extends { data: string }>(rows: T[], match: "one" | "all"): T[] {
+  const parsed = rows.map((row) => ({ row, data: JSON.parse(row.data) as any }))
+  if (match === "one") {
+    const hit = parsed.find((x) => !isShrunkPart(x.data))
+    return hit ? [hit.row] : []
+  }
+  const boundary = parsed.findIndex((x) => isShrunkPart(x.data))
+  return (boundary === -1 ? parsed : parsed.slice(0, boundary)).map((x) => x.row)
+}
+
 export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Service | EventV2Bridge.Service>(
   SELF_ID,
   Effect.gen(function* () {
@@ -100,7 +133,7 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           // not a target object).
           const rawTarget = params.target
           let match = params.match ?? "one"
-          let target: { part_id?: string; tool?: string; input_contains?: string } = {}
+          let target: { part_id?: string; part_ids?: readonly string[]; tool?: string; input_contains?: string } = {}
           if (typeof rawTarget === "string") {
             if (params.match !== undefined && params.match !== rawTarget) {
               throw new Error(`target shorthand '${rawTarget}' conflicts with the explicit match '${params.match}' - pick one.`)
@@ -110,14 +143,26 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
             target = rawTarget ?? {}
           }
           const depth = params.depth ?? 3
+          const ids = target.part_ids ?? []
           const hasId = Boolean(target.part_id)
+          const hasIds = ids.length > 0
           const hasPattern = Boolean(target.tool || target.input_contains)
 
-          if (hasId && hasPattern) {
-            throw new Error("target: part_id cannot be combined with tool/input_contains - pick one.")
+          if (hasId && hasIds) {
+            throw new Error("target: part_id cannot be combined with part_ids - use one exact id or an explicit group.")
           }
-          if (match === "all" && !hasPattern) {
-            throw new Error("match: 'all' requires a pattern target (tool and/or input_contains).")
+          if ((hasId || hasIds) && hasPattern) {
+            throw new Error("target: part_id/part_ids cannot be combined with tool/input_contains - pick one.")
+          }
+          if (match === "all" && !hasPattern && !hasIds) {
+            throw new Error("match: 'all' requires a pattern target (tool and/or input_contains) or explicit part_ids.")
+          }
+          for (const id of [...(hasId ? [target.part_id!] : []), ...ids]) {
+            if (!id.startsWith("prt_")) {
+              throw new Error(
+                `target part id '${id}' is not a part id (expected prt_...). tool_<hash> is an outputPath basename; search_<hash> is a websearch result id.`
+              )
+            }
           }
           if (target.tool === "skill") {
             throw new Error(
@@ -125,8 +170,9 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
             )
           }
 
-          // Newest compaction message's timestamp is the boundary; parts at
-          // or before it are below the compaction (see the `<=` below).
+          // Newest compaction message's timestamp is the live-context boundary.
+          // Default depth never reaches below it; depth -1 is the explicit
+          // archived-content opt-in (and still reports belowBoundary).
           const cutoffRow = yield* db
             .get(sql`SELECT MAX(m.time_created) AS cutoff FROM message m WHERE m.session_id = ${sessionID} AND json_extract(m.data, '$.mode') = 'compaction'`)
             .pipe(Effect.orDie)
@@ -148,6 +194,9 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           if (hasId) {
             whereSql = sql`${whereSql} AND p.id = ${target.part_id}`
           }
+          if (hasIds) {
+            whereSql = sql`${whereSql} AND p.id IN (${sql.join([...ids], sql`, `)})`
+          }
           if (target.tool) {
             whereSql = sql`${whereSql} AND json_extract(p.data, '$.tool') = ${target.tool}`
           }
@@ -166,26 +215,43 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           if (turnCutoff > 0) {
             whereSql = sql`${whereSql} AND p.time_created >= ${turnCutoff}`
           }
-          const limitSql = match === "one" ? sql`LIMIT 1` : sql``
+          if (cutoff > 0 && depth >= 0) {
+            whereSql = sql`${whereSql} AND p.time_created > ${cutoff}`
+          }
 
-          const rows = yield* db
-            .all(sql`SELECT p.id, p.data, p.time_created, p.message_id FROM part p WHERE ${whereSql} ORDER BY p.time_created DESC ${limitSql}`)
-            .pipe(Effect.orDie)
+          const rows = (yield* db
+            .all(sql`SELECT p.id, p.data, p.time_created, p.message_id FROM part p WHERE ${whereSql} ORDER BY p.time_created DESC`)
+            .pipe(Effect.orDie)) as { id: string; data: string; time_created: number; message_id: string }[]
+          const explicit = hasId || hasIds
+          const candidateRows = explicit ? rows : selectCandidateRows(rows, match)
 
           if (rows.length === 0) {
-            const where = hasId
-              ? `part '${target.part_id}'`
-              : hasPattern
-                ? `for tool '${target.tool ?? "(any)"}'${target.input_contains ? ` with input containing '${target.input_contains}'` : ""}`
-                : "for the most recent completed tool output"
+            const where = hasIds
+              ? `${ids.length} part id(s)`
+              : hasId
+                ? `part '${target.part_id}'`
+                : hasPattern
+                  ? `for tool '${target.tool ?? "(any)"}'${target.input_contains ? ` with input containing '${target.input_contains}'` : ""}`
+                  : "for the most recent completed tool output"
             throw new Error(
-              `No completed tool output found ${where} to shrink${params.minLength !== undefined ? ` with minLength >= ${params.minLength}` : ""}${depth >= 0 ? ` within the last ${depth} user turn(s)` : ""}.`
+              `No completed tool output found ${where} to shrink${params.minLength !== undefined ? ` with minLength >= ${params.minLength}` : ""}${depth >= 0 ? ` within the last ${depth} user turn(s); for older targets retry with depth: -1.` : "."}`
             )
+          }
+          if (candidateRows.length === 0) {
+            throw new Error(
+              `No unprocessed completed tool output found to shrink${depth >= 0 ? ` within the last ${depth} user turn(s)` : ""}; all matching parts are already shrunk. Use explicit part_ids for a different group.`
+            )
+          }
+          if (explicit) {
+            const processed = candidateRows.find((row) => isShrunkPart(JSON.parse(row.data)))
+            if (processed) {
+              throw new Error(`Part '${processed.id}' is already shrunk; refusing to overwrite its summary.`)
+            }
           }
 
           let aggregateOriginal = 0
           const updates = []
-          for (const row of rows as { id: string; data: string; time_created: number; message_id: string }[]) {
+          for (const row of candidateRows) {
             const data = JSON.parse(row.data)
             const { stripped, stamp, originalLen } = extractOutput(data)
             aggregateOriginal += originalLen
@@ -201,6 +267,12 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           // mis-targeted match (a small output caught by a broad pattern
           // instead of the big one) is diagnosable instead of cryptic.
           const matchedDesc = updates.map((u) => `${u.data.tool}(${u.originalLen})`).join(", ")
+          const tooSmall = updates.find((u) => u.originalLen <= params.summary.length)
+          if (tooSmall) {
+            throw new Error(
+              `Summary (${params.summary.length} chars) is not smaller than the ${tooSmall.data.tool} output for part '${tooSmall.row.id}' (${tooSmall.originalLen} chars). Matched: ${matchedDesc}. Refusing to grow an individual part. Use explicit part_ids or target.minLength to exclude the smaller outputs.`
+            )
+          }
           if (params.summary.length * updates.length >= aggregateOriginal) {
             throw new Error(
               `Summary (${params.summary.length} chars) × ${updates.length} part(s) (${params.summary.length * updates.length} total) is not smaller than the original output (${aggregateOriginal} chars across ${updates.length} part(s), excluding timestamps). Matched: ${matchedDesc}. Shrinking would make the prompt larger, not smaller. Extract only the essential findings, or don't shrink. If the matched list shows the wrong (smaller) output, add target.minLength or use target.part_id.`
@@ -235,6 +307,7 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
             maxIntervening = Math.max(maxIntervening, intervening)
             if (cutoff > 0 && u.row.time_created <= cutoff) belowBoundary = true
 
+            markShrunkPart(u.data)
             u.data.state.output = params.summary + u.stamp
             yield* db
               .run(sql`UPDATE part SET data = ${JSON.stringify(u.data)}, time_updated = ${Date.now()} WHERE id = ${u.row.id}`)
