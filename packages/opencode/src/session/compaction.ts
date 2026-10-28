@@ -246,6 +246,88 @@ const serialize = (message: SessionV1.WithParts) => {
     .join("\n")
 }
 
+// Transcript-only size of an effective model chain (the output of
+// filterCompacted). This intentionally does not include system/tools: the TUI
+// adds its measured base and renders the sum as a predictive "~N" value.
+function estimateTranscriptTokens(messages: SessionV1.WithParts[]) {
+  let chars = 0
+  for (const message of messages) {
+    if (message.info.role === "assistant" && message.info.error) continue
+    if (
+      message.info.role === "user" &&
+      message.parts.some((part) => part.type === "compaction")
+    ) {
+      chars += "[Compacted summary of the prior conversation]".length
+    }
+    for (const part of message.parts) {
+      if (part.type === "text") {
+        if (!part.ignored) chars += part.text.length
+      } else if (part.type === "reasoning") {
+        chars += part.text.length
+      } else if (part.type === "tool") {
+        chars += JSON.stringify(part.state.input ?? {}).length
+        if (part.state.status === "completed") chars += part.state.output.length
+        else if (part.state.status === "error") chars += part.state.error.length
+        else if (part.state.status === "pending") chars += part.state.raw.length
+      } else if (part.type === "file") {
+        const source = (part as { source?: { text?: { value?: string } } }).source
+        chars += source?.text?.value?.length ?? 0
+      }
+    }
+  }
+  return Token.estimateDisplayFromChars(chars)
+}
+
+// System/tools/environment base from the last pre-compaction step: its exact
+// input minus the transcript estimate of the same chain. This is the base the
+// TUI would otherwise have to learn only after the first post-compaction turn,
+// which is too late for a compact -> virtual-compact sequence.
+export function estimateContextBase(messages: SessionV1.WithParts[], parentID: MessageID) {
+  const history = preMarkerHistory(messages, parentID)
+
+  // Preferred source: the request itself measured the system/tools base at
+  // step-start. This does not depend on transcript-token estimation, which
+  // over-counts on tool-heavy sessions and can go negative.
+  for (let i = history.length - 1; i >= 0; i--) {
+    const info = history[i]?.info
+    if (!info || info.role !== "assistant" || info.summary || info.error) continue
+    const start = history[i]?.parts.findLast(
+      (part): part is SessionV1.StepStartPart =>
+        part.type === "step-start" &&
+        typeof part.estimated_base_tokens === "number" &&
+        part.estimated_base_tokens > 0,
+    )
+    if (start) return start.estimated_base_tokens
+  }
+
+  // Fallback for turns recorded before step-start carried the base.
+  for (let i = history.length - 1; i >= 0; i--) {
+    const info = history[i]?.info
+    if (!info || info.role !== "assistant" || info.summary || info.error) continue
+    const exact = info.tokens.input + info.tokens.cache.read + info.tokens.cache.write
+    if (exact <= 0) continue
+    const base = exact - estimateTranscriptTokens(history.slice(0, i))
+    return base > 0 ? base : undefined
+  }
+  return undefined
+}
+
+function latestContextBase(messages: SessionV1.WithParts[]) {
+  let latest: { time: number; tokens: number } | undefined
+  for (const message of messages) {
+    if (message.info.role !== "user") continue
+    const part = message.parts.find(
+      (item): item is SessionV1.CompactionPart =>
+        item.type === "compaction" && item.virtual !== true && item.estimated_context_base_tokens !== undefined,
+    )
+    if (!part) continue
+    if (!latest || message.info.time.created >= latest.time) {
+      latest = { time: message.info.time.created, tokens: part.estimated_context_base_tokens! }
+    }
+  }
+  return latest?.tokens
+}
+
 function summaryText(message: SessionV1.WithParts) {
   const text = message.parts
     .filter((part): part is SessionV1.TextPart => part.type === "text")
@@ -769,10 +851,23 @@ const layer = Layer.effect(
         return "stop"
       }
 
+      let markerPart = compactionPart
       if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
-        yield* session.updatePart({
+        markerPart = {
           ...compactionPart,
           tail_start_id: selected.tail_start_id,
+        }
+        yield* session.updatePart(markerPart)
+      }
+      if (markerPart) {
+        const settled = yield* MessageV2.filterCompactedEffect(input.sessionID).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        const contextBase = estimateContextBase(input.messages, input.parentID)
+        yield* session.updatePart({
+          ...markerPart,
+          estimated_next_transcript_tokens: estimateTranscriptTokens(settled),
+          ...(contextBase !== undefined ? { estimated_context_base_tokens: contextBase } : {}),
         })
       }
 
@@ -1013,7 +1108,7 @@ const layer = Layer.effect(
         model: user.model,
         time: { created: Date.now() },
       })
-      yield* session.updatePart({
+      const markerPart: SessionV1.CompactionPart = {
         id: PartID.ascending(),
         messageID: markerMsg.id,
         sessionID: input.sessionID,
@@ -1022,7 +1117,8 @@ const layer = Layer.effect(
         tail_start_id: nextTail,
         virtual: true,
         ...(cleanStart ? { clean_start: true } : {}),
-      })
+      }
+      yield* session.updatePart(markerPart)
 
       const note = cleanStart
         ? "Clean slate (no summary). Undo (/undo) to restore the previous state."
@@ -1054,6 +1150,15 @@ const layer = Layer.effect(
         type: "text",
       text: note,
       time: { start: Date.now(), end: Date.now() },
+      })
+      const settled = yield* MessageV2.filterCompactedEffect(input.sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+      )
+      const contextBase = latestContextBase(input.messages)
+      yield* session.updatePart({
+        ...markerPart,
+        estimated_next_transcript_tokens: estimateTranscriptTokens(settled),
+        ...(contextBase !== undefined ? { estimated_context_base_tokens: contextBase } : {}),
       })
 
       yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
@@ -1140,12 +1245,14 @@ const layer = Layer.effect(
       // pending request is completed from the clean summary.
       const cfg = yield* config.get()
       const model = yield* provider.getModel(parent.info.model.providerID, parent.info.model.modelID).pipe(Effect.orDie)
+      let markerPart = compactionPart
       if (compactionPart.guard) {
-        yield* session.updatePart({
+        markerPart = {
           ...compactionPart,
           tail_start_id: undefined,
           no_tail: true,
-        })
+        }
+        yield* session.updatePart(markerPart)
       } else {
         const history = preMarkerHistory(input.messages, input.parentID)
         const prior = completedCompactions(history)
@@ -1175,12 +1282,22 @@ const layer = Layer.effect(
         }
       }
       if (tailStart && compactionPart.tail_start_id !== tailStart) {
-        yield* session.updatePart({
+        markerPart = {
           ...compactionPart,
           tail_start_id: tailStart,
-        })
+        }
+        yield* session.updatePart(markerPart)
       }
       } // end else: non-guard compaction keeps tail selection
+      const settled = yield* MessageV2.filterCompactedEffect(input.sessionID).pipe(
+        Effect.provideService(Database.Service, database),
+      )
+      const contextBase = estimateContextBase(input.messages, input.parentID)
+      yield* session.updatePart({
+        ...markerPart,
+        estimated_next_transcript_tokens: estimateTranscriptTokens(settled),
+        ...(contextBase !== undefined ? { estimated_context_base_tokens: contextBase } : {}),
+      })
 
       // A prompt queued during the summary turn supersedes the synthetic
       // auto-continue: the loop turns on the newest user message only.

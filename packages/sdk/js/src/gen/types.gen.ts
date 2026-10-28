@@ -310,6 +310,8 @@ export type StepStartPart = {
   messageID: string
   type: "step-start"
   snapshot?: string
+  estimated_input_tokens?: number
+  estimated_base_tokens?: number
 }
 
 export type StepFinishPart = {
@@ -379,6 +381,8 @@ export type CompactionPart = {
   messageID: string
   type: "compaction"
   auto: boolean
+  estimated_next_transcript_tokens?: number
+  estimated_context_base_tokens?: number
 }
 
 export type Part =

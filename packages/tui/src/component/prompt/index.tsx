@@ -39,7 +39,8 @@ import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
-import { computeTurn, formatCount, pendingTally, settledReport } from "./turn-stats"
+import { computeTurn, formatCount, pendingTally } from "./turn-stats"
+import { bindContextUsageKV, contextUsage } from "../../util/context-usage"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -176,6 +177,7 @@ export function Prompt(props: PromptProps) {
   const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  bindContextUsageKV(kv)
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
   const list = createMemo(() => props.placeholders?.normal ?? [])
   const shell = createMemo(() => props.placeholders?.shell ?? [])
@@ -388,19 +390,21 @@ export function Prompt(props: PromptProps) {
   // session's turn start plus the live running tallies.
   const usage = createMemo(() => {
     if (!props.sessionID) return
-    const msg = sessionMessages()
-    const total = liveTallyForSession(props.sessionID).contextTotal
-    if (total <= 0) return
-    const settled = settledReport(msg)
-    const model = settled
-      ? sync.data.provider.find((item) => item.id === settled.providerID)?.models[settled.modelID]
-      : undefined
-    const pct = model?.limit.context ? `${Math.round((total / model.limit.context) * 100)}%` : undefined
+    const context = contextUsage({
+      messages: sync.data.message[props.sessionID] ?? [],
+      parts: (id) => sync.data.part[id],
+      session: sync.session.get(props.sessionID),
+      provider: sync.data.provider,
+      directory: location()?.directory ?? paths.cwd,
+      busy: (sync.data.session_status?.[props.sessionID]?.type ?? "idle") !== "idle",
+    })
+    if (!context || context.tokens <= 0) return
     const subtree = subtreeTally()
     const costTotal = subtree.cost + subtree.live
     const cost = costTotal > 0 ? money.format(costTotal) : undefined
+    const pct = context.percent === null ? undefined : `${context.percent}%`
     return {
-      context: pct ? `${formatCount(total)} (${pct})` : formatCount(total),
+      context: `${context.forecast ? "~" : ""}${formatCount(context.tokens)}${pct ? ` (${pct})` : ""}`,
       cost,
     }
   })

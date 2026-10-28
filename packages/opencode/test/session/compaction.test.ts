@@ -8,7 +8,13 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
-import { SessionCompaction, hasAbortedCompaction, hasNewerPrompt, preMarkerHistory } from "../../src/session/compaction"
+import {
+  SessionCompaction,
+  estimateContextBase,
+  hasAbortedCompaction,
+  hasNewerPrompt,
+  preMarkerHistory,
+} from "../../src/session/compaction"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -971,6 +977,7 @@ describe("session.compaction.process", () => {
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
+      expect(part?.estimated_next_transcript_tokens).toBeGreaterThan(0)
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 10_000 }) })),
   )
 
@@ -997,6 +1004,7 @@ describe("session.compaction.process", () => {
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
+      expect(part?.estimated_next_transcript_tokens).toBeGreaterThan(0)
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 100 }) })),
   )
 
@@ -2053,15 +2061,26 @@ it.instance(
       const marker2After = after.find((m) => m.info.id === marker2.info.id)!
       const part2 = marker2After.parts.find((p): p is SessionV1.CompactionPart => p.type === "compaction")!
       expect(part2.tail_start_id).toBe(windowFirst)
-      // A virtual compact now reduces the 2-turn window: 2 -> 1.
+      const beforeVirtual = part2.estimated_next_transcript_tokens
+      expect(beforeVirtual).toBeGreaterThan(0)
+      // A virtual compact now reduces the 2-turn window: 2 -> 1. The estimate
+      // is the effective model chain, so the dropped tail turn must lower it.
       const outcome = yield* SessionCompaction.use.virtual({
         sessionID: session.id,
         messages: yield* ssn.messages({ sessionID: session.id }),
       })
       expect(outcome).toBe("virtual_reduced")
-      const summary3 = (yield* ssn.messages({ sessionID: session.id })).at(-1)!
+      const afterVirtual = yield* ssn.messages({ sessionID: session.id })
+      const summary3 = afterVirtual.at(-1)!
       const text3 = summary3.parts.find((p): p is SessionV1.TextPart => p.type === "text")
       expect(text3?.text).toContain("Pre-compaction tail reduced: 2 → 1")
+      const virtualMarker = afterVirtual.findLast(
+        (m) => m.info.role === "user" && m.parts.some((p) => p.type === "compaction" && p.virtual === true),
+      )
+      const virtualPart = virtualMarker?.parts.find(
+        (p): p is SessionV1.CompactionPart => p.type === "compaction",
+      )
+      expect(virtualPart?.estimated_next_transcript_tokens).toBeLessThan(beforeVirtual!)
     }),
   )
 
@@ -2970,6 +2989,61 @@ describe("preMarkerHistory", () => {
 
   test("empty when the marker is not in the chain", () => {
     expect(preMarkerHistory([cmsg("msg_a", "user")], "msg_x" as MessageID)).toEqual([])
+  })
+})
+
+describe("estimateContextBase", () => {
+  const user = (id: string, text = "") =>
+    ({
+      info: { id, role: "user", time: { created: 0 } },
+      parts: text ? [{ type: "text", text }] : [],
+    }) as unknown as SessionV1.WithParts
+  const assistant = (id: string, parentID: string, input: number, cache: number) =>
+    ({
+      info: {
+        id,
+        role: "assistant",
+        parentID,
+        time: { created: 1 },
+        tokens: { input, output: 0, reasoning: 0, cache: { read: cache, write: 0 } },
+      },
+      parts: [],
+    }) as unknown as SessionV1.WithParts
+  const marker = (id: string) =>
+    ({
+      info: { id, role: "user", time: { created: 2 } },
+      parts: [{ type: "compaction" }],
+    }) as unknown as SessionV1.WithParts
+
+  test("prefers the step-start measured base", () => {
+    const step = {
+      info: {
+        id: "a",
+        role: "assistant",
+        parentID: "u",
+        time: { created: 1 },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+      parts: [{ type: "step-start", estimated_base_tokens: 2500 }],
+    } as unknown as SessionV1.WithParts
+    const chain = [user("u", "x".repeat(300)), step, marker("m")]
+    expect(estimateContextBase(chain, "m" as MessageID)).toBe(2500)
+  })
+
+  test("uses the last exact pre-compaction step minus its transcript estimate", () => {
+    const chain = [user("u", "x".repeat(300)), assistant("a", "u", 1000, 200), marker("m")]
+    expect(estimateContextBase(chain, "m" as MessageID)).toBe(1100)
+  })
+
+  test("uses the previous step when the newest assistant is a summary or errored", () => {
+    const summary = assistant("s", "u", 9999, 0)
+    ;(summary.info as { summary?: boolean }).summary = true
+    const chain = [user("u", "x".repeat(300)), assistant("a", "u", 1000, 200), summary, marker("m")]
+    expect(estimateContextBase(chain, "m" as MessageID)).toBe(1100)
+  })
+
+  test("undefined when no pre-compaction report exists", () => {
+    expect(estimateContextBase([user("u", "x"), marker("m")], "m" as MessageID)).toBeUndefined()
   })
 })
 

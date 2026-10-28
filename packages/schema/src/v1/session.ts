@@ -227,6 +227,15 @@ export const CompactionPart = Schema.Struct({
   // only the post-marker continuation, as if the session had just begun.
   // Distinct from no_tail (which keeps the lifted marker+summary pair).
   clean_start: Schema.optional(Schema.Boolean),
+  // Transcript-only estimate of the model chain after this marker, using the
+  // TUI display divisor (3 chars/token). The TUI adds the system/tools base
+  // and renders it as "~N" until the next provider report lands.
+  estimated_next_transcript_tokens: Schema.optional(NonNegativeInt),
+  // Measured system/tools/environment base derived from the last
+  // pre-compaction step (exact input minus its transcript estimate). This
+  // lets the first post-compaction forecast include the base even when the
+  // session has never produced a fresh-session measurement.
+  estimated_context_base_tokens: Schema.optional(NonNegativeInt),
 }).annotate({ identifier: "CompactionPart" })
 export type CompactionPart = Types.DeepMutable<Schema.Schema.Type<typeof CompactionPart>>
 
@@ -263,6 +272,14 @@ export const StepStartPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("step-start"),
   snapshot: Schema.optional(Schema.String),
+  // Preflight estimate of the request about to be sent, using the TUI display
+  // divisor (3 chars/token). Lets the footbar/sidebar show a predictive
+  // context value before the first provider report lands.
+  estimated_input_tokens: Schema.optional(NonNegativeInt),
+  // System/tools/environment portion of that request. Compaction copies the
+  // last pre-compaction value onto the marker so a virtual compaction keeps
+  // the base without estimating it from transcript text.
+  estimated_base_tokens: Schema.optional(NonNegativeInt),
 }).annotate({ identifier: "StepStartPart" })
 export type StepStartPart = Types.DeepMutable<Schema.Schema.Type<typeof StepStartPart>>
 

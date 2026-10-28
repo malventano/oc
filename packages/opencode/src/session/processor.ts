@@ -26,6 +26,7 @@ import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
+import { Token } from "@/util/token"
 import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -141,6 +142,10 @@ interface ProcessorContext extends Input {
   // prompt; the orphan re-loop keys on parentID, never on the asker's
   // finish, so "stop" is safe.
   questionClosed: boolean
+  // Preflight estimate of the request about to be sent, stamped on the
+  // step-start part so the TUI can forecast before the provider report lands.
+  estimatedInputTokens: number
+  estimatedBaseTokens: number
 }
 
 type StreamEvent = LLMEvent
@@ -202,6 +207,8 @@ const layer = Layer.effect(
         restartClosed: false,
         questionClosed: false,
         lastRetry: undefined,
+        estimatedInputTokens: 0,
+        estimatedBaseTokens: 0,
       }
       let aborted = false
 
@@ -611,6 +618,8 @@ const layer = Layer.effect(
               sessionID: ctx.sessionID,
               snapshot: ctx.snapshot,
               type: "step-start",
+              estimated_input_tokens: ctx.estimatedInputTokens,
+              estimated_base_tokens: ctx.estimatedBaseTokens,
             })
             return
 
@@ -918,6 +927,17 @@ const layer = Layer.effect(
         ctx.stallFired = false
         ctx.stallHit = null
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        const requestBase = {
+          system: streamInput.epochSystem ?? streamInput.system,
+          tools: Object.entries(streamInput.tools).map(([name, tool]) => {
+            const item = tool as { description?: string; inputSchema?: unknown; parameters?: unknown }
+            return { name, description: item.description, inputSchema: item.inputSchema ?? item.parameters }
+          }),
+        }
+        ctx.estimatedBaseTokens = Token.estimateDisplay(JSON.stringify(requestBase))
+        ctx.estimatedInputTokens = Token.estimateDisplay(
+          JSON.stringify({ ...requestBase, messages: streamInput.messages }),
+        )
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
