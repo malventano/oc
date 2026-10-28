@@ -187,14 +187,14 @@ index e5e5874..22ea0ca 100644
    }
 +
    onResize(width, height) {
-+    // oc-0392 (reasoning body vanishes under the cursor): a wheel event
-+    // hit-tested to this element during a streaming height lag parks
-+    // _scrollY at the transient maxScrollY; when the height catches up the
-+    // stale offset persists (nothing re-clamps on a height change - the
-+    // setter clamps only on set, updateViewportOffset only runs from the
-+    // setters) and the buffer view shows a scrolled window forever: the top
-+    // rows blank, the tail rows clipped. Re-clamp on every resize before
-+    // re-applying the viewport.
++    // oc-0435: apply the laid-out width before the scroll clamp. The buffer's
++    // wrap width was fixed at construction; after a mount narrowing it kept
++    // the wider wrap and pooled blank rows. oc-0392: re-clamp a parked scroll.
++    // Set wrap only on a width change: height-only streaming resizes are hot.
++    if (this._wrapMode !== "none" && width > 0 && width !== this._lastWrapWidth) {
++      this._lastWrapWidth = width;
++      this.textBufferView.setWrapWidth(width);
++    }
 +    const maxSy = Math.max(0, (this.textBufferView.getVirtualLineCount?.() ?? 0) - height);
 +    if (this._scrollY > maxSy) {
 +      this._scrollY = maxSy;
@@ -652,14 +652,14 @@ index 4a2cb78..01cc080 100644
    }
 +
    onResize(width, height) {
-+    // oc-0392 (reasoning body vanishes under the cursor): a wheel event
-+    // hit-tested to this element during a streaming height lag parks
-+    // _scrollY at the transient maxScrollY; when the height catches up the
-+    // stale offset persists (nothing re-clamps on a height change - the
-+    // setter clamps only on set, updateViewportOffset only runs from the
-+    // setters) and the buffer view shows a scrolled window forever: the top
-+    // rows blank, the tail rows clipped. Re-clamp on every resize before
-+    // re-applying the viewport.
++    // oc-0435: apply the laid-out width before the scroll clamp. The buffer's
++    // wrap width was fixed at construction; after a mount narrowing it kept
++    // the wider wrap and pooled blank rows. oc-0392: re-clamp a parked scroll.
++    // Set wrap only on a width change: height-only streaming resizes are hot.
++    if (this._wrapMode !== "none" && width > 0 && width !== this._lastWrapWidth) {
++      this._lastWrapWidth = width;
++      this.textBufferView.setWrapWidth(width);
++    }
 +    const maxSy = Math.max(0, (this.textBufferView.getVirtualLineCount?.() ?? 0) - height);
 +    if (this._scrollY > maxSy) {
 +      this._scrollY = maxSy;

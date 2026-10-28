@@ -3096,24 +3096,10 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     void summary()
     void isDone()
     const el = traceCodeEl as any
-    // 0328: the isDone re-measure races the async highlight's final apply -
-    // the reasoning element streams forever (streaming stays true), so the
-    // buffer only advances via the worker. Defer the done-time measurement
-    // one tick so a final apply landing with the done flip is counted (the
-    // inline measure stays for the streaming case, where box and buffer
-    // lag together).
-    if (isDone()) {
-      setTimeout(() => {
-        if (!traceCodeEl || traceCodeEl.isDestroyed || !traceCodeEl?.textBufferView?.measureForDimensions) return
-        try {
-          const el2 = traceCodeEl as any
-          const c = el2.textBufferView.measureForDimensions(liveW(), 99999)?.lineCount ?? 0
-          const vr = (el2.textBufferView.getVirtualLineCount?.() as number) ?? 0
-          setStreamRowsCount(Math.max(c, vr))
-        } catch {}
-      }, 0)
-      return
-    }
+    // Completed/rehydrated reasoning uses the code element's native height
+    // (the body box height is unset when done); a done-time measurement would
+    // be unused work and can pin a stale width-specific row count.
+    if (isDone()) return
     if (!el?.textBufferView?.measureForDimensions) {
       setStreamRowsCount(0)
       return
@@ -3172,7 +3158,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
               real laid-out width (lineCountAtWidth == virtualLineCount, always
               correct) instead of the compromised layout height. */}
           <box
-            height={streamRowsCount()}
+            height={isDone() ? undefined : streamRowsCount()}
             paddingLeft={inMinimal() ? 2 : 0}
             marginTop={1}
             flexShrink={0}
