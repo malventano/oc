@@ -179,6 +179,28 @@ function latestStepStart(
   return undefined
 }
 
+function latestStepStartBase(
+  messages: ReadonlyArray<Message>,
+  parts: (messageID: string) => ReadonlyArray<Part> | undefined,
+  afterIndex: number,
+  topic: Subject | undefined,
+) {
+  for (let i = messages.length - 1; i > afterIndex; i--) {
+    const message = messages[i]
+    if (message?.role !== "assistant") continue
+    if (topic && (message.providerID !== topic.providerID || message.modelID !== topic.modelID)) continue
+    if (topic?.agent && message.agent && message.agent !== topic.agent) continue
+    const start = (parts(message.id) ?? []).findLast(
+      (part): part is StepStartPart =>
+        part.type === "step-start" &&
+        typeof part.estimated_base_tokens === "number" &&
+        part.estimated_base_tokens > 0,
+    )
+    if (start) return start.estimated_base_tokens
+  }
+  return undefined
+}
+
 function subject(
   messages: ReadonlyArray<Message>,
   session: Session | undefined,
@@ -342,7 +364,10 @@ export function resolveContextUsage(input: ContextUsageInput, baseline = 0): Con
     const transcript =
       pair.part.estimated_next_transcript_tokens ?? fallbackCompactionTranscript(pair, messages, input.parts)
     if (transcript !== undefined) {
-      const contextBase = pair.part.estimated_context_base_tokens ?? baseline
+      const contextBase =
+        pair.part.estimated_context_base_tokens ??
+        latestStepStartBase(messages, input.parts, -1, topic) ??
+        baseline
       const tokens =
         contextBase +
         transcript +
