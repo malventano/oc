@@ -2367,6 +2367,46 @@ describe("session.message-v2.filterCompacted epochs", () => {
     ).toBe(true)
   })
 
+  test("an aborted finalize is not lifted as the newest completed pair", () => {
+    const { tailWithDelta, compactionUser, summaryAssistant, continueUser } = makeChain()
+    const C2 = MessageID.make("msg_epoch_c2")
+    const S2 = MessageID.make("msg_epoch_s2")
+    const abortedMarker: SessionV1.WithParts = {
+      info: { ...userInfo(C2), time: { created: 500 } },
+      parts: [
+        { ...basePart(C2, "p1"), type: "compaction", auto: true, tail_start_id: C } as SessionV1.Part,
+      ],
+    }
+    const abortedSummary: SessionV1.WithParts = {
+      info: {
+        ...assistantInfo(S2, C2),
+        time: { created: 600 },
+        summary: true,
+        finish: "stop",
+        error: { name: "MessageAbortedError", data: { message: "Aborted" } },
+      } as SessionV1.Assistant,
+      parts: [],
+    }
+    const afterUser: SessionV1.WithParts = {
+      info: { ...userInfo("msg_epoch_after"), time: { created: 700 } },
+      parts: [{ ...basePart("msg_epoch_after", "p1"), type: "text", text: "after" } as SessionV1.Part],
+    }
+    const out = MessageV2.filterCompacted([
+      afterUser,
+      abortedSummary,
+      abortedMarker,
+      continueUser,
+      summaryAssistant,
+      compactionUser,
+      tailWithDelta,
+    ])
+    // The completed C/S pair is still the boundary; the aborted finalize
+    // must not replace it and hide the full pre-compaction tail.
+    expect(out[0]?.info.id).toBe(C)
+    expect(out[1]?.info.id).toBe(S)
+    expect(out.some((m) => m.info.id === T)).toBe(true)
+  })
+
   test("undo past the compaction restores the delta parts (boundary reverts)", () => {
     const { tailWithDelta, continueUser } = makeChain()
     const out = MessageV2.filterCompacted([continueUser, tailWithDelta])

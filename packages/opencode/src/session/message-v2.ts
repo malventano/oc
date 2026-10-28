@@ -812,7 +812,12 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
     if (msg.info.role !== "user") continue
     if (!msg.parts.some((p): p is CompactionPart => p.type === "compaction")) continue
     const summary = chronological.find(
-      (s) => s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id,
+      (s) =>
+        s.info.role === "assistant" &&
+        s.info.summary === true &&
+        Boolean(s.info.finish) &&
+        !s.info.error &&
+        s.info.parentID === msg.info.id,
     )
     if (!summary) continue
     newestMarker = msg
@@ -892,7 +897,12 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
     if (msg.info.role !== "user") continue
     if (!msg.parts.some((p): p is CompactionPart => p.type === "compaction" && p.virtual !== true)) continue
     const summary = chronological.find(
-      (s) => s.info.role === "assistant" && s.info.summary && s.info.parentID === msg.info.id,
+      (s) =>
+        s.info.role === "assistant" &&
+        s.info.summary === true &&
+        Boolean(s.info.finish) &&
+        !s.info.error &&
+        s.info.parentID === msg.info.id,
     )
     if (!summary) continue
     realMarker = msg
