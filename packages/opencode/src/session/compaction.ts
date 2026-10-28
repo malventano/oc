@@ -1210,20 +1210,25 @@ const layer = Layer.effect(
 
       // Reasoning-only summary fallback (0377): a model can wrap the ENTIRE
       // summary in its thinking block (GLM-5.3-Flash live 2026-09-27: output:1,
-      // reasoning:4877 tokens, finish stop). The reasoning part still replays
-      // into follow-up turns, but the summary renders collapsed in the TUI and
-      // rides the thinking channel instead of being first-class content. If
-      // the finished summary has no non-empty text part, mirror the reasoning
-      // text into a text part (full text kept in both).
+      // reasoning:4877 tokens, finish stop). Convert that reasoning into the
+      // summary's text and REMOVE the reasoning parts. Mirroring would leave
+      // both copies in the model chain and double the context at every turn.
       const hasSummaryText = assistant.parts.some(
         (part): part is SessionV1.TextPart => part.type === "text" && part.text.trim().length > 0,
       )
       if (!hasSummaryText) {
-        const reasoningText = assistant.parts
-          .filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning" && part.text.trim().length > 0)
-          .map((part) => part.text)
-          .join("\n\n")
+        const reasoningParts = assistant.parts.filter(
+          (part): part is SessionV1.ReasoningPart => part.type === "reasoning" && part.text.trim().length > 0,
+        )
+        const reasoningText = reasoningParts.map((part) => part.text).join("\n\n")
         if (reasoningText) {
+          for (const part of reasoningParts) {
+            yield* session.removePart({
+              sessionID: input.sessionID,
+              messageID: assistant.info.id,
+              partID: part.id,
+            })
+          }
           yield* session.updatePart({
             id: PartID.ascending(),
             messageID: assistant.info.id,

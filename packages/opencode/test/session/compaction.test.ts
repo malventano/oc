@@ -2085,7 +2085,7 @@ it.instance(
   )
 
 it.instance(
-    "finalize mirrors a reasoning-only summary into a text part (0377)",
+    "finalize converts a reasoning-only summary into text, removing the reasoning (0377)",
     Effect.gen(function* () {
       const test = yield* TestInstance
       const ssn = yield* SessionNs.Service
@@ -2095,8 +2095,8 @@ it.instance(
       const markerId = all.at(-1)!.info.id
       // Summary turn that wrapped the ENTIRE summary in its thinking block
       // (GLM-5.3-Flash live 2026-09-27: output:1, reasoning:4877 tokens):
-      // reasoning part only, no text part. finalize must mirror the reasoning
-      // text into a text part so the summary is first-class content.
+      // reasoning part only, no text part. finalize must turn it into text
+      // and remove the reasoning parts, not keep both copies.
       const summary = yield* SessionNs.Service.use((svc) =>
         Effect.gen(function* () {
           const msg = yield* svc.updateMessage({
@@ -2135,9 +2135,8 @@ it.instance(
       const mirrored = after.find((m) => m.info.id === summary.id)!
       const text = mirrored.parts.find((p): p is SessionV1.TextPart => p.type === "text")
       expect(text?.text).toBe("REASONING-ONLY SUMMARY BODY")
-      // The reasoning part is kept in full (nothing moved, only mirrored).
-      const reasoning = mirrored.parts.find((p): p is SessionV1.ReasoningPart => p.type === "reasoning")
-      expect(reasoning?.text).toBe("REASONING-ONLY SUMMARY BODY")
+      // The reasoning copy is removed; the model chain carries text only.
+      expect(mirrored.parts.some((p) => p.type === "reasoning")).toBe(false)
     }),
   )
 
