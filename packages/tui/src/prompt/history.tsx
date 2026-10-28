@@ -76,10 +76,10 @@ export type HistoryMove =
  * From there: up to refer to prior prompts, back down to the draft, one
  * more down reaches the cleared field (Ctrl+C's end state), and up-arrow
  * on the empty field recalls the draft. Browsing with an edited field
- * still refuses. Down-arrow on a fresh draft mirrors Ctrl+C (0375): the
- * draft is stashed with the same dedup/trim guards and the field clears -
- * the draft becomes the newest history entry, so up-arrow recalls it.
- * Down mid-browse never stashes (the walk to the cleared field is
+ * stashes the edit and continues (0438). Down-arrow on a fresh draft mirrors
+ * Ctrl+C (0375): the draft is stashed with the same dedup/trim guards and
+ * the field clears - the draft becomes the newest history entry, so up-arrow
+ * recalls it. Down mid-browse never stashes (the walk to the cleared field is
  * unchanged).
  */
 export function moveHistory(
@@ -120,7 +120,26 @@ export function moveHistory(
   if (!state.history.length) return undefined
   const current = state.history.at(state.index)
   if (!current) return undefined
-  if (current.input !== input && input.length) return undefined
+  if (current.input !== input && input.length) {
+    // 0438: an edited recalled entry used to return here and leave up/down
+    // dead. Stash the edit as a new entry, then move one step in the
+    // requested direction from the entry being edited (the append shifts
+    // that entry one slot toward the end). Down from the newest entry means
+    // past the end: the cleared field.
+    if (!draft) return undefined
+    const duplicate = isDuplicateEntry(state.history.at(-1), draft)
+    const history = duplicate ? state.history : [...state.history, draft].slice(-MAX_HISTORY_ENTRIES)
+    let next = state.index + direction - (duplicate ? 0 : 1)
+    if (direction === 1 && state.index === -1) next = 0
+    if (next > 0) return undefined
+    if (Math.abs(next) > history.length) return undefined
+    return {
+      browse: { index: next, history },
+      item: next === 0 ? { input: "", parts: [] } : history.at(next)!,
+      appended: duplicate ? undefined : draft,
+      trimmed: !duplicate && state.history.length >= MAX_HISTORY_ENTRIES,
+    }
+  }
   const next = state.index + direction
   if (Math.abs(next) > state.history.length) return undefined
   if (next > 0) return undefined

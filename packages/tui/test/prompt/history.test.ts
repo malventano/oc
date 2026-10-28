@@ -148,8 +148,48 @@ describe("moveHistory: draft stash on up-arrow (0370)", () => {
     expect(moveHistory(browse([entry("a")], -1), 1, "a")?.item).toEqual({ input: "", parts: [] })
   })
 
-  test("browsing with an edited field still refuses, and does not stash (unchanged)", () => {
-    const r = moveHistory(browse([entry("a"), entry("b")], -1), -1, "edited", entry("edited"))
+  test("up-arrow from an edited newest entry stashes the edit and moves one older", () => {
+    const r = moveHistory(browse([entry("a"), entry("b"), entry("c")], -1), -1, "c edited", entry("c edited"))
+    expect(r?.browse).toEqual({
+      index: -3,
+      history: [entry("a"), entry("b"), entry("c"), entry("c edited")],
+    })
+    expect(r?.item).toEqual(entry("b"))
+    expect(r?.appended).toEqual(entry("c edited"))
+  })
+
+  test("down-arrow from an edited newest entry stashes the edit and clears", () => {
+    const r = moveHistory(browse([entry("a"), entry("b"), entry("c")], -1), 1, "c edited", entry("c edited"))
+    expect(r?.browse).toEqual({
+      index: 0,
+      history: [entry("a"), entry("b"), entry("c"), entry("c edited")],
+    })
+    expect(r?.item).toEqual({ input: "", parts: [] })
+    expect(r?.appended).toEqual(entry("c edited"))
+  })
+
+  test("up-arrow from an edited middle entry still moves one older", () => {
+    const r = moveHistory(browse([entry("a"), entry("b"), entry("c")], -2), -1, "b edited", entry("b edited"))
+    expect(r?.browse).toEqual({
+      index: -4,
+      history: [entry("a"), entry("b"), entry("c"), entry("b edited")],
+    })
+    expect(r?.item).toEqual(entry("a"))
+    expect(r?.appended).toEqual(entry("b edited"))
+  })
+
+  test("down-arrow from an edited middle entry still moves one newer", () => {
+    const r = moveHistory(browse([entry("a"), entry("b"), entry("c")], -2), 1, "b edited", entry("b edited"))
+    expect(r?.browse).toEqual({
+      index: -2,
+      history: [entry("a"), entry("b"), entry("c"), entry("b edited")],
+    })
+    expect(r?.item).toEqual(entry("c"))
+    expect(r?.appended).toEqual(entry("b edited"))
+  })
+
+  test("up-arrow on the edited oldest entry refuses without appending", () => {
+    const r = moveHistory(browse([entry("a")], -1), -1, "a edited", entry("a edited"))
     expect(r).toBeUndefined()
   })
 

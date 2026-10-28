@@ -1109,9 +1109,9 @@ export function Prompt(props: PromptProps) {
             // visibly walks into history - the stashed draft sits one
             // down-arrow away. Up to refer to prior prompts, back down to
             // the draft, one more down reaches the cleared field, up-arrow
-            // restores it. While already browsing, the field holds a history
-            // entry and the draft rides along unused (moveHistory ignores it
-            // unless the prompt is not mid-browse).
+            // restores it. While already browsing, an edited entry is
+            // stashed as a new history entry and navigation continues from
+            // the entry being edited (0438).
             const draft =
               input.plainText.trim() !== "" || store.prompt.parts.length > 0
                 ? { ...store.prompt, mode: store.mode }
@@ -1157,10 +1157,9 @@ export function Prompt(props: PromptProps) {
             // the field clears; up-arrow immediately recalls it. Fires ONLY
             // when the cursor is already at the end of the last line (the
             // guard above moves the cursor line-down first and returns);
-            // while browsing, the field holds a history entry and the draft
-            // rides along unused (moveHistory ignores it unless the prompt
-            // is not mid-browse); the walk down to the cleared field is
-            // unchanged.
+            // while browsing, an edited entry is stashed as a new history
+            // entry and navigation continues from the entry being edited
+            // (0438); the walk down to the cleared field is unchanged.
             const draft =
               input.plainText.trim() !== "" || store.prompt.parts.length > 0
                 ? { ...store.prompt, mode: store.mode }
