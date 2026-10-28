@@ -151,7 +151,7 @@ describe("FileDelta.apply anchor", () => {
   )
 
   it.live(
-    "mid-turn: the reminder rides the newest message, never the user prompt",
+    "mid-turn: drift is held for the next user prompt, never attached to the assistant",
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
@@ -174,13 +174,13 @@ describe("FileDelta.apply anchor", () => {
 
         const after = yield* loaded(info.id)
         expect(fileDeltaPart(after, user.id)).toBeUndefined()
-        expect(fileDeltaPart(after, assistant.id)).toBeDefined()
+        expect(fileDeltaPart(after, assistant.id)).toBeUndefined()
       }),
     ),
   )
 
   it.live(
-    "mid-turn: a second apply on the same step does not double-inject",
+    "mid-turn: repeated applies never inject a reminder",
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const ssn = yield* SessionNs.Service
@@ -206,8 +206,8 @@ describe("FileDelta.apply anchor", () => {
         yield* apply
 
         const after = yield* loaded(info.id)
-        const parts = after.find((m) => m.info.id === assistant.id)!.parts
-        expect(parts.filter((p) => p.type === "text" && p.metadata?.fileDelta)).toHaveLength(1)
+        const parts = after.flatMap((m) => m.parts)
+        expect(parts.filter((p) => p.type === "text" && p.metadata?.fileDelta)).toHaveLength(0)
       }),
     ),
   )
@@ -242,18 +242,19 @@ describe("FileDelta.apply anchor", () => {
         expect((firstDelta!.metadata!.fileDelta as Record<string, { text?: string }>)[file].text).toBe("a\nB\nc")
         yield* Effect.promise(() => fs.writeFile(file, "a\nB\nC"))
         yield* Effect.promise(() => fs.utimes(file, 2000, 2000))
-        const assistant = yield* createAssistantMessage(info.id, user.id)
+        yield* createAssistantMessage(info.id, user.id)
+        const nextUser = yield* createUserMessage(info.id, "next")
         const second = yield* loaded(info.id)
         yield* FileDelta.apply({
           msgs: second,
           sessionID: info.id,
-          user: second.findLast((m) => m.info.id === user.id)!,
+          user: second.findLast((m) => m.info.id === nextUser.id)!,
           userSystem: undefined,
-          step: 2,
+          step: 1,
           compactingPrompt: false,
         })
 
-        const parts = (yield* loaded(info.id)).find((m) => m.info.id === assistant.id)!.parts
+        const parts = (yield* loaded(info.id)).find((m) => m.info.id === nextUser.id)!.parts
         const deltas = parts.filter(fileDeltaText)
         expect(deltas).toHaveLength(1)
         const entry = (deltas[0]!.metadata!.fileDelta as Record<string, { text?: string }>)[file]

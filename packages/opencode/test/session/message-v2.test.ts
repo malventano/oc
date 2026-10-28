@@ -247,6 +247,50 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("drops legacy mid-turn fileDelta text from assistant messages", async () => {
+    const messageID = "m-user"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "text",
+            text: "hello",
+          },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo("m-assistant", messageID),
+        parts: [
+          {
+            ...basePart("m-assistant", "a1"),
+            type: "text",
+            text: "assistant",
+          },
+          {
+            ...basePart("m-assistant", "a2"),
+            type: "text",
+            text: "<system-reminder>File context drift</system-reminder>",
+            synthetic: true,
+            metadata: { fileDelta: { "/tmp/x": { mtimeMs: 1, size: 1 } } },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "hello" }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "assistant" }],
+      },
+    ])
+  })
+
   test("stall-guard stallTrimAt trims the model request but not the stored text (2026-09-01)", async () => {
     // The stall guard now marks its de-poison trim point in metadata instead
     // of truncating the shared part, so the TUI/DB retain the FULL text (the

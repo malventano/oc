@@ -344,6 +344,12 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       )
       for (const part of msg.parts) {
         if (part.type === "text") {
+          // Legacy mid-turn fileDelta parts were appended to an assistant
+          // message after that message had already been sent. The chained
+          // server never received them, so a full seed must not rehydrate
+          // them either; doing so shifts the suffix at the part's position.
+          // New fileDelta parts ride step-1 user prompts only.
+          if (part.synthetic && part.metadata?.fileDelta) continue
           // stallTrimAt / loopTrimAt (guards, 2026-09-01): the guards mark the
           // part with their de-poison trim point (the tail is a stale colon /
           // stray tag / serialized tool-call / looped region that the model

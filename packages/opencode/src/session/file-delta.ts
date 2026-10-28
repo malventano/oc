@@ -5,7 +5,6 @@ import * as NFS from "fs/promises"
 import { PartID, SessionID } from "./schema"
 import { Session } from "./session"
 import { isRealUser, lineDiff } from "./epoch"
-import { isAfter } from "./message-v2"
 import { InstanceState } from "@/effect/instance-state"
 
 /**
@@ -14,21 +13,17 @@ import { InstanceState } from "@/effect/instance-state"
  * A read tool part establishes the file's stat (mtimeMs + size) at read time
  * (recorded by the read tool's metadata). If the file changes on disk, the
  * content shown in the read output is stale - the model may edit or reason
- * against outdated lines. On every step the walk re-stats every tracked path
- * and, when the disk stat differs from the newest recorded stat, appends a
- * synthetic fileDelta part showing the bounded window diff (old reported window
- * -> new window) so the model re-reads instead of acting on stale content.
+ * against outdated lines. The walk re-stats every tracked path on every step,
+ * but a reminder is emitted only on a step-1 real user prompt, where it can
+ * ride the current user message before that prompt is sent. Mid-turn drift is
+ * HELD and reported on the next user prompt (epochDelta and skillDelta have
+ * the same gate).
  *
- * ANCHOR: the reminder rides the NEWEST message in the chain. At step 1 that
- * is the turn's user prompt - the reminder lands WITH the prompt (the same
- * shape as the epoch/skill deltas). At a later step it is the previous step's
- * assistant message, which the server's chain does not yet hold (the RDT hwm is
- * the last request's prompt length, and the assistant row was appended after
- * it). Either way the part lands at or after the hwm, so the hashed prefix is
- * untouched and the chain survives. Anchoring to the turn's user message on
- * EVERY step instead put the part deep inside an already-hashed prefix (a
- * mid-turn file change landed ~30K tokens back and re-prefilled the whole
- * suffix after it - BUG_MODEL_SWITCH_PREFIX_MISS 2026-09-16).
+ * ANCHOR: the reminder rides the CURRENT user prompt, before the prompt is
+ * sent, so it is part of the append-only tail and is byte-identical on a full
+ * seed. Never anchor a delta to the previous assistant message: that message
+ * was already sent, so the chained server never receives the part while a full
+ * seed rehydrates it inside the old message and shifts the whole suffix.
  *
  * STACKING: the reminder metadata carries the window text it just reported, so
  * the walk advances the baseline to it and the next delta is incremental from
@@ -38,9 +33,9 @@ import { InstanceState } from "@/effect/instance-state"
  *
  * Parts are identified by metadata.fileDelta (distinct from the epoch's
  * metadata.epoch/epochDelta and skill-delta's metadata.skillDelta) so the
- * epoch's record scans and delta strips never touch them. Deltas ride the newest
- * message and are lifecycle'd by message survival - filterCompacted needs no
- * fileDelta-aware rules.
+ * epoch's record scans and delta strips never touch them. Legacy mid-turn
+ * fileDelta parts on assistant messages are excluded from model conversion
+ * (message-v2.ts): they were never received by the chained server.
  *
  * Idempotency is chain-derived: the newest event per path wins among read
  * parts (read-time stat), fileDelta parts (last-reported stat), and session
@@ -297,23 +292,23 @@ export const apply = Effect.fn("SessionFileDelta.apply")(function* (input: {
   step: number
   compactingPrompt: boolean
 }) {
-  // Loaded files are re-statted on EVERY step (mid-turn included): the stats
-  // are one batched Effect.all, so staleness is caught while the model is
-  // still working on the files instead of deferred to the next user prompt.
+  // File drift is detected on EVERY step (mid-turn included), but a reminder
+  // is emitted only on a step-1 real user prompt. A mid-turn reminder must NOT
+  // be attached to the previous assistant message: that message was already
+  // sent, so the chained server never receives the part, while a full seed
+  // rehydrates it inside the old message and shifts the whole suffix. Mid-turn
+  // drift is held and reported on the next user prompt, exactly like epochDelta
+  // and skillDelta.
   // Compaction turns and per-message system overrides bypass.
-  if (input.userSystem || input.compactingPrompt || !isRealUser(input.user)) return
+  if (input.userSystem || input.compactingPrompt || input.step !== 1 || !isRealUser(input.user)) return
 
   const reconstructed = integrateFileReads(input.msgs)
   if (reconstructed.size === 0) return
 
-  // The reminder rides the NEWEST message in the chain (created time, id
-  // tie-break - the array is reordered by compaction, so position is not
-  // time order). At step 1 that is the turn's user prompt, so the reminder
-  // lands WITH the prompt; at a later step it is the previous step's
-  // assistant message. Either way the part lands at or after the RDT hwm.
-  let anchor: SessionV1.WithParts | undefined
-  for (const m of input.msgs) if (!anchor || isAfter(m.info, anchor.info)) anchor = m
-  if (!anchor) return
+  // The reminder rides the CURRENT user prompt, before the prompt is sent. It
+  // therefore lands at the tail of the chain and is byte-identical on a full
+  // seed. Never anchor a dynamic part to an assistant message.
+  const anchor = input.user
 
   const hasDelta = anchor.parts.some((p) => p.type === "text" && p.metadata?.fileDelta)
   if (hasDelta) return
