@@ -230,6 +230,39 @@ test("missing compaction base uses the latest step-start base before the stale c
   expect(usage).toEqual({ tokens: 9500, percent: null, forecast: true })
 })
 
+test("a newer step-start base replaces a stale marker base", () => {
+  const messages = [
+    user("user-0"),
+    assistant({ id: "asst-old", parentID: "user-0" }),
+    user("user-marker"),
+    assistant({
+      id: "asst-summary",
+      parentID: "user-marker",
+      summary: true,
+      finish: "stop",
+      tokens: { input: 1000, output: 100, reasoning: 0, cache: { read: 1400, write: 0 } },
+    }),
+  ]
+  const usage = resolveContextUsage(
+    {
+      messages,
+      parts: map({
+        "asst-old": [stepStartBase("asst-old", 9000)],
+        "user-marker": [
+          compaction("user-marker", {
+            estimated_next_transcript_tokens: 500,
+            estimated_context_base_tokens: 2000,
+          }),
+        ],
+      }),
+      provider: [],
+      directory: "/tmp",
+    },
+    300,
+  )
+  expect(usage).toEqual({ tokens: 9500, percent: null, forecast: true })
+})
+
 test("post-compaction exact report wins over the estimate", () => {
   const messages = [
     user("user-marker"),

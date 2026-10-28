@@ -365,8 +365,8 @@ export function resolveContextUsage(input: ContextUsageInput, baseline = 0): Con
       pair.part.estimated_next_transcript_tokens ?? fallbackCompactionTranscript(pair, messages, input.parts)
     if (transcript !== undefined) {
       const contextBase =
-        pair.part.estimated_context_base_tokens ??
         latestStepStartBase(messages, input.parts, -1, topic) ??
+        pair.part.estimated_context_base_tokens ??
         baseline
       const tokens =
         contextBase +
