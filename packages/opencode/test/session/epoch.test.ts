@@ -206,6 +206,15 @@ describe("epoch helpers", () => {
     const text = buildDeltaText([{ label: "skills", diff: { lines: ["+ lots"], truncated: true } }])
     expect(text).toContain("re-read the source with the read tool")
   })
+
+  test("buildDeltaText: full section replaces a truncated diff", () => {
+    const text = buildDeltaText([
+      { label: "instructions (AGENTS.md)", diff: { lines: ["+ lots"], truncated: true }, full: "line one\nline two" },
+    ])
+    expect(text).toContain("full current section")
+    expect(text).toContain("line two")
+    expect(text).not.toContain("diff truncated")
+  })
 })
 
 describe("Epoch.apply", () => {
@@ -279,6 +288,57 @@ describe("Epoch.apply", () => {
         expect(delta).toBeDefined()
         expect(delta!.text).toContain("- instructions: AGENTS.md v1")
         expect(delta!.text).toContain("+ instructions: AGENTS.md v2")
+      }),
+    ),
+  )
+
+  it.live(
+    "delta: large instructions change delivers the full new chain, not a 40-line excerpt",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const info = yield* ssn.create({})
+        const user = yield* createUserMessage(info.id, "hello")
+        const msgs = yield* loadMsgs(info.id)
+        const old = Array.from({ length: 60 }, (_, i) => `old${i}`).join("\n")
+        const fresh = Array.from({ length: 60 }, (_, i) => `new${i}`).join("\n")
+        yield* Epoch.apply(epochInput(user, msgs, { instructions: [old] }))
+
+        const msgs2 = yield* loadMsgs(info.id)
+        yield* Epoch.apply(epochInput(user, msgs2, { instructions: [fresh] }))
+
+        const delta = (yield* loadMsgs(info.id))
+          .find((m) => m.info.id === user.id)!
+          .parts.find((p): p is SessionV1.TextPart => p.type === "text" && p.metadata?.epochDelta !== undefined)
+        expect(delta).toBeDefined()
+        expect(delta!.text).toContain("new59")
+        expect(delta!.text).not.toContain("diff truncated")
+      }),
+    ),
+  )
+
+  it.live(
+    "delta: a diff over the instructions budget includes the full current section",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const info = yield* ssn.create({})
+        const user = yield* createUserMessage(info.id, "hello")
+        const msgs = yield* loadMsgs(info.id)
+        const old = Array.from({ length: 300 }, (_, i) => `old${i}`).join("\n")
+        const fresh = Array.from({ length: 300 }, (_, i) => `new${i}`).join("\n")
+        yield* Epoch.apply(epochInput(user, msgs, { instructions: [old] }))
+
+        const msgs2 = yield* loadMsgs(info.id)
+        yield* Epoch.apply(epochInput(user, msgs2, { instructions: [fresh] }))
+
+        const delta = (yield* loadMsgs(info.id))
+          .find((m) => m.info.id === user.id)!
+          .parts.find((p): p is SessionV1.TextPart => p.type === "text" && p.metadata?.epochDelta !== undefined)
+        expect(delta).toBeDefined()
+        expect(delta!.text).toContain("full current section")
+        expect(delta!.text).toContain("new299")
+        expect(delta!.text).not.toContain("diff truncated")
       }),
     ),
   )

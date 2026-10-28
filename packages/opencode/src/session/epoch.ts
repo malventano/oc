@@ -61,6 +61,14 @@ const SECTION_LABELS: Record<keyof EpochSections, string> = {
 const SECTION_KEYS = Object.keys(SECTION_LABELS) as (keyof EpochSections)[]
 
 const MAX_DIFF_LINES = 40
+// Instructions are the project contract: a /move to a new directory must
+// deliver the whole new AGENTS.md chain, not a 40-line excerpt whose omitted
+// tail is then marked applied and never replayed. Use a much larger budget
+// for instructions, and fall back to the full current section if even that
+// is exceeded (the diff is bounded, the delivered content is not).
+const MAX_INSTRUCTIONS_DIFF_LINES = 500
+const MAX_DIFF_INPUT_LINES = 600
+const MAX_INSTRUCTIONS_INPUT_LINES = 2000
 
 /** Mirror of prompt.ts's real() helper: a user message is "real" if any part is non-synthetic. */
 export function isRealUser(user: SessionV1.WithParts): boolean {
@@ -111,10 +119,15 @@ export function activeRecord(msgs: SessionV1.WithParts[]): EpochRecord | undefin
 }
 
 /** Bounded line diff (LCS) of two texts; returns up to maxLines -/+ lines. */
-export function lineDiff(oldText: string, newText: string, maxLines = MAX_DIFF_LINES): { lines: string[]; truncated: boolean } {
+export function lineDiff(
+  oldText: string,
+  newText: string,
+  maxLines = MAX_DIFF_LINES,
+  maxInputLines = MAX_DIFF_INPUT_LINES,
+): { lines: string[]; truncated: boolean } {
   const a = oldText.split("\n")
   const b = newText.split("\n")
-  if (a.length > 600 || b.length > 600) return { lines: [], truncated: true }
+  if (a.length > maxInputLines || b.length > maxInputLines) return { lines: [], truncated: true }
   const n = a.length
   const m = b.length
   const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1))
@@ -143,14 +156,17 @@ export function lineDiff(oldText: string, newText: string, maxLines = MAX_DIFF_L
 }
 
 export function buildDeltaText(
-  changes: { label: string; diff: { lines: string[]; truncated: boolean } }[],
+  changes: { label: string; diff: { lines: string[]; truncated: boolean }; full?: string }[],
 ): string {
   const sections = changes.map((c) => {
     const body =
-      c.diff.lines.length === 0
-        ? "  (content replaced - re-read the source with the read tool)"
-        : c.diff.lines.map((l) => `  ${l}`).join("\n") +
-          (c.diff.truncated ? "\n  ... (diff truncated - re-read the source with the read tool)" : "")
+      c.full !== undefined
+        ? "  (large change; full current section replaces the snapshot's version)\n" +
+          c.full.split("\n").map((l) => `  ${l}`).join("\n")
+        : c.diff.lines.length === 0
+          ? "  (content replaced - re-read the source with the read tool)"
+          : c.diff.lines.map((l) => `  ${l}`).join("\n") +
+            (c.diff.truncated ? "\n  ... (diff truncated - re-read the source with the read tool)" : "")
     return `- ${c.label}:\n${body}`
   })
   return `<system-reminder>\nSystem context drift: the following sections of this session's system prompt changed since the context snapshot:\n${sections.join("\n")}\n</system-reminder>`
@@ -238,11 +254,21 @@ export const apply = Effect.fn("SessionEpoch.apply")(function* (input: {
 
   // Drift detection. Deltas ride user messages only (step 1, real user):
   // mid-turn drift is held in `applied` and surfaces on the next user prompt.
-  const changes: { label: string; diff: { lines: string[]; truncated: boolean } }[] = []
+  const changes: { label: string; diff: { lines: string[]; truncated: boolean }; full?: string }[] = []
   for (const key of SECTION_KEYS) {
     const live = sections[key]
     const applied = active.record.applied[key]
-    if (live !== applied) changes.push({ label: SECTION_LABELS[key], diff: lineDiff(applied, live) })
+    if (live === applied) continue
+    const instructions = key === "instructions"
+    const diff = lineDiff(
+      applied,
+      live,
+      instructions ? MAX_INSTRUCTIONS_DIFF_LINES : MAX_DIFF_LINES,
+      instructions ? MAX_INSTRUCTIONS_INPUT_LINES : MAX_DIFF_INPUT_LINES,
+    )
+    // A truncated diff must never be paired with an advanced applied state:
+    // either the model got the whole change, or it gets the full live section.
+    changes.push({ label: SECTION_LABELS[key], diff, ...(diff.truncated ? { full: live } : {}) })
   }
 
   if (changes.length > 0 && input.step === 1 && isRealUser(input.user)) {
