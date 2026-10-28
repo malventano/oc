@@ -17,7 +17,8 @@
 // cannot see it); no DB
 // migration, no SSC coupling, no anchor table. Failure ladder: an expired
 // previous_response_id (4xx) clears the chain and retries the same turn once
-// full; persistent failures disable delta for the session.
+// full; a stateful-endpoint rejection downgrades that endpoint to stateless
+// responses first, then chat; persistent failures disable delta for the session.
 
 import { createHash } from "node:crypto"
 import type {
@@ -146,16 +147,19 @@ export const mode = (info: Provider.Info, model?: { options?: Record<string, any
 /** Back-compat helper: any RDT mode enabled (provider-level view). */
 export const enabled = (info: Provider.Info) => mode(info) !== undefined
 
-// Unsupported-endpoint latch (0433): a 400 for store or previous_response_id
-// means the endpoint cannot do stateful responses. Latch once per
-// baseURL+modelID for the process; later turns go straight to chat.
-const unsupported = new Map<string, true>()
-const latchKey = (baseURL: string, modelID: string) => `${baseURL.replace(/\/+$/, "")}|${modelID}`
+// Endpoint transport mode (0440): a stateful-responses endpoint that rejects
+// store/previous_response_id falls back to stateless responses first, then to
+// chat. Keyed per baseURL+modelID for the process. Explicit modes still win:
+// chat/off never wrap, and an explicit responses-nostore request is always
+// attempted as nostore regardless of this map.
+type EndpointMode = RDTMode | "chat"
+const endpointModes = new Map<string, EndpointMode>()
+const endpointKey = (baseURL: string, modelID: string) => `${baseURL.replace(/\/+$/, "")}|${modelID}`
 
 export const _testReset = () => {
   states.clear()
   lastRequests.clear()
-  unsupported.clear()
+  endpointModes.clear()
 }
 
 const getState = (sessionID: string) => states.get(sessionID)
@@ -680,8 +684,8 @@ export type RDTContext = {
   headers?: Record<string, string | undefined>
   /** 0433: stateful responses (store + previous_response_id) or stateless. */
   mode?: RDTMode
-  /** 0433: one warning per unsupported baseURL+modelID; llm.ts routes this
-   *  through Effect.logWarning (never stderr). */
+  /** 0440: one warning when a stateful endpoint is downgraded to stateless
+   *  responses; llm.ts routes this through Effect.logWarning (never stderr). */
   warn?: (message: string, fields?: Record<string, unknown>) => void
 }
 
@@ -710,13 +714,17 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
   supportedUrls: language.supportedUrls,
   doGenerate: (options) => language.doGenerate(options),
   async doStream(options: LanguageModelV3CallOptions) {
-    const rdtMode = ctx.mode ?? "responses"
-    // A stateful probe already failed for this endpoint: skip RDT entirely.
-    // `responses-nostore` is not affected - it never sends the rejected
-    // fields, so an explicit stateless mode must still be honored.
-    if (rdtMode === "responses" && unsupported.has(latchKey(ctx.baseURL, ctx.modelID))) {
+    const explicitMode = ctx.mode ?? "responses"
+    const key = endpointKey(ctx.baseURL, ctx.modelID)
+    const latched = explicitMode === "responses" ? endpointModes.get(key) : undefined
+    // A stateful endpoint already rejected stateful fields: later turns go
+    // straight to stateless responses (or chat after the nostore retry also
+    // failed). An explicit nostore mode ignores the latch.
+    if (latched === "chat") {
       return language.doStream(options)
     }
+    let rdtMode: RDTMode =
+      explicitMode === "responses-nostore" || latched === "responses-nostore" ? "responses-nostore" : "responses"
     // v1: structured-output (responseFormat) falls back to the chat transport.
     if (options.responseFormat !== undefined) {
       return language.doStream(options)
@@ -858,10 +866,13 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
       ...(ctx.headers as Record<string, string> | undefined),
     }
 
-    // Failure ladder: attempt 0 = chained (if canChain), attempt 1 = full
-    // retry after an expired-id 4xx. Beyond that, surface the error.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const chained = attempt === 0 && canChain
+    // Failure ladder: attempt 0 = chained (if canChain), then a full Responses
+    // retry after an expired-id 4xx. A stateful-endpoint rejection upgrades to
+    // stateless responses and retries the same turn once; a stateless rejection
+    // then finishes on chat. Beyond that, surface the error.
+    let warnedNostore = false
+    for (let attempt = 0; ; attempt++) {
+      const chained = rdtMode === "responses" && attempt === 0 && canChain
       const body = buildBody(chained ? state!.responseId : undefined, !chained)
       const inputItems = (body.input as unknown[]) ?? []
       // Per-item-type composition of the wire body. chars = the item's full
@@ -906,7 +917,7 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
         toolChoice: options.toolChoice as unknown,
         // canChain diagnostics: gate reason + the boundary lengths + the
         // delta-window digest (role:contentBytes:reasoningBytes per message).
-        chainBasis,
+        chainBasis: rdtMode === "responses-nostore" ? "nostore" : chainBasis,
         hwm: state?.hwm,
         msgLen: inputMsgs.length,
         windowDigest,
@@ -993,22 +1004,51 @@ export const wrap = (language: LanguageModelV3, ctx: RDTContext): LanguageModelV
       }
 
       // Non-OK. Read the body once: an endpoint that rejects stateful fields
-      // is latched and the SAME turn falls back to chat; an expired/unknown
-      // previous_response_id keeps the existing clear + full retry.
+      // is retried stateless on the SAME turn (then chat if nostore fails); an
+      // expired/unknown previous_response_id keeps the existing clear + full
+      // Responses retry and never routes into nostore.
       const text = await res.text().catch(() => "")
-      if (res.status === 400 && /store is not supported|previous_response_id is not supported/i.test(text)) {
-        const key = latchKey(ctx.baseURL, ctx.modelID)
-        const first = !unsupported.has(key)
-        unsupported.set(key, true)
+      const rejectsStateful = res.status === 400 && /store is not supported|previous_response_id is not supported/i.test(text)
+      if (rejectsStateful) {
         clearState(ctx.sessionID)
-        if (first) {
-          ctx.warn?.("RDT responses transport unsupported by endpoint; using chat completions", {
+        if (rdtMode === "responses") {
+          // Stateful is impossible here. Try the stateless Responses wire
+          // first: full input, no store, no previous_response_id.
+          endpointModes.set(key, "responses-nostore")
+          if (!warnedNostore) {
+            warnedNostore = true
+            ctx.warn?.("RDT stateful responses unsupported by endpoint; using stateless responses", {
+              baseURL: ctx.baseURL,
+              modelID: ctx.modelID,
+              status: res.status,
+              body: text.slice(0, 160),
+            })
+          }
+          rdtMode = "responses-nostore"
+          continue
+        }
+        // Nostore was rejected too. For the responses fallback that is the
+        // final chat latch; an explicitly configured nostore keeps 0433's
+        // per-turn chat fallback (the explicit mode is always retried).
+        if (explicitMode === "responses") {
+          endpointModes.set(key, "chat")
+          return language.doStream(options)
+        }
+        const firstChat = endpointModes.get(key) !== "chat"
+        endpointModes.set(key, "chat")
+        if (firstChat && !warnedNostore) {
+          warnedNostore = true
+          ctx.warn?.("RDT stateless responses unsupported by endpoint; using chat completions", {
             baseURL: ctx.baseURL,
             modelID: ctx.modelID,
             status: res.status,
             body: text.slice(0, 160),
           })
         }
+        return language.doStream(options)
+      }
+      if (rdtMode === "responses-nostore" && explicitMode === "responses" && res.status === 400) {
+        endpointModes.set(key, "chat")
         return language.doStream(options)
       }
       if (chained && (res.status === 404 || res.status === 400)) {

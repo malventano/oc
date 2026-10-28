@@ -85,6 +85,13 @@ describe("RDT transport selection", () => {
     process.env.OC_DELTA_TRANSPORT = "responses-nostore"
     expect(RDT.mode(provider)).toBe("responses-nostore")
   })
+
+  test("OC_DELTA_TRANSPORT=off bypasses RDT", () => {
+    process.env.OC_DELTA_TRANSPORT = "off"
+    const provider = { options: { deltaTransport: "responses" } } as never
+    expect(RDT.mode(provider, { options: { deltaTransport: "responses" } })).toBeUndefined()
+    expect(RDT.enabled(provider)).toBe(false)
+  })
 })
 
 describe("RDT request bodies", () => {
@@ -93,6 +100,40 @@ describe("RDT request bodies", () => {
     await wrapped("responses-1").doStream({ prompt } as never)
     expect(bodies[0].store).toBe(true)
     expect(bodies[0].previous_response_id).toBeUndefined()
+  })
+
+  test("responses keeps store:true and chains on the next turn", async () => {
+    const bodies = capture([
+      sse([
+        {
+          type: "response.completed",
+          response: { id: "resp_vllm", usage: { input_tokens: 5, output_tokens: 1 } },
+        },
+      ]),
+      sse([
+        {
+          type: "response.completed",
+          response: { id: "resp_vllm_2", usage: { input_tokens: 2, output_tokens: 1 } },
+        },
+      ]),
+    ])
+    const w = wrapped("responses-chain-1")
+    const first = await w.doStream({ prompt } as never)
+    await readParts(first.stream)
+
+    const second = await w.doStream({
+      prompt: [
+        ...prompt,
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "text", text: "again" }] },
+      ],
+    } as never)
+    await readParts(second.stream)
+
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1].store).toBe(true)
+    expect(bodies[1].previous_response_id).toBe("resp_vllm")
+    expect(bodies[1].input).toHaveLength(1)
   })
 
   test("responses-nostore omits store and previous_response_id and sends full input", async () => {
@@ -117,16 +158,20 @@ describe("RDT request bodies", () => {
 })
 
 describe("RDT unsupported-endpoint fallback", () => {
-  test("a seed 400 store not supported latches and completes on chat", async () => {
+  test("a seed 400 store not supported retries nostore and reuses it", async () => {
     let chatCalls = 0
     const chat = chatModel(() => {
       chatCalls++
     })
-    let fetchCalls = 0
-    globalThis.fetch = (async () => {
-      fetchCalls++
-      return new Response(JSON.stringify({ error: { message: "store is not supported" } }), { status: 400 })
-    }) as never
+    const bodies = capture([
+      new Response(JSON.stringify({ error: { message: "store is not supported" } }), { status: 400 }),
+      sse([
+        {
+          type: "response.completed",
+          response: { id: "resp_nostore", usage: { input_tokens: 5, output_tokens: 1 } },
+        },
+      ]),
+    ])
 
     const warnings: string[] = []
     const first = RDT.wrap(chat, {
@@ -135,40 +180,84 @@ describe("RDT unsupported-endpoint fallback", () => {
       mode: "responses",
       warn: (message) => warnings.push(message),
     })
-    await first.doStream({ prompt } as never)
-    expect(chatCalls).toBe(1)
-    expect(fetchCalls).toBe(1)
+    const result = await first.doStream({ prompt } as never)
+    await readParts(result.stream)
+
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0].store).toBe(true)
+    expect(bodies[0].previous_response_id).toBeUndefined()
+    expect(bodies[1].store).toBeUndefined()
+    expect(bodies[1].previous_response_id).toBeUndefined()
+    expect(bodies[1].input).toHaveLength(1)
+    expect(chatCalls).toBe(0)
     expect(warnings).toHaveLength(1)
 
-    // Same baseURL+modelID: the latch skips the responses probe entirely.
+    // Same baseURL+modelID: the endpoint is now stateless for later turns.
     const second = RDT.wrap(chat, { ...base, sessionID: "fallback-2", mode: "responses" })
-    await second.doStream({ prompt } as never)
-    expect(chatCalls).toBe(2)
-    expect(fetchCalls).toBe(1)
+    const next = await second.doStream({ prompt } as never)
+    await readParts(next.stream)
+    expect(bodies).toHaveLength(3)
+    expect(bodies[2].store).toBeUndefined()
+    expect(bodies[2].previous_response_id).toBeUndefined()
+    expect(bodies[2].input).toHaveLength(1)
+    expect(chatCalls).toBe(0)
   })
 
-  test("a chained 400 previous_response_id not supported completes on chat", async () => {
+  test("a nostore retry failure latches chat with one warning", async () => {
     let chatCalls = 0
     const chat = chatModel(() => {
       chatCalls++
     })
-    let fetchCalls = 0
-    globalThis.fetch = (async () => {
-      fetchCalls++
-      if (fetchCalls === 1) {
-        return sse([
-          {
-            type: "response.completed",
-            response: { id: "resp_seed", usage: { input_tokens: 5, output_tokens: 1 } },
-          },
-        ])
-      }
-      return new Response(JSON.stringify({ error: { message: "previous_response_id is not supported" } }), {
-        status: 400,
-      })
-    }) as never
+    const bodies = capture([
+      new Response(JSON.stringify({ error: { message: "store is not supported" } }), { status: 400 }),
+      new Response(JSON.stringify({ error: { message: "store is not supported" } }), { status: 400 }),
+    ])
 
-    const w = RDT.wrap(chat, { ...base, sessionID: "chain-1", mode: "responses" })
+    const warnings: string[] = []
+    const first = RDT.wrap(chat, {
+      ...base,
+      sessionID: "fallback-chat-1",
+      mode: "responses",
+      warn: (message) => warnings.push(message),
+    })
+    const result = await first.doStream({ prompt } as never)
+    await readParts(result.stream)
+    expect(bodies).toHaveLength(2)
+    expect(chatCalls).toBe(1)
+    expect(warnings).toHaveLength(1)
+
+    // The endpoint is latched to chat: later turns do not probe responses.
+    const second = RDT.wrap(chat, { ...base, sessionID: "fallback-chat-2", mode: "responses" })
+    const next = await second.doStream({ prompt } as never)
+    await readParts(next.stream)
+    expect(bodies).toHaveLength(2)
+    expect(chatCalls).toBe(2)
+  })
+
+  test("a chained 400 previous_response_id not supported retries full nostore", async () => {
+    let chatCalls = 0
+    const chat = chatModel(() => {
+      chatCalls++
+    })
+    const bodies = capture([
+      sse([
+        {
+          type: "response.completed",
+          response: { id: "resp_seed", usage: { input_tokens: 5, output_tokens: 1 } },
+        },
+      ]),
+      new Response(JSON.stringify({ error: { message: "previous_response_id is not supported" } }), {
+        status: 400,
+      }),
+      sse([
+        {
+          type: "response.completed",
+          response: { id: "resp_nostore", usage: { input_tokens: 8, output_tokens: 1 } },
+        },
+      ]),
+    ])
+
+    const w = RDT.wrap(chat, { ...base, sessionID: "chain-fallback-1", mode: "responses" })
     const first = await w.doStream({ prompt } as never)
     await readParts(first.stream)
 
@@ -179,9 +268,59 @@ describe("RDT unsupported-endpoint fallback", () => {
         { role: "user", content: [{ type: "text", text: "again" }] },
       ],
     } as never)
-    expect(second).toBeDefined()
-    expect(fetchCalls).toBe(2)
-    expect(chatCalls).toBe(1)
+    await readParts(second.stream)
+
+    expect(bodies).toHaveLength(3)
+    expect(bodies[1].store).toBe(true)
+    expect(bodies[1].previous_response_id).toBe("resp_seed")
+    expect(bodies[2].store).toBeUndefined()
+    expect(bodies[2].previous_response_id).toBeUndefined()
+    expect(bodies[2].input).toHaveLength(3)
+    expect(chatCalls).toBe(0)
+  })
+
+  test("an expired previous_response_id keeps the full Responses retry, not nostore", async () => {
+    let chatCalls = 0
+    const chat = chatModel(() => {
+      chatCalls++
+    })
+    const bodies = capture([
+      sse([
+        {
+          type: "response.completed",
+          response: { id: "resp_seed", usage: { input_tokens: 5, output_tokens: 1 } },
+        },
+      ]),
+      new Response(JSON.stringify({ error: { message: "Previous response with id 'resp_seed' not found" } }), {
+        status: 400,
+      }),
+      sse([
+        {
+          type: "response.completed",
+          response: { id: "resp_full", usage: { input_tokens: 9, output_tokens: 1 } },
+        },
+      ]),
+    ])
+
+    const w = RDT.wrap(chat, { ...base, sessionID: "expired-1", mode: "responses" })
+    const first = await w.doStream({ prompt } as never)
+    await readParts(first.stream)
+
+    const second = await w.doStream({
+      prompt: [
+        ...prompt,
+        { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        { role: "user", content: [{ type: "text", text: "again" }] },
+      ],
+    } as never)
+    await readParts(second.stream)
+
+    expect(bodies).toHaveLength(3)
+    expect(bodies[1].previous_response_id).toBe("resp_seed")
+    expect(bodies[2].store).toBe(true)
+    expect(bodies[2].previous_response_id).toBeUndefined()
+    expect(bodies[2].input).toHaveLength(3)
+    expect(chatCalls).toBe(0)
   })
 })
 
