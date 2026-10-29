@@ -389,7 +389,7 @@ index 8203350fc89d3d26f055b1391665e4757e8d48ac..7027cf28d4841dfcc72f08bce1f70027
         */
 -      serviceTier: z.enum(['auto', 'flex', 'priority', 'default']).optional(),
 +      serviceTier: z.enum(['auto', 'flex', 'priority', 'ultrafast', 'default']).optional(),
-
+ 
        /**
         * Whether to use strict JSON schema validation.
 diff --git a/src/responses/openai-responses-language-model.ts b/src/responses/openai-responses-language-model.ts
@@ -443,6 +443,6 @@ index 2fec2c4cc8a2236daa8e3a9807c79a983c49d273..c895ea8d546cb7260c0ecfa62c8be94d
         */
 -      serviceTier: z.enum(['auto', 'flex', 'priority', 'default']).nullish(),
 +      serviceTier: z.enum(['auto', 'flex', 'priority', 'ultrafast', 'default']).nullish(),
-
+ 
        /**
         * Whether to store the generation. Defaults to `true`.
