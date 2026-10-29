@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { restartArgv } from "../../src/util/restart"
+import { resolveRestartExecPath, restartArgv } from "../../src/util/restart"
 
 const ORIG_ARGV = process.argv
 
@@ -71,5 +71,23 @@ describe("restartArgv", () => {
     withArgv(["bun", "/$bunfs/root/oc", "--", "-c", "--fork"], () => {
       expect(restartArgv("ses_abc")).toEqual(["--", "-c", "--fork", "--session", "ses_abc"])
     })
+  })
+})
+
+describe("resolveRestartExecPath", () => {
+  test("strips the deleted suffix when the installed binary is executable", () => {
+    expect(resolveRestartExecPath("/usr/local/bin/oc (deleted)", () => undefined)).toBe("/usr/local/bin/oc")
+  })
+
+  test("keeps a normal executable path unchanged", () => {
+    expect(resolveRestartExecPath("/usr/local/bin/oc", () => undefined)).toBe("/usr/local/bin/oc")
+  })
+
+  test("keeps the deleted path when the installation target is unavailable", () => {
+    expect(
+      resolveRestartExecPath("/usr/local/bin/oc (deleted)", () => {
+        throw new Error("ENOENT")
+      }),
+    ).toBe("/usr/local/bin/oc (deleted)")
   })
 })

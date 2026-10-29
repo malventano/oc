@@ -1,6 +1,29 @@
 import fs from "node:fs"
 import { restoreTermiosSync, restoreTerminalSync } from "./restore"
 
+const DELETED_SUFFIX = " (deleted)"
+
+/**
+ * Resolve the executable path after an atomic install. Linux reports the
+ * running image as "/path/oc (deleted)" once the install has renamed a new
+ * binary over it; execve(2) then fails with ENOENT because that literal path
+ * does not exist. Strip the kernel's suffix only when the installed candidate
+ * is executable, and otherwise leave the original path untouched.
+ */
+export function resolveRestartExecPath(
+  execPath = process.execPath,
+  executable = (candidate: string) => fs.accessSync(candidate, fs.constants.X_OK),
+) {
+  if (!execPath.endsWith(DELETED_SUFFIX)) return execPath
+  const candidate = execPath.slice(0, -DELETED_SUFFIX.length)
+  try {
+    executable(candidate)
+    return candidate
+  } catch {
+    return execPath
+  }
+}
+
 /**
  * Restart the opencode process, resuming the current session.
  *
@@ -110,7 +133,8 @@ export function restart(sessionID: string | undefined, resumePrompt?: string) {
   // complete" once the TUI is ready + the mode has synced, handing the turn
   // back to the agent. Plain /restart passes no prompt - unchanged behavior.
   if (resumePrompt) argv.push("--prompt", resumePrompt)
-  process.execve(process.execPath, [process.execPath, ...argv], process.env)
+  const execPath = resolveRestartExecPath()
+  process.execve(execPath, [execPath, ...argv], process.env)
 }
 
 /**
