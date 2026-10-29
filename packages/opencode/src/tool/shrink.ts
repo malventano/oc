@@ -4,7 +4,13 @@ import { unlink } from "node:fs/promises"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { isImageAttachment } from "@/util/media"
 import * as Tool from "./tool"
+
+// A media-only tool result has zero text, so the text "summary must be
+// smaller" guard cannot apply. Cap the replacement summary per image instead;
+// this is deliberately conservative and is not a token estimate.
+const MEDIA_SUMMARY_CAP = 2_000
 
 const DESCRIPTION = `Replace a past tool output in this session with a short summary, so future prompts see the small version instead of the full output.
 
@@ -16,7 +22,9 @@ HOW: call it in the message right after the big output arrives, before other wor
 
 Your summary permanently replaces the original - include anything you might need later; non-hint reminders survive. The TUI record stays; only future prompts see the summary. Cannot shrink this tool's own output.
 
-Target: omit for the newest unprocessed completed output, { part_id } or { part_ids } for precision, { tool, input_contains } for a pattern, or "one"/"all" as a shorthand for match. "all" walks newest-first and stops at the first already-shrunk part; use part_ids for an explicit group. minLength matches only outputs at least that many chars - use it to isolate one big output when input_contains also matches smaller ones. Depth (default 3): last 3 user turns and only the live context after the last compaction; -1 reaches deeper incl. below the compaction boundary.`
+Target: omit for the newest unprocessed completed output, { part_id } or { part_ids } for precision, { tool, input_contains } for a pattern, or "one"/"all" as a shorthand for match. "all" walks newest-first and stops at the first already-shrunk part; use part_ids for an explicit group. minLength matches only outputs at least that many chars - use it to isolate one big output when input_contains also matches smaller ones. Depth (default 3): last 3 user turns and only the live context after the last compaction; -1 reaches deeper incl. below the compaction boundary.
+
+MEDIA: an image-only tool result is eligible only with an explicit target (part_id, part_ids, or tool/input_contains); a default shrink refuses it. The image is removed, not resized, and the summary replaces it in future prompts. Non-image attachments are preserved. The result reports attachment count and decoded bytes; no image token estimate is claimed.`
 
 // SELF ids over time (2026-09-08 rename squash-output -> shrink): the
 // plugin-era id was "squash_output", the built-in was "squash-output", now
@@ -63,6 +71,30 @@ export const Parameters = Schema.Struct({
 
 type Metadata = { [key: string]: any }
 
+function dataUrlByteLength(url: unknown): number {
+  if (typeof url !== "string") return 0
+  const match = /^data:[^,]*;base64,([\s\S]*)$/.exec(url)
+  if (!match) return 0
+  try {
+    return Buffer.from(match[1]!, "base64").byteLength
+  } catch {
+    return 0
+  }
+}
+
+/** Image attachments in a completed tool part. */
+export function imageAttachments(data: any): any[] {
+  const attachments = data?.state?.attachments
+  if (!Array.isArray(attachments)) return []
+  return attachments.filter((a: any) => typeof a?.mime === "string" && isImageAttachment(a.mime))
+}
+
+/** Preserve non-image attachments when a media shrink removes the images. */
+export function keepNonImageAttachments(attachments: unknown): any[] {
+  if (!Array.isArray(attachments)) return []
+  return attachments.filter((a: any) => !(typeof a?.mime === "string" && isImageAttachment(a.mime)))
+}
+
 export function extractOutput(data: any) {
   const rawOutput = data.state?.output ?? ""
   const stampRun = rawOutput.match(/\n\n<system-reminder>[\s\S]*?<\/system-reminder>\s*$/)
@@ -78,7 +110,15 @@ export function extractOutput(data: any) {
     stamp = kept.length > 0 ? `\n\n${kept.join("\n\n")}` : ""
   }
   const stripped = stampRun ? rawOutput.slice(0, stampRun.index) : rawOutput
-  return { stripped, stamp, originalLen: stripped.length }
+  const images = imageAttachments(data)
+  return {
+    stripped,
+    stamp,
+    originalLen: stripped.length,
+    imageAttachments: images,
+    imageCount: images.length,
+    attachmentBytes: images.reduce((sum, a) => sum + dataUrlByteLength(a.url), 0),
+  }
 }
 
 /** A part's own output has been replaced by a shrink summary. */
@@ -222,8 +262,11 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           const rows = (yield* db
             .all(sql`SELECT p.id, p.data, p.time_created, p.message_id FROM part p WHERE ${whereSql} ORDER BY p.time_created DESC`)
             .pipe(Effect.orDie)) as { id: string; data: string; time_created: number; message_id: string }[]
-          const explicit = hasId || hasIds
-          const candidateRows = explicit ? rows : selectCandidateRows(rows, match)
+          const explicitIds = hasId || hasIds
+          // A pattern target is explicit permission for media, but match:"one"
+          // still selects only the newest matching row.
+          const explicitTarget = explicitIds || hasPattern
+          const candidateRows = explicitIds ? rows : selectCandidateRows(rows, match)
 
           if (rows.length === 0) {
             const where = hasIds
@@ -242,7 +285,7 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
               `No unprocessed completed tool output found to shrink${depth >= 0 ? ` within the last ${depth} user turn(s)` : ""}; all matching parts are already shrunk. Use explicit part_ids for a different group.`
             )
           }
-          if (explicit) {
+          if (explicitIds) {
             const processed = candidateRows.find((row) => isShrunkPart(JSON.parse(row.data)))
             if (processed) {
               throw new Error(`Part '${processed.id}' is already shrunk; refusing to overwrite its summary.`)
@@ -250,12 +293,24 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           }
 
           let aggregateOriginal = 0
+          let aggregateImages = 0
+          let aggregateAttachmentBytes = 0
           const updates = []
           for (const row of candidateRows) {
             const data = JSON.parse(row.data)
-            const { stripped, stamp, originalLen } = extractOutput(data)
+            const { stripped, stamp, originalLen, imageCount, attachmentBytes } = extractOutput(data)
             aggregateOriginal += originalLen
-            updates.push({ row, data, stamp, originalLen, outputPath: data.state?.metadata?.outputPath ?? null })
+            aggregateImages += imageCount
+            aggregateAttachmentBytes += attachmentBytes
+            updates.push({
+              row,
+              data,
+              stamp,
+              originalLen,
+              imageCount,
+              attachmentBytes,
+              outputPath: data.state?.metadata?.outputPath ?? null,
+            })
           }
           // 0316: publish the canonical PartUpdated event after each write so
           // the TUI reconciles the shrunk part IN PLACE - the raw DB UPDATE
@@ -263,19 +318,42 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
           // coarsely (remount/cull -> the 1-frame viewport dip after a shrink,
           // the "scrollback heights reset then re-lock" report).
 
+          const mediaCandidate = updates.find((u) => u.imageCount > 0)
+          if (!explicitTarget && mediaCandidate) {
+            throw new Error(
+              `Media-only tool output requires an explicit target; use target.part_id, target.part_ids, or target.tool for ${mediaCandidate.data.tool}. Default shrink will not remove image attachments.`,
+            )
+          }
+
           // 0325: the guard now says WHICH parts it matched, so a
           // mis-targeted match (a small output caught by a broad pattern
           // instead of the big one) is diagnosable instead of cryptic.
-          const matchedDesc = updates.map((u) => `${u.data.tool}(${u.originalLen})`).join(", ")
-          const tooSmall = updates.find((u) => u.originalLen <= params.summary.length)
+          const matchedDesc = updates
+            .map((u) => `${u.data.tool}(${u.originalLen}${u.imageCount > 0 ? ` + ${u.imageCount} image(s)` : ""})`)
+            .join(", ")
+          const tooSmall = updates.find((u) =>
+            u.imageCount > 0
+              ? params.summary.length > MEDIA_SUMMARY_CAP * u.imageCount
+              : u.originalLen <= params.summary.length,
+          )
           if (tooSmall) {
+            if (tooSmall.imageCount > 0) {
+              throw new Error(
+                `Summary (${params.summary.length} chars) exceeds the ${MEDIA_SUMMARY_CAP}-char-per-image summary cap for ${tooSmall.imageCount} image attachment(s) on part '${tooSmall.row.id}'. Matched: ${matchedDesc}. Refusing to grow the summary.`,
+              )
+            }
             throw new Error(
               `Summary (${params.summary.length} chars) is not smaller than the ${tooSmall.data.tool} output for part '${tooSmall.row.id}' (${tooSmall.originalLen} chars). Matched: ${matchedDesc}. Refusing to grow an individual part. Use explicit part_ids or target.minLength to exclude the smaller outputs.`
             )
           }
-          if (params.summary.length * updates.length >= aggregateOriginal) {
+          // Text-only aggregate guard. Media parts are bounded by the
+          // per-image summary cap above; comparing their zero text length to
+          // the summary would reject every media-only shrink.
+          const textUpdates = updates.filter((u) => u.imageCount === 0)
+          const textOriginal = textUpdates.reduce((sum, u) => sum + u.originalLen, 0)
+          if (textUpdates.length > 0 && params.summary.length * textUpdates.length >= textOriginal) {
             throw new Error(
-              `Summary (${params.summary.length} chars) × ${updates.length} part(s) (${params.summary.length * updates.length} total) is not smaller than the original output (${aggregateOriginal} chars across ${updates.length} part(s), excluding timestamps). Matched: ${matchedDesc}. Shrinking would make the prompt larger, not smaller. Extract only the essential findings, or don't shrink. If the matched list shows the wrong (smaller) output, add target.minLength or use target.part_id.`
+              `Summary (${params.summary.length} chars) × ${textUpdates.length} text part(s) (${params.summary.length * textUpdates.length} total) is not smaller than the original text output (${textOriginal} chars across ${textUpdates.length} text part(s), excluding timestamps). Matched: ${matchedDesc}. Shrinking would make the prompt larger, not smaller. Extract only the essential findings, or don't shrink. If the matched list shows the wrong (smaller) output, add target.minLength or use target.part_id.`
             )
           }
 
@@ -309,6 +387,16 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
 
             markShrunkPart(u.data)
             u.data.state.output = params.summary + u.stamp
+            if (u.imageCount > 0) {
+              const kept = keepNonImageAttachments(u.data.state.attachments)
+              if (kept.length > 0) u.data.state.attachments = kept
+              else delete u.data.state.attachments
+              u.data.state.metadata = {
+                ...u.data.state.metadata,
+                attachmentsRemoved: u.imageCount,
+                attachmentBytes: u.attachmentBytes,
+              }
+            }
             yield* db
               .run(sql`UPDATE part SET data = ${JSON.stringify(u.data)}, time_updated = ${Date.now()} WHERE id = ${u.row.id}`)
               .pipe(Effect.orDie)
@@ -322,7 +410,14 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
             if (u.outputPath) {
               yield* Effect.tryPromise(() => unlink(u.outputPath)).pipe(Effect.ignore)
             }
-            results.push({ tool: u.data.tool, partID: u.row.id, originalLen: u.originalLen, turnsBack })
+            results.push({
+              tool: u.data.tool,
+              partID: u.row.id,
+              originalLen: u.originalLen,
+              imageCount: u.imageCount,
+              attachmentBytes: u.attachmentBytes,
+              turnsBack,
+            })
           }
 
           const totalRow = yield* db
@@ -332,6 +427,11 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
 
           const lines = results
             .map((r) => {
+              if (r.imageCount > 0) {
+                const images = `${r.imageCount} image attachment${r.imageCount === 1 ? "" : "s"} (${r.attachmentBytes.toLocaleString()} decoded bytes)`
+                const text = r.originalLen > 0 ? `${r.originalLen} chars + ` : ""
+                return `Shrank ${r.tool} output (${text}${images}) → ${params.summary.length} char summary; removed ${r.imageCount} image attachment${r.imageCount === 1 ? "" : "s"}`
+              }
               // ~3 chars/token - the same divisor as the time-context hint
               // (time-context.ts Math.round(len/3)) and the TUI title, so
               // both surfaces agree (display divisor derived from session
@@ -357,6 +457,8 @@ export const ShrinkTool = Tool.define<typeof Parameters, Metadata, Database.Serv
               count: results.length,
               results,
               aggregateOriginal,
+              aggregateImages,
+              aggregateAttachmentBytes,
               summaryLen: params.summary.length,
               maxTurnsBack,
               maxPartsBack,

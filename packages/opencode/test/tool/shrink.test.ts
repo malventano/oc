@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { extractOutput, isShrunkPart, markShrunkPart, selectCandidateRows } from "@/tool/shrink"
+import {
+  extractOutput,
+  imageAttachments,
+  isShrunkPart,
+  keepNonImageAttachments,
+  markShrunkPart,
+  selectCandidateRows,
+} from "@/tool/shrink"
 
 const HINT = "\n\n<system-reminder>Very large tool output (9000 chars, ~2250 tokens). If you won't reference it again, call shrink NOW, in your very next message, before other tool calls; every future prompt in this session re-reads it.</system-reminder>"
 const STAMP = "\n\n<system-reminder>2026-08-12T03:53:00.000Z</system-reminder>"
@@ -71,5 +78,35 @@ describe("target bookkeeping", () => {
   test("all returns empty when every candidate is processed", () => {
     const rows = [row("new", true), row("old", true)]
     expect(selectCandidateRows(rows, "all")).toEqual([])
+  })
+})
+
+describe("image attachments", () => {
+  const jpeg = {
+    type: "file",
+    mime: "image/jpeg",
+    filename: "shot.jpg",
+    url: "data:image/jpeg;base64," + Buffer.from("jpeg-data").toString("base64"),
+  }
+  const pdf = {
+    type: "file",
+    mime: "application/pdf",
+    filename: "doc.pdf",
+    url: "data:application/pdf;base64," + Buffer.from("pdf-data").toString("base64"),
+  }
+
+  test("extracts image count and decoded bytes from a media-only part", () => {
+    const out = extractOutput({ state: { output: "", attachments: [jpeg, pdf] } })
+    expect(out.originalLen).toBe(0)
+    expect(out.imageCount).toBe(1)
+    expect(out.attachmentBytes).toBe(Buffer.byteLength("jpeg-data"))
+    expect(out.imageAttachments).toHaveLength(1)
+    expect(imageAttachments({ state: { attachments: [jpeg] } })).toHaveLength(1)
+  })
+
+  test("keeps non-image attachments when images are removed", () => {
+    const kept = keepNonImageAttachments([jpeg, pdf])
+    expect(kept).toEqual([pdf])
+    expect(keepNonImageAttachments(undefined)).toEqual([])
   })
 })
