@@ -15,6 +15,7 @@ import { useToast } from "../ui/toast"
 import { useCommandShortcut } from "../keymap"
 import { useProject } from "../context/project"
 import { Spinner } from "./spinner"
+import { contains, mergeMoveSessionSubdirectories } from "./move-session-directories"
 import { DialogWorkspaceFileChanges } from "./dialog-workspace-file-changes"
 import type { ProjectDirectories } from "@opencode-ai/sdk/v2"
 import { useRoute } from "../context/route"
@@ -109,6 +110,21 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     )
   })
 
+  const [childDirectories, { refetch: refetchChildDirectories }] = createResource(
+    () => (showError() ? undefined : currentRoot()?.directory),
+    async (root) => {
+      if (!root) return []
+      try {
+        const result = await sdk.client.file.list({ directory: root, path: "." }, { throwOnError: true })
+        return (result.data ?? [])
+          .filter((item) => item.type === "directory")
+          .map((item) => item.absolute)
+      } catch {
+        return []
+      }
+    },
+  )
+
   const options = createMemo<DialogSelectOption<MoveSessionSelection | undefined>[]>(() => {
     if (showError()) return []
     const data = directoryData()
@@ -125,21 +141,14 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     })
     if (roots.length === 0) return [{ title: "No project directories found", value: undefined }]
 
-    const subdirectories = sync.data.session
+    const sessionDirectories = sync.data.session
       .filter((session) => session.projectID === props.projectID && session.path && ![".", "/"].includes(session.path))
       .map((session) => session.directory)
-      .filter((directory) => !roots.some((root) => root.directory === directory))
-      .filter((directory, index, directories) => directories.indexOf(directory) === index)
-      .map((location) => ({
-        location,
-        root: roots
-          .filter((root) => {
-            const relative = path.relative(root.directory, location)
-            return relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative)
-          })
-          .toSorted((a, b) => b.directory.length - a.directory.length)[0],
-      }))
-      .filter((item): item is { location: string; root: ProjectDirectory } => item.root !== undefined)
+    const subdirectories = mergeMoveSessionSubdirectories({
+      roots,
+      sessions: sessionDirectories,
+      children: childDirectories() ?? [],
+    })
 
     const list = [...roots.map((root) => ({ location: root.directory, root })), ...subdirectories].toSorted((a, b) => {
       const root = roots.indexOf(a.root) - roots.indexOf(b.root)
@@ -292,7 +301,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
             <text fg={theme.text} attributes={TextAttributes.BOLD}>
               Move session
             </text>
-            <Show when={working() || directories.loading || loadedProject.loading}>
+            <Show when={working() || directories.loading || loadedProject.loading || childDirectories.loading}>
               <Spinner />
             </Show>
           </box>
@@ -337,17 +346,14 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
                 {
                   command: "dialog.move_session.refresh",
                   title: "refresh",
-                  onTrigger: () => void refetch(),
+                  onTrigger: () => {
+                    void refetch()
+                    void refetchChildDirectories()
+                  },
                 },
               ]
         }
       />
     </box>
   )
-}
-
-function contains(root: string, directory: string) {
-  if (root === directory) return true
-  const relative = path.relative(root, directory)
-  return relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative)
 }
