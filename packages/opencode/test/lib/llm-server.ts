@@ -433,11 +433,18 @@ function send(item: Sse) {
 const reset = Effect.fn("TestLLMServer.reset")(function* (item: Sse) {
   const req = yield* HttpServerRequest.HttpServerRequest
   const res = NodeHttpServerRequest.toServerResponse(req)
+  const nodeReq = NodeHttpServerRequest.toIncomingMessage(req)
+  const [major, minor] = Bun.version.split(".").map(Number)
   yield* Effect.sync(() => {
     res.writeHead(200, { "content-type": "text/event-stream" })
+    res.flushHeaders()
     for (const part of item.head) res.write(line(part))
     for (const part of item.tail) res.write(line(part))
-    res.destroy(new Error("connection reset"))
+    // Bun 1.4.4 no longer surfaces ServerResponse.destroy as a client-side
+    // stream error through AI SDK. resetAndDestroy sends a real TCP RST; older
+    // Bun releases expose the same reset through res.destroy.
+    if (major > 1 || (major === 1 && minor >= 4)) nodeReq.socket?.resetAndDestroy()
+    else res.destroy(new Error("connection reset"))
   })
   return yield* Effect.never
 })
