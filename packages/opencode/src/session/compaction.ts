@@ -210,7 +210,11 @@ const serialize = (message: SessionV1.WithParts) => {
       // tag / serialized tool-call / looped region) must NOT ride into the
       // summary and re-poison the compacted context. The full text stays
       // stored for the TUI/DB.
-      const applyTrim = (t: string, meta: { stallTrimAt?: unknown; loopTrimAt?: unknown } | undefined) => {
+      const applyTrim = (
+        t: string,
+        meta: { stallTrimAt?: unknown; loopTrimAt?: unknown; loopDrop?: unknown } | undefined,
+      ) => {
+        if (meta?.loopDrop === true) return ""
         const trimAt =
           typeof meta?.stallTrimAt === "number"
             ? meta.stallTrimAt

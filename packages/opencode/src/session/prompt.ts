@@ -81,6 +81,46 @@ const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 // trimmed message carries no useful content, so fall back to the whole-message
 // drop (the model restarts the step fresh).
 const TRIM_MIN_PRESERVED = 20
+// A loop's detail carries a varying repeat count ("repeated \"The.\" 39x").
+// Normalize the count so a later fire can recognize the same pathology and
+// escalate without spending another steer.
+function loopSignature(channel: string | null, hit: string | null): string {
+  return `${channel ?? ""}:${(hit ?? "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim()}`
+}
+
+// The verbatim detector reports the repeated unit in its detail. On a repeat,
+// the same unit usually appears in an earlier reasoning part as a ramp, not
+// only in the final window that tripped the detector. Find that ramp's first
+// run so the next request can drop the whole contaminated stretch.
+function loopUnit(hit: string | null): string | undefined {
+  const match = /^repeated "(.*)" \d+x back-to-back$/.exec(hit ?? "")
+  return match?.[1]?.trim() || undefined
+}
+
+function loopRampStart(text: string, unit: string): number | null {
+  if (!unit || text.length === 0) return null
+  let first = -1
+  let count = 0
+  let lastEnd = -1
+  let scan = 0
+  while (scan < text.length) {
+    const index = text.indexOf(unit, scan)
+    if (index < 0) break
+    if (count === 0) {
+      first = index
+      count = 1
+    } else if (text.slice(lastEnd, index).trim().length === 0) {
+      count++
+    } else {
+      first = index
+      count = 1
+    }
+    lastEnd = index + unit.length
+    if (count >= 4) return first
+    scan = lastEnd
+  }
+  return null
+}
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
   "image/gif",
@@ -1253,6 +1293,12 @@ const layer = Layer.effect(
         let stallFires = 0
         let autoCompactRounds = 0
         let guardsHalted = false
+        // 0454: remember the last loop pathology. A steer that merely produces
+        // one tool call and then re-enters the SAME loop is not a recovery;
+        // the first repeat gets a deeper context repair (remove the reasoning
+        // ramp that preceded the final repeat). Compaction is the fallback.
+        let lastLoopSignature: string | undefined
+        let loopRampTrimmed = false
         // 0425/0426/0427 per-turn state: the action ledger and liveness
         // watchdog span steps, so they live here and are passed into every
         // processor step. Step advisories are emitted once each per turn.
@@ -1828,12 +1874,67 @@ const layer = Layer.effect(
               // resume with a steer: it completes the banner, then triggers
               // an auto-compaction so the model continues from the compacted
               // summary instead of the polluted context.
+              //
+              // 0454: a steer that produces one tool call and then re-enters
+              // the SAME detector signature is not a recovery. The latest KVM
+              // turn fired "repeated The." on reasoning at 04:10:31 and again
+              // at 04:10:44; each steer produced a tool call, then the
+              // reasoning re-looped, and only the third-fire compaction
+              // stopped it. Escalate a repeat of the same normalized detail
+              // directly to compaction after the first steer instead of
+              // spending another full loop.
+              const key = loopSignature(handle.loopGuardChannel, handle.loopGuardHit)
+              const repeated = lastLoopSignature !== undefined && lastLoopSignature === key
+              if (!repeated) loopRampTrimmed = false
+              lastLoopSignature = key
+              const fireNote = repeated
+                ? "Loop guard is still repeating the same loop"
+                : `Loop guard fired ${loopFires + 1} times this turn`
               loopFires++
-              if (loopFires < 3) {
-                const redirect =
-                  handle.loopGuardChannel === "tool-input"
-                    ? LoopGuard.TOOL_INPUT_LOOP_REDIRECT
-                    : LoopGuard.THINKING_LOOP_REDIRECT
+              const redirect =
+                handle.loopGuardChannel === "tool-input"
+                  ? LoopGuard.TOOL_INPUT_LOOP_REDIRECT
+                  : LoopGuard.THINKING_LOOP_REDIRECT
+              let rampChanged = false
+              if (repeated && !loopRampTrimmed && handle.loopGuardChannel === "reasoning") {
+                const unit = loopUnit(handle.loopGuardHit)
+                if (unit) {
+                  const lastUserIndex = msgs.findLastIndex((m) => m.info.role === "user")
+                  const prior = lastUserIndex >= 0 ? msgs.slice(lastUserIndex + 1).flatMap((m) => m.parts) : []
+                  const current = yield* MessageV2.parts(handle.message.id).pipe(
+                    Effect.provideService(Database.Service, database),
+                  )
+                  let contaminated = false
+                  for (const part of [...prior, ...current]) {
+                    if (part.type !== "reasoning") continue
+                    if (contaminated) {
+                      yield* sessions.updatePart({
+                        ...part,
+                        metadata: { ...part.metadata, loopDrop: true },
+                      })
+                      rampChanged = true
+                      continue
+                    }
+                    const start = loopRampStart(part.text, unit)
+                    if (start === null) continue
+                    contaminated = true
+                    rampChanged = true
+                    yield* sessions.updatePart({
+                      ...part,
+                      metadata:
+                        start >= TRIM_MIN_PRESERVED
+                          ? { ...part.metadata, loopTrimAt: start }
+                          : { ...part.metadata, loopDrop: true },
+                    })
+                  }
+                  if (contaminated) loopRampTrimmed = true
+                }
+              }
+              if (rampChanged) {
+                note += `\n\nRepeated loop after a steer: removed the repeated reasoning ramp from the request; continuing.\n\n${redirect}`
+                handle.message.error = new LoopGuardTrimError({ message: note }).toObject()
+                steerPrompt = redirect
+              } else if (loopFires < 3 && !repeated) {
                 // Trim path (text/reasoning channels): truncate the fired
                 // part at the loop start and keep the preserved prefix in the
                 // request (LoopGuardTrimError is exempt from the error-skip),
@@ -1891,38 +1992,42 @@ const layer = Layer.effect(
                 // toast. Skipped entirely on compaction turns (no nested
                 // auto-compaction - the summary retries instead).
                 if (compactingPrompt) {
-                  note += `\n\nLoop guard fired 3 times this turn - the compaction summary is looping. No nested auto-compaction; the summary retries with the steer.`
+                  note += `\n\n${fireNote} - the compaction summary is looping. No nested auto-compaction; the summary retries with the steer.`
                 } else {
                   yield* events.publish(TuiEvent.ToastShow, {
                     title: "Auto-compacting",
-                    message: "Loop guard fired 3 times this turn - auto-compacting the conversation to reset context.",
+                    message: `${fireNote} - auto-compacting the conversation to reset context.`,
                     variant: "error",
                     duration: 8000,
                   }).pipe(Effect.ignore)
-                  note += `\n\nLoop guard fired 3 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                  note += `\n\n${fireNote} - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
                   yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true, guard: true })
                 }
                 autoCompactRounds = 1
                 loopFires = 0
                 stallFires = 0
+                lastLoopSignature = undefined
+                loopRampTrimmed = false
               } else if (autoCompactRounds === 1) {
                 // 6th fire: second auto-compaction (round 2 of 3 - two
                 // compactions per turn, then the 9-fire halt).
                 if (compactingPrompt) {
-                  note += `\n\nLoop guard fired 6 times this turn - the compaction summary is looping. No nested auto-compaction; the summary retries with the steer.`
+                  note += `\n\n${fireNote} - the compaction summary is looping. No nested auto-compaction; the summary retries with the steer.`
                 } else {
                   yield* events.publish(TuiEvent.ToastShow, {
                     title: "Auto-compacting",
-                    message: "Loop guard fired 6 times this turn - auto-compacting the conversation to reset context.",
+                    message: `${fireNote} - auto-compacting the conversation to reset context.`,
                     variant: "error",
                     duration: 8000,
                   }).pipe(Effect.ignore)
-                  note += `\n\nLoop guard fired 6 times this turn - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
+                  note += `\n\n${fireNote} - auto-compacting the conversation to reset context. The turn continues after the compaction completes.`
                   yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true, guard: true })
                 }
                 autoCompactRounds = 2
                 loopFires = 0
                 stallFires = 0
+                lastLoopSignature = undefined
+                loopRampTrimmed = false
               } else {
                 // 9th fire - HALT: the guard ACTUALLY stops the turn (break)
                 // - an infinite loop cannot continue if there is no next step
@@ -2063,6 +2168,8 @@ const layer = Layer.effect(
                 autoCompactRounds = 1
                 loopFires = 0
                 stallFires = 0
+                lastLoopSignature = undefined
+                loopRampTrimmed = false
               } else if (autoCompactRounds === 1) {
                 // 6th fire: second auto-compaction (round 2 of 3).
                 if (compactingPrompt) {

@@ -531,6 +531,35 @@ describe("session.message-v2.toModelMessage", () => {
     expect(stored.text).toBe(full)
   })
 
+  test("loop-guard loopDrop removes a downstream reasoning part from the request (0454)", async () => {
+    const parentID = "m-user"
+    const msgID = "m-assistant"
+    const full = "The. The. The. The. this reasoning is the loop ramp"
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(parentID),
+        parts: [
+          { ...basePart(parentID, "p1"), type: "text", text: "continue" },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(msgID, parentID),
+        parts: [
+          {
+            ...basePart(msgID, "a1"),
+            type: "reasoning",
+            text: full,
+            metadata: { loopDrop: true },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+    const result = await MessageV2.toModelMessages(input, model)
+    // The assistant message has no serializable parts after the drop.
+    expect(result).toHaveLength(1)
+    expect(input[1].parts[0]).toMatchObject({ type: "reasoning", text: full, metadata: { loopDrop: true } })
+  })
+
   test("stallTrimAt with no tail leftover still emits the preserved prefix (empty-safe)", async () => {
     const parentID = "m-user"
     const msgID = "m-assistant"

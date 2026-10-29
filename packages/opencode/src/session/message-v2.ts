@@ -148,7 +148,7 @@ const INVOKE_RE = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/g
 // rejects a text part carrying an unknown providerOptions field (2026-09-01
 // live: "Invalid prompt: The messages do not match the ModelMessage[] schema"
 // after the guard marked a part with stallTrimAt).
-export const GUARD_METADATA_KEYS = ["stallTrimAt", "loopTrimAt"] as const
+export const GUARD_METADATA_KEYS = ["stallTrimAt", "loopTrimAt", "loopDrop"] as const
 export function guardMetadata(metadata: Record<string, any> | undefined): Record<string, any> | undefined {
   if (!metadata) return undefined
   const rest: Record<string, any> = {}
@@ -350,6 +350,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           // them either; doing so shifts the suffix at the part's position.
           // New fileDelta parts ride step-1 user prompts only.
           if (part.synthetic && part.metadata?.fileDelta) continue
+          if (part.metadata?.loopDrop === true) continue
           // stallTrimAt / loopTrimAt (guards, 2026-09-01): the guards mark the
           // part with their de-poison trim point (the tail is a stale colon /
           // stray tag / serialized tool-call / looped region that the model
@@ -470,6 +471,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             })
         }
         if (part.type === "reasoning") {
+          // 0454 ramp repair: drop a reasoning part downstream of the repeated
+          // term's ramp. The stored text stays for the TUI/DB.
+          if (part.metadata?.loopDrop === true) continue
           // loopTrimAt (loop guard, 2026-09-01): trim the model request at the
           // guard's marked point (loop start) while the full text stays stored
           // for the TUI/DB. Mirror of the text-part stallTrimAt handling above.
