@@ -532,3 +532,75 @@ test("contextUsage measures a fresh-session baseline and reuses it for a new ses
   })
   expect(next).toEqual({ tokens: 1200, percent: null, forecast: true })
 })
+
+test("unknown legacy base borrows the nearest ancestor baseline", () => {
+  const store = new Map<string, unknown>()
+  bindContextUsageKV({
+    get: (key, fallback) => store.get(key) ?? fallback,
+    set: (key, value) => {
+      store.set(key, value)
+    },
+  })
+  const root = "/rough-" + Math.random().toString(36).slice(2)
+  const directory = root + "/proj"
+  store.set("context_baseline_v1:" + root + "|build|opencode/dsv4", 25000)
+  const usage = contextUsage({
+    messages: [
+      user("user-marker"),
+      assistant({
+        id: "asst-summary",
+        parentID: "user-marker",
+        summary: true,
+        finish: "stop",
+        tokens: { input: 1000, output: 100, reasoning: 0, cache: { read: 1400, write: 0 } },
+      }),
+    ],
+    parts: map({ "user-marker": [compaction("user-marker", { estimated_next_transcript_tokens: 500 })] }),
+    provider: [],
+    directory,
+  })
+  expect(usage).toEqual({ tokens: 25500, percent: null, forecast: true })
+})
+
+test("clean-start compaction with no base uses the rough base, not the stale exact", () => {
+  const store = new Map<string, unknown>()
+  bindContextUsageKV({
+    get: (key, fallback) => store.get(key) ?? fallback,
+    set: (key, value) => {
+      store.set(key, value)
+    },
+  })
+  const root = "/clean-" + Math.random().toString(36).slice(2)
+  const directory = root + "/proj"
+  store.set("context_baseline_v1:" + root + "|build|opencode/dsv4", 18000)
+  const usage = contextUsage({
+    messages: [
+      user("user-old"),
+      assistant({
+        id: "asst-old",
+        parentID: "user-old",
+        tokens: { input: 5000, output: 10, reasoning: 0, cache: { read: 100000, write: 0 } },
+      }),
+      user("user-marker"),
+      assistant({
+        id: "asst-summary",
+        parentID: "user-marker",
+        summary: true,
+        finish: "end_turn",
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      }),
+    ],
+    parts: map({
+      "user-marker": [
+        compaction("user-marker", {
+          virtual: true,
+          clean_start: true,
+          estimated_next_transcript_tokens: 0,
+        }),
+      ],
+    }),
+    provider: [],
+    directory,
+  })
+  expect(usage).toEqual({ tokens: 18000, percent: null, forecast: true })
+})

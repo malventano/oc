@@ -236,6 +236,28 @@ function baselineKey(directory: string, subject: Subject | undefined) {
   return `${directory}|${subject.agent ?? "default"}|${subject.providerID}/${subject.modelID}`
 }
 
+// Rough base fill for a directory that has never been measured - a legacy
+// session whose reports predate the step-start base, compacted (virtual or
+// real) before any base was stamped on the marker. The system/tools/skills
+// overhead is shared across directories for the same agent/model, so the
+// nearest ancestor directory's measured baseline is a close approximation and
+// far better than the 0 that would otherwise erase the base from the footbar
+// (summary-only renders transcript-only, clean-start falls back to the stale
+// pre-compaction exact). Display-only: never persisted, so it cannot pollute
+// the learned baseline for this directory.
+function roughBaseline(subject: Subject | undefined, directory: string) {
+  if (!subject) return undefined
+  let dir = directory
+  while (dir) {
+    const value = readBaseline(baselineKey(dir, subject))
+    if (value !== undefined && value > 0) return value
+    if (dir === "/") break
+    const index = dir.lastIndexOf("/")
+    dir = index > 0 ? dir.slice(0, index) : "/"
+  }
+  return undefined
+}
+
 function modelFor(provider: ReadonlyArray<Provider>, subject: Subject | undefined) {
   if (!subject) return undefined
   return provider.find((item) => item.id === subject.providerID)?.models[subject.modelID]
@@ -327,6 +349,10 @@ export function resolveContextUsage(input: ContextUsageInput, baseline = 0): Con
   const settled = settledReport(messages)
   const exactIndex = settled ? messages.findIndex((message) => message.id === settled.id) : -1
   const topic = subject(messages, input.session, pair)
+  // A measured base for this exact directory wins; otherwise borrow the
+  // nearest measured ancestor (same agent/model) so a legacy compaction does
+  // not drop the base to 0.
+  const fallbackBase = baseline > 0 ? baseline : (roughBaseline(topic, input.directory) ?? 0)
   const model = modelFor(input.provider, topic)
   const exactModel = settled
     ? input.provider.find((item) => item.id === settled.providerID)?.models[settled.modelID]
@@ -367,7 +393,7 @@ export function resolveContextUsage(input: ContextUsageInput, baseline = 0): Con
       const contextBase =
         latestStepStartBase(messages, input.parts, -1, topic) ??
         pair.part.estimated_context_base_tokens ??
-        baseline
+        fallbackBase
       const tokens =
         contextBase +
         transcript +
@@ -384,7 +410,7 @@ export function resolveContextUsage(input: ContextUsageInput, baseline = 0): Con
   }
 
   if (!settled) {
-    const tokens = baseline + promptTokens(messages, input.parts, -1) + (live ? pending.streamedPending : 0)
+    const tokens = fallbackBase + promptTokens(messages, input.parts, -1) + (live ? pending.streamedPending : 0)
     if (tokens > 0) {
       return {
         tokens,
